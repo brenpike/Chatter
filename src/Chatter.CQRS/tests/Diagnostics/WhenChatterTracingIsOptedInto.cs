@@ -1,5 +1,6 @@
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.Diagnostics;
+using Chatter.CQRS.Events;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -339,6 +340,56 @@ namespace Chatter.CQRS.Tests.Diagnostics
             }
         }
 
+        [Fact]
+        public async Task MustMarkTheSpanAsFailedWhenTheCallerTokenIsSignalledOnlyAfterTheEventFaultWasLoggedAsAnError()
+        {
+            using (var callerCancellation = new CancellationTokenSource())
+            using (var harness = new DiagnosticsDispatchHarness(eventDispatcherLogger: new CancelOnFirstErrorLogger<EventDispatcher>(callerCancellation)))
+            using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+            {
+                await DispatchCancelledEventExpectingTheHandlerFault(harness, callerCancellation.Token);
+
+                callerCancellation.IsCancellationRequested.Should().BeTrue("the Error record signals the caller's token");
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.Status.Should().Be(ActivityStatusCode.Error);
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().Be(typeof(OperationCanceledException).FullName);
+            }
+        }
+
+        [Fact]
+        public async Task MustMarkTheMeasurementWithAnErrorTypeWhenTheCallerTokenIsSignalledOnlyAfterTheEventFaultWasLoggedAsAnError()
+        {
+            using (var callerCancellation = new CancellationTokenSource())
+            using (var harness = new DiagnosticsDispatchHarness(eventDispatcherLogger: new CancelOnFirstErrorLogger<EventDispatcher>(callerCancellation)))
+            using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+            {
+                await DispatchCancelledEventExpectingTheHandlerFault(harness, callerCancellation.Token);
+
+                callerCancellation.IsCancellationRequested.Should().BeTrue("the Error record signals the caller's token");
+                var measurement = meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().ContainSingle().Subject;
+                ResolveTag(measurement, ChatterTelemetryTags.ErrorType).Should().Be(typeof(OperationCanceledException).FullName);
+            }
+        }
+
+        [Fact]
+        public async Task MustWriteExactlyOneErrorRecordWhenTheCallerTokenIsSignalledOnlyAfterTheEventFaultWasLoggedAsAnError()
+        {
+            using (var callerCancellation = new CancellationTokenSource())
+            {
+                var dispatcherLogger = new CancelOnFirstErrorLogger<EventDispatcher>(callerCancellation);
+
+                using (var harness = new DiagnosticsDispatchHarness(eventDispatcherLogger: dispatcherLogger))
+                using (new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+                {
+                    await DispatchCancelledEventExpectingTheHandlerFault(harness, callerCancellation.Token);
+
+                    var loggedEntry = dispatcherLogger.LoggedEntries.Should().ContainSingle().Subject;
+                    loggedEntry.level.Should().Be(LogLevel.Error);
+                    loggedEntry.exception.Should().BeSameAs(harness.CancelledEventHandler.Failure);
+                }
+            }
+        }
+
         private static CancellationToken CallerCancelledToken => new CancellationToken(canceled: true);
 
         private Task DispatchCancelledCommandExpectingTheHandlerFault(CancellationToken callerToken)
@@ -352,12 +403,15 @@ namespace Chatter.CQRS.Tests.Diagnostics
             thrown.Which.Should().BeSameAs(harness.CancelledCommandHandler.Failure);
         }
 
-        private async Task DispatchCancelledEventExpectingTheHandlerFault(CancellationToken callerToken)
+        private Task DispatchCancelledEventExpectingTheHandlerFault(CancellationToken callerToken)
+            => DispatchCancelledEventExpectingTheHandlerFault(_harness, callerToken);
+
+        private static async Task DispatchCancelledEventExpectingTheHandlerFault(DiagnosticsDispatchHarness harness, CancellationToken callerToken)
         {
-            var thrown = await FluentActions.Invoking(async () => await _harness.DispatchCancelledEvent(callerToken))
+            var thrown = await FluentActions.Invoking(async () => await harness.DispatchCancelledEvent(callerToken))
                 .Should().ThrowAsync<OperationCanceledException>();
 
-            thrown.Which.Should().BeSameAs(_harness.CancelledEventHandler.Failure);
+            thrown.Which.Should().BeSameAs(harness.CancelledEventHandler.Failure);
         }
 
         private static object ResolveTag(RecordedMeasurement measurement, string tagName)

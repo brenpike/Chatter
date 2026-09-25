@@ -126,9 +126,11 @@ namespace Chatter.CQRS.Tests.Diagnostics
         private readonly ServiceProvider _serviceProvider;
 
         /// <param name="commandDispatcherLogger">The logger the Command dispatcher writes to; <see cref="NullLogger{T}"/> when omitted.</param>
-        internal DiagnosticsDispatchHarness(ILogger<CommandDispatcher> commandDispatcherLogger = null)
+        /// <param name="eventDispatcherLogger">The logger the Event dispatcher writes to; <see cref="NullLogger{T}"/> when omitted.</param>
+        internal DiagnosticsDispatchHarness(ILogger<CommandDispatcher> commandDispatcherLogger = null, ILogger<EventDispatcher> eventDispatcherLogger = null)
         {
             var resolvedCommandDispatcherLogger = commandDispatcherLogger ?? NullLogger<CommandDispatcher>.Instance;
+            var resolvedEventDispatcherLogger = eventDispatcherLogger ?? NullLogger<EventDispatcher>.Instance;
 
             CommandHandler = new AmbientActivityRecordingHandler<TracedCommand>();
             EventMessageHandler = new AmbientActivityRecordingHandler<TracedEvent>();
@@ -145,7 +147,7 @@ namespace Chatter.CQRS.Tests.Diagnostics
             services.AddSingleton<IMessageHandler<CancelledCommand>>(CancelledCommandHandler);
             services.AddSingleton<IMessageHandler<CancelledEvent>>(CancelledEventHandler);
             services.AddSingleton<IDispatchMessages>(provider => new CommandDispatcher(provider, resolvedCommandDispatcherLogger));
-            services.AddSingleton<IDispatchMessages>(provider => new EventDispatcher(provider, NullLogger<EventDispatcher>.Instance));
+            services.AddSingleton<IDispatchMessages>(provider => new EventDispatcher(provider, resolvedEventDispatcherLogger));
             services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
             services.AddSingleton<IExternalDispatcher, NoOpExternalDispatcher>();
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
