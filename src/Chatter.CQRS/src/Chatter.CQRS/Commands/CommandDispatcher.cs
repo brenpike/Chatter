@@ -78,6 +78,15 @@ namespace Chatter.CQRS.Commands
 
                 await pipeline.Execute(message, messageHandlerContext, handler).ConfigureAwait(false);
             }
+            // INVARIANT: only a cancellation the caller requested is logged as routine; any other fault, a spontaneous
+            // cancellation included, falls through to the Error record. Pinned by
+            // WhenDispatching.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which goes red when the
+            // filter is widened to catch (OperationCanceledException) with no predicate. Rationale: ADR-0040.
+            catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, messageHandlerContext))
+            {
+                _logger.LogDebug(e, "Dispatch of command '{MessageType}' was cancelled by the caller.", MessageTypeNames<TMessage>.Name);
+                throw;
+            }
             catch (Exception e)
             {
                 _logger.LogError(e, "Error dispatching command of type '{MessageType}'.", MessageTypeNames<TMessage>.Name);

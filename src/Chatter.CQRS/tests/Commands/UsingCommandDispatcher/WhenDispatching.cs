@@ -9,6 +9,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -29,6 +30,7 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         private static string _commandBehaviorExecuteLogMessage = $"Executing command behavior pipeline for '{typeof(IMessage)}'.";
         private static string _handlerInvokedLogMessage = $"No command behavior pipeline found. Executing message handler for '{typeof(IMessage)}'.";
         private static string _dispatchFailedLogMessage = $"Error dispatching command of type '{typeof(IMessage).Name}'.";
+        private static string _dispatchCancelledLogMessage = $"Dispatch of command '{typeof(IMessage).Name}' was cancelled by the caller.";
 
         public WhenDispatching()
         {
@@ -169,6 +171,42 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         }
 
         [Fact]
+        public async Task MustRethrowACallerRequestedCancellationAndLogItOnceAtDebugInsteadOfError()
+        {
+            var cancellation = ArrangeMessageHandlerThatFaultsAfterAnAwait(new OperationCanceledException("The caller cancelled the dispatch."));
+
+            var thrown = await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, ContextCancelledByTheCaller())).Should().ThrowAsync<OperationCanceledException>();
+
+            thrown.Which.Should().BeSameAs(cancellation);
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Never());
+        }
+
+        [Fact]
+        public async Task MustAttachTheCallerRequestedCancellationToTheDebugRecordWithoutWritingItsStackTraceIntoTheMessage()
+        {
+            var cancellation = ArrangeMessageHandlerThatFaultsAfterAnAwait(new OperationCanceledException("The caller cancelled the dispatch."));
+
+            await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, ContextCancelledByTheCaller())).Should().ThrowAsync<OperationCanceledException>();
+
+            cancellation.StackTrace.Should().NotBeNullOrEmpty();
+            _logger.VerifyWasCalled(LogLevel.Debug, _dispatchCancelledLogMessage, cancellation, Times.Once());
+            var loggedDebug = _logger.LoggedMessages.Should().ContainSingle(logged => logged.level == LogLevel.Debug).Subject;
+            loggedDebug.message.Should().NotContain(cancellation.StackTrace);
+        }
+
+        [Fact]
+        public async Task MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller()
+        {
+            var cancellation = ArrangeMessageHandlerThatFaultsAfterAnAwait(new OperationCanceledException("A spontaneous timeout cancelled the handler."));
+
+            await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, new MessageHandlerContext(CancellationToken.None))).Should().ThrowAsync<OperationCanceledException>();
+
+            _logger.VerifyWasCalled(LogLevel.Error, _dispatchFailedLogMessage, cancellation, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Never());
+        }
+
+        [Fact]
         public async Task MustRenderAConstructedGenericCommandTypeTheWayInterpolationRenderedIt()
         {
             var genericHandler = new Mock<IMessageHandler<GenericCommand<Payload>>>();
@@ -195,12 +233,21 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         }
 
         private InvalidOperationException ArrangeMessageHandlerThatFaultsAfterAnAwait()
+            => ArrangeMessageHandlerThatFaultsAfterAnAwait(new InvalidOperationException("The message handler faulted after an await."));
+
+        private TException ArrangeMessageHandlerThatFaultsAfterAnAwait<TException>(TException failure) where TException : Exception
         {
-            var failure = new InvalidOperationException("The message handler faulted after an await.");
             _serviceProvider.Setup(p => p.GetService(typeof(ICommandBehaviorPipeline<IMessage>))).Returns(null);
             _handler.Setup(h => h.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>()))
                 .Returns(() => FaultAfterAnAwait(failure));
             return failure;
+        }
+
+        private static MessageHandlerContext ContextCancelledByTheCaller()
+        {
+            using var cancellationSource = new CancellationTokenSource();
+            cancellationSource.Cancel();
+            return new MessageHandlerContext(cancellationSource.Token);
         }
 
         private static async Task FaultAfterAnAwait(Exception failure)
