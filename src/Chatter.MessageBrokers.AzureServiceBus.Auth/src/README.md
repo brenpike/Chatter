@@ -28,8 +28,8 @@ This package lets [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org
 ## Features
 
 - **Four credential modes**: client secret, client certificate, interactive browser sign-in and managed identity, each one builder call.
-- **System-assigned and user-assigned managed identity**: omit the client id for system-assigned, or pass it for user-assigned.
-- **Exact identity for managed identity**: the managed identity mode builds a `ManagedIdentityCredential` directly, so no other credential on the host can answer in its place.
+- **System-assigned and user-assigned managed identity**: pass a user-assigned identity's client id, or omit it to request the system-assigned identity. See [Managed identity](#managed-identity) for how a blank client id resolves on AKS.
+- **No credential chain for managed identity**: the managed identity mode builds a `ManagedIdentityCredential` directly, never a `DefaultAzureCredential` chain.
 - **Default credential fallback**: leave the secret, thumbprint or redirect URI blank and you get a `DefaultAzureCredential`, which honors `az login`.
 - **Certificate store lookup**: certificates are found by thumbprint in the `My` store, `CurrentUser` first, then `LocalMachine`.
 - **Sovereign clouds**: the authority host comes from the `authority` URL, or from `AuthorityHost` for managed identity.
@@ -86,7 +86,7 @@ Call one mode per `AddAzureServiceBus`. A later call replaces an earlier one, bu
 
 | Mode | Method | Use when |
 | --- | --- | --- |
-| Managed identity, system-assigned | `UseAadTokenProviderWithManagedIdentity()` | Your application runs on an Azure host with a system-assigned identity. |
+| Managed identity, system-assigned | `UseAadTokenProviderWithManagedIdentity()` | Your application runs on an Azure host with a system-assigned identity. Not for AKS workload identity; see [Managed identity](#managed-identity). |
 | Managed identity, user-assigned | `UseAadTokenProviderWithManagedIdentity(clientId)` | Your application runs on Azure with a user-assigned identity, or on AKS workload identity. |
 | Client secret | `UseAadTokenProviderWithSecret(clientId, clientSecret, authority)` | Your application runs outside Azure as an app registration with a secret. |
 | Client certificate | `UseAadTokenProviderWithCert(clientId, thumbPrint, authority)` | As for client secret, with a certificate installed in the machine's certificate store. |
@@ -95,16 +95,16 @@ Call one mode per `AddAzureServiceBus`. A later call replaces an earlier one, bu
 ### Managed identity
 
 ```csharp
-// system-assigned
+// no client id: requests the system-assigned identity (see the note below for AKS)
 asb.UseAadTokenProviderWithManagedIdentity();
 
 // user-assigned: pass the identity's client id
 asb.UseAadTokenProviderWithManagedIdentity(clientId: "<managed-identity-client-id>");
 ```
 
-The credential names the identity itself and never consults the `DefaultAzureCredential` chain. `AZURE_TOKEN_CREDENTIALS` and the `Exclude*` options have no effect on it, and `optBuilder` cannot change which identity is requested.
+The credential is built from the identity you request and never consults the `DefaultAzureCredential` chain. `AZURE_TOKEN_CREDENTIALS` and the `Exclude*` options have no effect on it, and `optBuilder` cannot change which identity is requested. With a client id, no other credential on the host can answer in place of that user-assigned identity. Without one, the request is for the system-assigned identity, with one exception:
 
-> **Important:** On a federated-token host such as AKS workload identity, a blank client id falls back to the `AZURE_CLIENT_ID` environment variable, so you authenticate as the workload identity, not the system-assigned one. Pass the client id explicitly to avoid this.
+> **Important:** On a federated-token host such as AKS workload identity, a blank client id falls back to the `AZURE_CLIENT_ID` environment variable, so you authenticate as the workload identity, not the system-assigned one. Pass the client id whenever the identity must not depend on the host.
 
 `optBuilder` configures `ManagedIdentityCredentialOptions`, for example the authority host of a sovereign cloud. Name the argument; a bare lambda lands in the `clientId` slot and does not compile.
 
@@ -195,7 +195,7 @@ This package binds no configuration section. The endpoint-only connection string
 | `UseAadTokenProviderWithSecret(string clientId, string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)` | `ClientSecretCredential`; `DefaultAzureCredential` when `clientSecret` is blank. |
 | `UseAadTokenProviderWithCert(string clientId, string thumbPrint, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null, bool validCertsOnly = true)` | `ClientCertificateCredential`; `DefaultAzureCredential` when `thumbPrint` is blank. `validCertsOnly: false` accepts self-signed certificates. |
 | `UseAadTokenProviderInteractively(string clientId, string redirectUri, Action<DefaultAzureCredentialOptions> optBuilder = null)` | `InteractiveBrowserCredential`; `DefaultAzureCredential` when `redirectUri` is blank. |
-| `UseAadTokenProviderWithManagedIdentity(string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)` | `ManagedIdentityCredential`: user-assigned when `clientId` is given, system-assigned when it is blank. |
+| `UseAadTokenProviderWithManagedIdentity(string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)` | `ManagedIdentityCredential` requesting the user-assigned identity named by `clientId`, or the system-assigned identity when `clientId` is blank; see [Managed identity](#managed-identity) for AKS. |
 
 For the first three methods, `optBuilder` applies only to the `DefaultAzureCredential` fallback.
 
