@@ -1,172 +1,344 @@
+<div align="center">
+
 # Chatter
 
-Chatter is a suite of modular .NET libraries for building domain-driven Web APIs and microservices. It pairs an in-process **CQRS + mediator** core with **technology-agnostic message broker** infrastructure, so the same Command/Event handlers serve both internal dispatch and cross-service integration over the transport of your choice.
+**Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging.**
 
-## Architecture at a glance
+[![CI](https://github.com/brenpike/Chatter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/brenpike/Chatter/actions/workflows/codeql-analysis.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/codeql-analysis.yml)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+</div>
+
+Chatter lets the same Command and Event handlers serve both in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker. Durable Inbox and Outbox reliability is available on EF Core or Azure Cosmos DB. Diagnostics are opt-in, OpenTelemetry-compatible and take no OpenTelemetry package dependency.
+
+## Contents
+
+- [Features](#features)
+- [Packages](#packages)
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+- [Choosing packages](#choosing-packages)
+- [Diagnostics](#diagnostics)
+- [Domain language](#domain-language)
+- [Building and testing](#building-and-testing)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Features
+
+- **Message Dispatcher and Query Dispatcher**: send a Command to exactly one handler, fan an Event out to many, and route a Query to the handler that returns its Read Model.
+- **Command Pipeline**: wrap every Command handler in ordered, reusable behaviors such as logging, a unit of work or an Inbox check.
+- **Brokered Message Receivers**: each receiver runs as a hosted service and hands received messages to your existing handlers.
+- **Three transports**: Azure Service Bus, RabbitMQ and SQL Server Service Broker behind one sending and receiving model.
+- **Inbox and Outbox**: once-only handling and reliable publishing, on a relational tier (EF Core) or a document tier (Azure Cosmos DB).
+- **Recovery**: Retry, Circuit Breaker and an Error Queue for messages that exceed their maximum receive attempts.
+- **SQL Change Feed**: strongly typed insert, update and delete notifications from a SQL Server table.
+- **Opt-in diagnostics**: tracing and metrics through the .NET base class library; nothing is emitted until your application subscribes.
+
+## Packages
+
+| Package | NuGet | Description |
+| --- | --- | --- |
+| [Chatter.CQRS](src/Chatter.CQRS/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.CQRS.svg)](https://www.nuget.org/packages/Chatter.CQRS) | In-process CQRS for .NET: dispatch Commands, Queries and Events to their handlers, with assembly-scanned registration and a composable Command Pipeline. |
+| [Chatter.MessageBrokers](src/Chatter.MessageBrokers/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers) | Technology-agnostic brokered messaging built on Chatter.CQRS: Brokered Message Receivers, sending and publishing, routing, Inbox/Outbox reliability and Recovery. |
+| [Chatter.MessageBrokers.AzureServiceBus](src/Chatter.MessageBrokers.AzureServiceBus/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.AzureServiceBus.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus) | Azure Service Bus transport for Chatter.MessageBrokers: queue receivers, topic subscriptions, sessions and cross-entity transactions. |
+| [Chatter.MessageBrokers.AzureServiceBus.Auth](src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.AzureServiceBus.Auth.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth) | Azure AD (Microsoft Entra ID) token authentication for the Azure Service Bus transport: client secret, certificate, interactive and managed identity. |
+| [Chatter.MessageBrokers.RabbitMQ](src/Chatter.MessageBrokers.RabbitMQ/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.RabbitMQ.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ) | RabbitMQ transport for Chatter.MessageBrokers over externally provisioned exchanges and queues, with quorum-queue delivery counting. |
+| [Chatter.MessageBrokers.SqlServiceBroker](src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.SqlServiceBroker.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker) | SQL Server Service Broker transport for Chatter.MessageBrokers: send and receive Brokered Messages over Service Broker conversations. |
+| [Chatter.MessageBrokers.Reliability.EntityFramework](src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.Reliability.EntityFramework.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework) | EF Core Inbox, Outbox and Unit of Work for Chatter.MessageBrokers, stored in your own DbContext. |
+| [Chatter.MessageBrokers.Reliability.Cosmos](src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.Reliability.Cosmos.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos) | Azure Cosmos DB reliability for Chatter.MessageBrokers: the Document Tier, a Standalone Inbox Gate and a change-feed Outbox Relay. |
+| [Chatter.SqlChangeFeed](src/Chatter.SqlChangeFeed/src/README.md) | [![NuGet](https://img.shields.io/nuget/v/Chatter.SqlChangeFeed.svg)](https://www.nuget.org/packages/Chatter.SqlChangeFeed) | Strongly typed insert, update and delete notifications from a watched SQL Server table, delivered over SQL Server Service Broker. |
+
+All packages target net10.0, are versioned independently, and keep a CHANGELOG.md next to their project file.
+
+## Architecture
+
+### Package dependencies
+
+```mermaid
+flowchart BT
+    CQRS["Chatter.CQRS"]
+    MB["Chatter.MessageBrokers"]
+    ASB["Chatter.MessageBrokers.AzureServiceBus"]
+    AUTH["Chatter.MessageBrokers.AzureServiceBus.Auth"]
+    RMQ["Chatter.MessageBrokers.RabbitMQ"]
+    SSB["Chatter.MessageBrokers.SqlServiceBroker"]
+    EF["Chatter.MessageBrokers.Reliability.EntityFramework"]
+    COS["Chatter.MessageBrokers.Reliability.Cosmos"]
+    SCF["Chatter.SqlChangeFeed"]
+    MB --> CQRS
+    ASB --> MB
+    AUTH --> ASB
+    RMQ --> MB
+    SSB --> MB
+    EF --> MB
+    COS --> MB
+    SCF --> SSB
 ```
-                        ┌─────────────────────────────┐
-                        │        Chatter.CQRS         │  in-process mediator:
-                        │  Commands · Queries · Events │  dispatch & handle
-                        │      + Command Pipeline      │
-                        └──────────────┬──────────────┘
-                                       │ built on
-                        ┌──────────────▼──────────────┐
-                        │    Chatter.MessageBrokers    │  technology-agnostic
-                        │  receive · send · route ·    │  brokered messaging
-                        │  inbox/outbox · recovery     │
-                        └──────┬───────────────┬───────┘
-              implements       │               │      reliability port
-        ┌────────────┬─────────┤               └──────────┬──────────┐
-        ▼            ▼         ▼                           ▼          ▼
- AzureServiceBus  RabbitMQ  SqlServiceBroker   Reliability.        Reliability.
-   (+ .Auth AAD)   (AMQP)     (SQL Server)      EntityFramework     Cosmos
-                                               (durable EF          (Cosmos DB
-                                                inbox/outbox)        document tier)
 
- Chatter.SqlChangeFeed — emits SQL Server row-change notifications (Service Broker)
+An arrow points from a package to the package it depends on.
+
+- Chatter.CQRS is the core: messages, handlers, the Message Dispatcher, the Query Dispatcher and the Command Pipeline.
+- Chatter.MessageBrokers defines the broker interfaces and ships no transport.
+- The transports and the reliability providers plug into Chatter.MessageBrokers, and Chatter.SqlChangeFeed builds on Chatter.MessageBrokers.SqlServiceBroker.
+- Transports provision no infrastructure: you create queues, topics, exchanges and Service Broker objects yourself. Only the SqlChangeFeed Change Feed Migration creates SQL objects, and only its own.
+
+### Brokered message flow
+
+A handler publishes an Event through its Message Context. Chatter.CQRS hands the call to the External Dispatcher, which is a no-op until `AddMessageBrokers()` replaces it with `IBrokeredMessageDispatcher`. The Brokered Message Router passes the message to the transport's `IMessagingInfrastructureDispatcher`, and a Brokered Message Receiver in the receiving service hands it to the matching handler.
+
+```mermaid
+flowchart LR
+    subgraph Orders["Orders service"]
+        direction TB
+        API["HTTP endpoint"] -->|"Dispatch(PlaceOrder)"| MD1["Message Dispatcher"]
+        MD1 --> CP["Command Pipeline"]
+        CP --> H1["PlaceOrderHandler"]
+        H1 -->|"context.Publish(OrderPlaced)"| ED["External Dispatcher"]
+        ED --> RT["Brokered Message Router"]
+        RT --> ID["Infrastructure dispatcher"]
+    end
+    subgraph Billing["Billing service"]
+        direction TB
+        RCV["Brokered Message Receiver"] --> MD2["Message Dispatcher"]
+        MD2 --> H2["OrderPlacedHandler"]
+    end
+    ID --> BUS[("Azure Service Bus, RabbitMQ or SQL Server Service Broker")]
+    BUS --> RCV
+    RCV -.->|"max receives exceeded"| EQ[("Error Queue")]
 ```
 
-Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus**, **RabbitMQ**, or **SQL Server Service Broker**) and, optionally, durable reliability storage (relational **Entity Framework** or document-tier **Cosmos DB**).
+- Each Brokered Message Receiver runs as a hosted service, one per message type, and applies Recovery (Retry and Circuit Breaker) while it receives.
+- A received Command passes through the receiving service's Command Pipeline; a received Event goes straight to its handlers.
+- The `[BrokeredMessage]` attribute supplies the sending path and receiving path, so handlers need not name queues or topics.
 
-## Modules
+### Inbox and Outbox flow
 
-### [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#chatter-cqrs)
-`dotnet add package Chatter.CQRS`
+With the relational tier, the Inbox record, the Outbox record and your own state change commit in one database transaction. The Outbox is dispatched only after that commit, and a redelivered message is skipped instead of handled twice.
 
-A lightweight CQRS framework that dispatches Commands, Queries, and Events to their handlers via an in-process mediator, with automatic assembly-scanning registration and an optional command behavior pipeline.
+```mermaid
+flowchart LR
+    IN[("Transport")] --> RCV["Brokered Message Receiver"]
+    RCV --> INB{"Inbox: message id already handled?"}
+    INB -->|"yes"| SKIP["Skip the handler"]
+    INB -->|"no"| H["Handler"]
+    H -->|"save state"| TX[("One transaction: state, Inbox record, Outbox record")]
+    H -->|"context.Publish"| TX
+    TX -->|"after commit"| OP["Outbox Processor"]
+    POLL["Polling Outbox Processor, optional"] -.-> OP
+    OP --> OUT[("Transport")]
+```
 
-- Commands → a single `IMessageHandler<TCommand>`; Events → fan-out to many handlers; Queries → `IQueryHandler<TQuery,TResult>`.
-- Marker-based message model (`IMessage`, `ICommand`, `IEvent`, `IQuery<T>`) with automatic handler discovery.
-- Composable cross-cutting **Command Pipeline** via `ICommandBehavior<TMessage>`.
-- Extensible per-dispatch **Message Context**.
-- Entry point: `services.AddChatterCqrs(...)`.
+- EF Core: `WithOutboxProcessingBehavior<TContext>()` and `WithInboxBehavior<TContext>()` add the behaviors and the Unit of Work to the Command Pipeline. `AddMessageBrokers(mb => mb.AddReliabilityOptions(r => r.WithOutboxPollingProcessor()))` adds a hosted poller that dispatches unprocessed Outbox records on an interval, which picks up anything a failed dispatch left behind.
+- Azure Cosmos DB: the Document Tier writes the aggregate, a Co-Resident Outbox Document and a Batched Inbox Marker in one `TransactionalBatch`, and the change-feed Outbox Relay publishes the pending Outbox Documents.
+- The Inbox and Outbox behaviors run in the Command Pipeline, so they apply to Commands.
 
-### [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#chatter-messagebrokers)
-`dotnet add package Chatter.MessageBrokers`
+## Quick start
 
-Technology-agnostic brokered messaging built on Chatter.CQRS — receiving, sending/publishing/forwarding, routing, reliability, and recovery. Requires a concrete broker implementation for the transport.
+### In-process CQRS
 
-- Single-instance background-service receiver per message type marked with `[BrokeredMessage(...)]`, dispatching to your existing CQRS handlers.
-- Unified outbound `IBrokeredMessageDispatcher` (Send / Publish / Forward) + in-memory dispatch.
-- **Inbox** (idempotent once-only handling) and **Outbox** (reliable publish) patterns.
-- **Recovery**: retry, circuit breaker, max-receives-exceeded → Error Queue, Critical Failure events.
-- **Routing Slips** for itinerary-style choreography.
-- Entry point: `IChatterBuilder.AddMessageBrokers(...)`.
+```shell
+dotnet add package Chatter.CQRS
+```
 
-### [Chatter.MessageBrokers.AzureServiceBus](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#chatter-azureservicebus)
-`dotnet add package Chatter.MessageBrokers.AzureServiceBus`
-
-The Azure Service Bus transport for Chatter.MessageBrokers — concrete senders and receivers (queues for commands, topic subscriptions for events) wired into the broker abstraction.
-
-- `AddQueueReceiver<TMessage>` (commands) and `AddTopicSubscription<TMessage>` (events), each with error-queue path and max-receive attempts.
-- Options in code or from config (`Chatter:Infrastructure:AzureServiceBus`): connection, concurrency, prefetch, retry policy.
-- ASB-aware transient-exception detection feeding the core retry/circuit-breaker recovery.
-- Entry point: `IChatterBuilder.AddAzureServiceBus(...)` (chained off `AddMessageBrokers`).
-
-### [Chatter.MessageBrokers.AzureServiceBus.Auth](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md#chatter-azureservicebus-auth)
-`dotnet add package Chatter.MessageBrokers.AzureServiceBus.Auth`
-
-Azure Active Directory token authentication for the Azure Service Bus broker — connect with AAD bearer tokens (or `DefaultAzureCredential`) instead of a connection-string shared key.
-
-- Opt-in builder extensions: client-secret, client-certificate (X509 thumbprint), and interactive auth.
-- Automatic fallback to `DefaultAzureCredential` (managed identity, env, Azure CLI) when no explicit credential is given.
-- Applied only when the connection string carries no SAS key — additive by design.
-- Entry point: `ServiceBusOptionsBuilder.UseAadTokenProviderWith...` (inside `AddAzureServiceBus`).
-
-### [Chatter.MessageBrokers.SqlServiceBroker](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md#chatter-sqlservicebroker)
-`dotnet add package Chatter.MessageBrokers.SqlServiceBroker`
-
-A SQL Server Service Broker transport for Chatter.MessageBrokers — sends and receives brokered messages over Service Broker dialogs, with no external broker dependency.
-
-- `SqlServiceBrokerReceiver`/`SqlServiceBrokerSender` over `BEGIN DIALOG` / `SEND` / `WAITFOR RECEIVE`.
-- Fluent options: connection, `WAITFOR` timeout, conversation lifetime/encryption, gzip body compression, dead-letter routing.
-- SQL-aware transient-exception predicates feeding the core retry/circuit-breaker recovery.
-- **Does not auto-provision** Service Broker objects — queues, services, contracts, and `ENABLE_BROKER` are set up manually.
-- Entry point: `IChatterBuilder.AddSqlServiceBroker(...)` (chained off `AddMessageBrokers`).
-
-### [Chatter.MessageBrokers.RabbitMQ](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/README.md#chatter-messagebrokers-rabbitmq)
-`dotnet add package Chatter.MessageBrokers.RabbitMQ`
-
-A RabbitMQ transport for Chatter.MessageBrokers — sends and receives brokered messages over RabbitMQ exchanges and queues.
-
-- `AddQueueReceiver<TMessage>` binds a message type to a queue, with an error/dead-letter queue path and `maxReceiveAttempts` (default `10`).
-- Default-exchange addressing (routing key = destination queue name), overridable with `.WithRabbitMqRouting(exchange, routingKey)`.
-- Delivery counting by queue type: **Quorum** queues read the native `x-delivery-count` (the recommended default), **Classic** queues use a header-stamped republish counter — trade-offs in the module's ADR 0001.
-- **Provisions no topology** — exchanges, queues, bindings, and dead-letter routing are created externally, mirroring the SqlServiceBroker manual-provisioning stance.
-- `TransactionMode.FullAtomicityViaInfrastructure` is rejected at startup — use the **Outbox** for transactional send.
-- Entry point: `IChatterBuilder.AddRabbitMq(...)` (chained off `AddMessageBrokers`).
-
-### [Chatter.MessageBrokers.Reliability.EntityFramework](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md#chatter-reliability-entityframework)
-`dotnet add package Chatter.MessageBrokers.Reliability.EntityFramework`
-
-EF Core implementation of the Chatter.MessageBrokers reliability ports — durable inbox, transactional outbox, and unit of work backed by your own `DbContext`, replacing the in-memory defaults.
-
-- Idempotent inbox keyed on `MessageId`; transactional outbox writing in the same DB transaction as domain state.
-- Atomic `UnitOfWork<TContext>` over EF execution strategies, exposed via `IPersistanceTransaction`.
-- Ships `IEntityTypeConfiguration` types applied in your `DbContext.OnModelCreating` — messaging tables live alongside domain tables.
-- Entry point: `CommandPipelineBuilder.WithInboxBehavior<TContext>()` / `WithOutboxProcessingBehavior<TContext>()` / `WithUnitOfWorkBehavior<TContext>()`.
-
-### [Chatter.MessageBrokers.Reliability.Cosmos](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md#chatter-reliability-cosmos)
-`dotnet add package Chatter.MessageBrokers.Reliability.Cosmos`
-
-Document-tier (NoSQL) implementation of the Chatter.MessageBrokers reliability ports, backed by Azure Cosmos DB — the stage-then-commit sibling of the relational Entity Framework tier.
-
-- Document-tier **stage-then-commit** reliability over a Cosmos `TransactionalBatch`: the framework opens the batch, the handler contributes its own aggregate writes, and the batch executes once as the single commit point.
-- Per-command **participation registry** (`WithCosmosDocumentReliability<TCommand>(...)`) with per-command database/container/lease, enabling multi-container support — unregistered commands bypass the document tier untouched.
-- Co-resident **outbox** staged atomically with the aggregate write, plus a co-resident **inbox** marker for TOCTOU-free idempotent dedup (confirmed-duplicate marker-409 fails the batch atomically).
-- **Change-feed outbox relay**: a hosted `ChangeFeedProcessor` drains co-resident pending outbox documents, publishes each through the broker at-least-once, then marks delivered with a TTL self-purge.
-- **Standalone outbox relay** (`AddCosmosOutboxRelay`): the same change-feed relay registered as its own `IHostedService`, independent of the command pipeline and repeatable per monitored container, carrying the `IOutboxBodyResolver` drain-time body-resolution seam.
-- **Standalone inbox** (`WithCosmosInbox`): a lease-less redelivery-dedup gate for a service with no aggregate write, outbox, or lease container — it skips the handler on a confirmed *completed* marker, but does not serialize genuinely-concurrent deliveries of the same id (that mutual exclusion stays the transport's responsibility).
-- Entry points: `CommandPipelineBuilder.WithCosmosDocumentReliability<TCommand>(...)` (document tier), `services.AddCosmosOutboxRelay(...)` (standalone relay), `CommandPipelineBuilder.WithCosmosInbox(...)` (standalone inbox).
-
-### [Chatter.SqlChangeFeed](https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md#chatter-sqlchangefeed)
-`dotnet add package Chatter.SqlChangeFeed`
-
-Emits strongly-typed notifications when rows in a watched SQL Server table are inserted, updated, or deleted — trigger-based via SQL Server Service Broker, no polling. (Formerly *Table Watcher*.)
-
-- Default fan-out to `RowInsertedEvent<T>` / `RowUpdatedEvent<T>` / `RowDeletedEvent<T>`, handled through `IMessageHandler<T>`.
-- Opt-in manual mode delivering the raw `ProcessChangeFeedCommand<T>` batch.
-- Selectable change types (`Insert | Update | Delete`), schema/database overrides, dead-letter and compression options.
-- Manual SQL provisioning via `UseChangeFeedSqlMigrationsAsync<T>` — re-runnable, and the repair path when the watched table's columns drift.
-- Entry point: `IChatterBuilder.AddSqlChangeFeed<TRowChangedData>(...)`.
-
-## Getting started
-
-1. Install **Chatter.CQRS** and register it: `services.AddChatterCqrs(...)`.
-2. To exchange messages across services, add **Chatter.MessageBrokers** plus a transport — **AzureServiceBus**, **RabbitMQ**, or **SqlServiceBroker**.
-3. For durable reliability, add **Reliability.EntityFramework** (relational — apply its entity configurations to your `DbContext`) or **Reliability.Cosmos** (document-tier — register a `CosmosClient` and a per-command participation entry).
-
-Each module's README (linked above) has installation, configuration, and worked examples.
-
-## Diagnostics (optional, opt-in)
-
-Chatter emits OpenTelemetry-compatible **tracing** and **metrics**, and both are **off until you opt in**. Chatter takes **no dependency on any `OpenTelemetry.*` NuGet package** — the instrumentation is built on the .NET base class library only: `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments. You choose the collector.
-
-The `ActivitySource` and the `Meter` are named **per emitting assembly** — `Chatter.CQRS` and `Chatter.MessageBrokers` — so each module can be sampled and filtered on its own. Opt in on your own OpenTelemetry provider with a prefix wildcard, or by naming both scopes exactly:
+Define a Command and its handler:
 
 ```csharp
-services.AddOpenTelemetry()
-        .WithTracing(t => t.AddSource("Chatter.*"))    // or .AddSource("Chatter.CQRS", "Chatter.MessageBrokers")
-        .WithMetrics(m => m.AddMeter("Chatter.*"));    // or .AddMeter("Chatter.CQRS", "Chatter.MessageBrokers")
+using Chatter.CQRS;
+using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
+
+public class PlaceOrder : ICommand
+{
+    public Guid OrderId { get; init; }
+    public string CustomerId { get; init; }
+}
+
+public class PlaceOrderHandler : IMessageHandler<PlaceOrder>
+{
+    public Task Handle(PlaceOrder message, IMessageHandlerContext context)
+    {
+        // Change your aggregate's state here.
+        return Task.CompletedTask;
+    }
+}
 ```
 
-**When nothing subscribes to the Chatter sources, nothing is emitted and nothing extra goes on the wire.** Each instrumented operation first checks whether Chatter's own source has a subscriber and returns before building a span name, a tag collection, or a `traceparent` header — so an application that never opts in pays no per-operation cost and its messages are byte-identical to the un-instrumented ones. The guarantee is per-operation: constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `ActivitySource`-based design.
+Register Chatter and dispatch the Command from an endpoint:
 
-A deferred send is observed on its own terms: the outbox drain publishes each row under its own send span, parented to the trace context persisted with that row, so the trace reads write → drain → receive. Propagation scope and its gaps are stated in the [Chatter.MessageBrokers README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#propagation-scope).
+```csharp
+using Chatter.CQRS;
 
-> **Telemetry attribute names are data, not compile-time API.** Chatter's broker-boundary attribute names track the pinned **OpenTelemetry semantic conventions v1.30.0**, and **may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in the affected package's CHANGELOG.
+var builder = WebApplication.CreateBuilder(args);
 
-For the exact span names, instrument names, units, and attributes, see the Diagnostics sections of the [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#diagnostics-optional-opt-in) and [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) READMEs.
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly);
 
-Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+var app = builder.Build();
+
+app.MapPost("/orders", (PlaceOrder command, IMessageDispatcher dispatcher) => dispatcher.Dispatch(command));
+
+app.Run();
+```
+
+`AddChatterCqrs` scans the assemblies you pass and registers every handler it finds. The samples use `builder.Services` and `builder.Configuration`, but any `IServiceCollection` plus `IConfiguration` works, including a `HostApplicationBuilder`.
+
+### Messaging across services
+
+```shell
+dotnet add package Chatter.MessageBrokers.AzureServiceBus
+```
+
+Mark each message with the path it is sent to and the path it is received from. Share these types between the services that send and receive them:
+
+```csharp
+using Chatter.CQRS.Commands;
+using Chatter.CQRS.Events;
+using Chatter.MessageBrokers;
+
+[BrokeredMessage(sendingPath: "orders", receivingPath: "orders")]
+public class PlaceOrder : ICommand
+{
+    public Guid OrderId { get; init; }
+    public string CustomerId { get; init; }
+}
+
+[BrokeredMessage(sendingPath: "order-events", receivingPath: "billing")]
+public class OrderPlaced : IEvent
+{
+    public Guid OrderId { get; init; }
+}
+```
+
+Register the broker and the transport in each service:
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+```json
+{
+  "ConnectionStrings": {
+    "ServiceBus": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>"
+  }
+}
+```
+
+Publish from a handler. `context.Publish` sends to the Event's sending path, here the `order-events` topic:
+
+```csharp
+using Chatter.CQRS;
+using Chatter.CQRS.Context;
+
+public class PlaceOrderHandler : IMessageHandler<PlaceOrder>
+{
+    public async Task Handle(PlaceOrder message, IMessageHandlerContext context)
+    {
+        // Change your aggregate's state here, then announce it.
+        await context.Publish(new OrderPlaced { OrderId = message.OrderId });
+    }
+}
+```
+
+The billing service handles `OrderPlaced` with an ordinary `IMessageHandler<OrderPlaced>`, received from the `billing` subscription on the `order-events` topic. To send a Command to another service from outside a handler, inject `IBrokeredMessageDispatcher` (namespace `Chatter.MessageBrokers.Sending`) and call `Send(command)`.
+
+> **Note:** `AddMessageBrokers()` starts a Brokered Message Receiver for every message type that has a receiving path in the scanned assemblies. The queues, topics and subscriptions must already exist.
+
+To change transport, replace `AddAzureServiceBus(...)` with `AddRabbitMq(...)` from [Chatter.MessageBrokers.RabbitMQ](src/Chatter.MessageBrokers.RabbitMQ/src/README.md) or `AddSqlServiceBroker(...)` from [Chatter.MessageBrokers.SqlServiceBroker](src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md). Each transport README explains how it maps sending and receiving paths onto its own entities.
+
+### Durable reliability
+
+For a relational database, install Chatter.MessageBrokers.Reliability.EntityFramework, apply its entity configurations in your `DbContext`, and add its behaviors to the Command Pipeline:
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline.WithOutboxProcessingBehavior<OrdersDbContext>()
+                            .WithInboxBehavior<OrdersDbContext>(),
+        typeof(Program))
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+The [EF Core README](src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md) covers the `DbContext` mapping and migrations. For Azure Cosmos DB, register each participating Command with `WithCosmosDocumentReliability<TCommand>(...)`; see the [Cosmos README](src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md).
+
+## Choosing packages
+
+| Scenario | Install |
+| --- | --- |
+| In-process Commands, Queries and Events only | `Chatter.CQRS` |
+| Commands and Events across services over Azure Service Bus | `Chatter.MessageBrokers.AzureServiceBus`, plus `Chatter.MessageBrokers.AzureServiceBus.Auth` for Azure AD or managed identity |
+| Commands and Events across services over RabbitMQ | `Chatter.MessageBrokers.RabbitMQ` |
+| Commands and Events across services over SQL Server Service Broker | `Chatter.MessageBrokers.SqlServiceBroker` |
+| Outbox and Inbox on a relational database | `Chatter.MessageBrokers.Reliability.EntityFramework` |
+| Outbox and Inbox on Azure Cosmos DB | `Chatter.MessageBrokers.Reliability.Cosmos` |
+| React to row changes in a SQL Server table | `Chatter.SqlChangeFeed` |
+
+Transports and reliability providers bring in Chatter.MessageBrokers and Chatter.CQRS automatically.
+
+## Diagnostics
+
+Chatter emits tracing and metrics through `System.Diagnostics.ActivitySource` and `System.Diagnostics.Metrics.Meter`. Each emitting assembly names its own scope:
+
+| Scope | Emits |
+| --- | --- |
+| `Chatter.CQRS` | In-process dispatch spans and the dispatch duration metric |
+| `Chatter.MessageBrokers` | Send and receive spans, messaging metrics and W3C trace context propagation |
+| `Chatter.MessageBrokers.Reliability.Cosmos` | Outbox Relay drain metrics |
+
+Subscribe with your own OpenTelemetry setup, by prefix or by naming each scope:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddSource("Chatter.*"))
+    .WithMetrics(m => m.AddMeter("Chatter.*"));
+```
+
+Off means off: unless your application subscribes, nothing is emitted and no `traceparent` header is written to outgoing messages.
+
+> **Important:** Broker-boundary attribute names follow the OpenTelemetry semantic conventions v1.30.0. They are data, not API: they may change in a minor release, and any change is announced in the affected package's CHANGELOG.
+
+For span names, instruments and attributes, see [Chatter.CQRS diagnostics](src/Chatter.CQRS/src/README.md#diagnostics), [Chatter.MessageBrokers diagnostics](src/Chatter.MessageBrokers/src/README.md#diagnostics), [trace context propagation](src/Chatter.MessageBrokers/src/README.md#trace-context-propagation) and [Chatter.MessageBrokers.Reliability.Cosmos diagnostics](src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md#diagnostics).
 
 ## Domain language
 
-Chatter's ubiquitous language is documented per bounded context — see [CONTEXT-MAP.md](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md) and the `CONTEXT.md` in each module directory.
+Chatter's ubiquitous language is documented per bounded context. Start at [CONTEXT-MAP.md](CONTEXT-MAP.md); each module also has its own CONTEXT.md.
 
-## Building & testing
+## Building and testing
 
-```
+Prerequisites: the .NET 10 SDK. Docker is optional; the integration tests use Testcontainers to start the Azure Service Bus emulator, RabbitMQ, the Azure Cosmos DB emulator and SQL Server.
+
+```shell
+dotnet build Chatter.sln
 dotnet test
+dotnet test --filter "Category!=Integration"
+dotnet test --filter "Category=Integration"
 ```
+
+Docker-backed tests are skipped, not failed, when Docker is unavailable.
+
+### Real Azure Service Bus namespace tests
+
+Cross-entity transaction tests run against a real namespace, because the emulator does not support them. They are skipped unless `CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING` is set to a connection string with the Manage claim:
+
+```shell
+dotnet test src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj --filter "Category=RealNamespaceIntegration"
+```
+
+In CI, the `real-namespace-integration` job in [ci.yml](.github/workflows/ci.yml) reads a repository secret of the same name and does nothing when the secret is absent.
+
+### Releases
+
+- Each package's version is the `<Version>` element in its csproj.
+- On merge to master, `.github/workflows/<module>-cicd.yml` publishes the package to NuGet when that version has no tag yet.
+- Tags are `<prefix>/vX.Y.Z`, with the prefixes `cqrs`, `messagebrokers`, `azureservicebus`, `azureservicebus-auth`, `rabbitmq`, `sqlservicebroker`, `reliability-ef`, `cosmos` and `sqlchangefeed`.
+
+## Contributing
+
+Issues and pull requests are welcome at [github.com/brenpike/Chatter/issues](https://github.com/brenpike/Chatter/issues). Design decisions are recorded in [docs/adr](docs/adr/).
+
+## License
+
+Licensed under the [MIT License](LICENSE). Copyright (c) 2020 Brennan Pike.

@@ -1,78 +1,101 @@
-# <a name="chatter-messagebrokers"></a> Chatter.MessageBrokers
+# Chatter.MessageBrokers
 
-Technology-agnostic brokered messaging for .NET, built on Chatter.CQRS.
+[![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers)
+[![Downloads](https://img.shields.io/nuget/dt/Chatter.MessageBrokers.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![CI](https://github.com/brenpike/Chatter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/brenpike/Chatter/blob/master/LICENSE)
 
-## Overview
+**Technology-agnostic brokered messaging built on Chatter.CQRS: Brokered Message Receivers, sending and publishing, routing, Inbox/Outbox reliability and Recovery.**
 
-`Chatter.MessageBrokers` adds brokered (out-of-process) messaging on top of [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md). It lets you receive messages from a broker and dispatch them to your existing `IMessageHandler<TMessage>` commands and events, and send/publish/forward messages back out — all without coupling your domain code to a specific broker technology.
+This package receives messages from a message broker and dispatches them to your existing Chatter.CQRS command and event handlers. It also sends, publishes and forwards messages back out, so your domain code never depends on a specific broker. It defines the abstractions and orchestration only; a transport package (Azure Service Bus, RabbitMQ or SQL Server Service Broker) supplies the wire. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
-The package defines the abstractions and the orchestration (receiving loop, dispatching, routing, reliability, recovery) but ships **no concrete transport**. The broker-facing interfaces (`IMessagingInfrastructureReceiver`, `IMessagingInfrastructureDispatcher`, `IBrokeredMessagePathBuilder`, etc.) are implemented by a sibling package. Pick one:
+## Contents
 
-- **Chatter.MessageBrokers.AzureServiceBus** — Azure Service Bus queues/topics.
-- **Chatter.MessageBrokers.SqlServiceBroker** — SQL Server Service Broker.
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Receiving](#receiving)
+- [Sending and publishing](#sending-and-publishing)
+- [Routing](#routing)
+- [Serialization](#serialization)
+- [Reliability](#reliability)
+- [Recovery](#recovery)
+- [Configuration](#configuration)
+- [Diagnostics](#diagnostics)
+- [Related packages](#related-packages)
+- [Learn more](#learn-more)
+- [License](#license)
 
-You register `Chatter.MessageBrokers` plus one infrastructure package, and the core wires everything together.
+## Features
+
+- **Brokered Message Receivers**: mark a command or event with `[BrokeredMessage]` and a receiver starts as a hosted background service, one per message type.
+- **Sending and publishing**: `IBrokeredMessageDispatcher` and handler-context extensions send commands and publish events without broker-specific code.
+- **Transport independence**: the same code runs over Azure Service Bus, RabbitMQ or SQL Server Service Broker, and one application can use several at once.
+- **Routing slips**: a message can carry its own itinerary of destinations and advance through it step by step.
+- **Outbox**: route outgoing messages through a store and drain it with a background poller, with dispatch backoff and an optional attempt ceiling.
+- **Inbox**: skip redelivered messages by message id so handlers run once per deduplication window.
+- **Recovery**: retry with no, constant or exponential delay, a circuit breaker, an Error Queue for messages past their receive limit, and deadlettering for poisoned bodies.
+- **Configuration binding**: every option can come from `appsettings.json`, and bad values are refused at startup with a named exception.
+- **Opt-in diagnostics**: OpenTelemetry-compatible spans and metrics plus W3C trace context propagation, with no `OpenTelemetry.*` dependency.
 
 ## Installation
 
-```bash
+```shell
 dotnet add package Chatter.MessageBrokers
 ```
 
-Then add a concrete broker, e.g.:
+Targets .NET 10 (`net10.0`).
 
-```bash
+Dependencies: Chatter.CQRS, Microsoft.Extensions.Configuration.Abstractions 10.0.0, Microsoft.Extensions.Hosting 10.0.0.
+
+This package ships no transport. Add one of these:
+
+```shell
 dotnet add package Chatter.MessageBrokers.AzureServiceBus
+dotnet add package Chatter.MessageBrokers.RabbitMQ
+dotnet add package Chatter.MessageBrokers.SqlServiceBroker
 ```
 
-## Getting Started
+For a durable Inbox and Outbox, add [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework) or [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos).
 
-### 1. Register with DI
+## Quick start
 
-`Chatter.MessageBrokers` extends the Chatter.CQRS builder. The primary entry point is `AddMessageBrokers` on `IChatterBuilder`:
+### 1. Register Chatter, the message brokers and a transport
 
 ```csharp
-using Microsoft.Extensions.DependencyInjection;
+var builder = WebApplication.CreateBuilder(args);
 
-services.AddChatterCqrs(configuration)
-        .AddMessageBrokers(options =>
-        {
-            options.WithTransactionMode(TransactionMode.ReceiveOnly);
-        })
-        // then add a concrete infrastructure, e.g.:
-        .AddAzureServiceBus(/* ... */);
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
 
-`AddMessageBrokers` scans your assemblies for message types decorated with `BrokeredMessageAttribute`, and for every type whose `receivingPath` is set it auto-registers a receiver as a hosted background service. It also registers the dispatcher, routers, recovery strategy, in-memory inbox/outbox, and the default body converters (`JsonBodyConverter`, `TextPlainBodyConverter`).
+`AddMessageBrokers` extends the `IChatterBuilder` that `AddChatterCqrs` returns. Any transport works in place of `AddAzureServiceBus`; see that transport's README. The samples use `builder.Services` and `builder.Configuration`, but any `IServiceCollection` plus `IConfiguration` works.
 
-There are several overloads to control which assemblies are scanned for receivers — by marker type, explicit `Assembly[]`, or a namespace wildcard selector:
-
-```csharp
-.AddMessageBrokers("MyApp.Messages.*", options => { /* ... */ });
-.AddMessageBrokers(options => { /* ... */ }, typeof(SomeMarkerType));
-```
-
-### 2. Mark a message
-
-Decorate a Chatter.CQRS `ICommand` or `IEvent` with `[BrokeredMessage(...)]` to map it to broker paths. Supplying `receivingPath` tells Chatter to start a receiver for that message automatically.
+### 2. Map a message to broker paths
 
 ```csharp
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers;
 
-[BrokeredMessage(sendingPath: "orders.out", receivingPath: "orders.in")]
+[BrokeredMessage(sendingPath: "orders", receivingPath: "orders")]
 public class PlaceOrder : ICommand
 {
     public Guid OrderId { get; set; }
     public string Sku { get; set; }
 }
+
+public class OrderPlaced : IEvent
+{
+    public Guid OrderId { get; set; }
+}
 ```
 
-`BrokeredMessageAttribute` also accepts `errorQueueName`, `messageDescription`, `infrastructureType`, and `deadletterQueueName`. Either `sendingPath` or `receivingPath` is required.
+Because `receivingPath` is set, `AddMessageBrokers` starts a Brokered Message Receiver for `PlaceOrder` on the `orders` queue.
 
-### 3. Handle the received message
-
-Write a normal Chatter.CQRS handler. When the message arrives on the broker, the receiver deserializes the body and dispatches it to your handler, passing an `IMessageBrokerContext` (which is an `IMessageHandlerContext`).
+### 3. Handle it and publish an event
 
 ```csharp
 using Chatter.CQRS;
@@ -82,253 +105,439 @@ public class PlaceOrderHandler : IMessageHandler<PlaceOrder>
 {
     public async Task Handle(PlaceOrder message, IMessageHandlerContext context)
     {
-        // ... do work ...
+        // save the order ...
 
-        // reply / send / publish back out over the same infrastructure:
-        await context.Publish(new OrderPlaced { OrderId = message.OrderId });
+        await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-events");
     }
 }
 ```
 
-### 4. Send / publish without a handler
+The receiver deserializes the body and dispatches it to your handler exactly as an in-process dispatch would.
 
-Inject `IBrokeredMessageDispatcher` anywhere to send commands or publish events directly:
+### 4. Send from your API
 
 ```csharp
-public class OrderApi
+using Chatter.MessageBrokers.Sending;
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("orders")]
+public class OrdersController : ControllerBase
 {
     private readonly IBrokeredMessageDispatcher _dispatcher;
-    public OrderApi(IBrokeredMessageDispatcher dispatcher) => _dispatcher = dispatcher;
 
-    public Task PlaceAsync(PlaceOrder cmd) => _dispatcher.Send(cmd);          // path from attribute
-    public Task PlaceAsync(PlaceOrder cmd, string path) => _dispatcher.Send(cmd, path);
+    public OrdersController(IBrokeredMessageDispatcher dispatcher) => _dispatcher = dispatcher;
+
+    [HttpPost]
+    public async Task<IActionResult> Place(PlaceOrder command)
+    {
+        await _dispatcher.Send(command); // destination comes from [BrokeredMessage] sendingPath
+        return Accepted();
+    }
 }
 ```
 
-## Core Concepts
+## Receiving
 
-### Brokered Message
-A message received from or sent to broker infrastructure. `OutboundBrokeredMessage` represents what you send; `InboundBrokeredMessage` represents what was received (available via `IMessageBrokerContext.BrokeredMessage`). A **Body Converter** (`IBrokeredMessageBodyConverter`, selected by `IBodyConverterFactory`) serializes/deserializes the body to/from your message type.
+### What AddMessageBrokers registers
 
-### Receiver
-`BrokeredMessageReceiver<TMessage>` (interface `IBrokeredMessageReceiver<TMessage>`) consumes messages from the infrastructure in a loop. It runs inside `BrokeredMessageReceiverBackgroundService<TMessage>`, an `IHostedService`. Each decorated, receivable message type gets **its own background service**, and only **one receiver instance per message type** runs. The loop receives a message, deserializes it, dispatches it to the handler, then acks / nacks / deadletters based on the outcome. `ReceiverOptions` carries the receiver path, error/deadletter queue paths, `TransactionMode`, infrastructure type, and `MaxReceiveAttempts` (default 10).
+`AddMessageBrokers` registers:
 
-### Dispatcher
-`IReceivedMessageDispatcher` (`ScopedReceivedMessageDispatcher`) relays a received brokered message to the matching Chatter.CQRS handler in a fresh DI scope, bridging to the CQRS message dispatcher by message type.
+- a Brokered Message Receiver for every `[BrokeredMessage]` type that sets `receivingPath`
+- `IBrokeredMessageDispatcher`, which replaces the no-op `IExternalDispatcher` from Chatter.CQRS
+- the routers, the Recovery strategy and the Error Queue action
+- an in-memory Inbox and Outbox, each a process-lifetime singleton
+- the JSON and plain-text Body Converters
 
-### Sender / Publisher / Forwarder
-`IBrokeredMessageDispatcher` is the unified outbound surface, composed of:
+It scans the assemblies you gave `AddChatterCqrs` unless you pass your own:
 
-- `IBrokeredMessageSender` — `Send<TCommand>(...)` a command to one destination.
-- `IBrokeredMessagePublisher` — `Publish<TEvent>(...)` an event (single or batch) to subscribers.
-- `IBrokeredMessageForwarder` — `Forward(...)` a received `InboundBrokeredMessage` to a new destination.
+| Overload | Receiver assemblies |
+| --- | --- |
+| `AddMessageBrokers(options => { })` | the assemblies `AddChatterCqrs` scanned |
+| `AddMessageBrokers(options => { }, typeof(PlaceOrder))` | the assemblies containing the marker types |
+| `AddMessageBrokers(options => { }, typeof(PlaceOrder).Assembly)` | the assemblies listed |
+| `AddMessageBrokers("MyCompany.Orders.*", options => { })` | assemblies matched by the namespace selector |
+| `AddMessageBrokers(options => { }, source => { })` | an `AssemblySourceFilterBuilder` you configure |
 
-The same operations are available as extension methods on `IMessageHandlerContext` (`context.Send(...)`, `context.Publish(...)`) so a handler can react over the same infrastructure that delivered the inbound message. `context.InMemory()` (`IInMemoryDispatcher`) provides in-process dispatch; it runs on the caller's own Message Context and Context Container, so a nested dispatch must be awaited before the next one starts — see [ADR-0011](https://github.com/brenpike/Chatter/blob/master/docs/adr/0011-context-container-unsynchronized-documented-not-guarded.md).
+The options delegate is optional on every overload.
 
-### Routing & Forwarding
-`IRouteBrokeredMessages` (default `BrokeredMessageRouter`) resolves destinations and routes outbound messages to the infrastructure. `ForwardingRouter` (`IForwardMessages`) handles forwarding inbound messages; `ReplyRouter` (`IReplyRouter`) handles reply-to routing. Message IDs are produced by `IMessageIdGenerator` (default `GuidIdGenerator`; `CombGuidIdGenerator` and `HashedBodyGuidGenerator` are also provided).
-
-## Serialization and wire parity
-
-The Body Converters in this module read and write brokered message bodies through one shared `System.Text.Json` configuration. Sharing a single configuration is what makes the bytes on the wire, and the tolerance applied when reading them back, a property of the module rather than of whichever call site happened to serialize.
-
-That configuration is internal to the package and is not reachable from outside it: it appears in no public signature, and an application has no handle on it to inspect or reconfigure. What is published is the capability it backs — `ChatterJson.Serialize<TValue>(TValue value)` and `ChatterJson.Deserialize<TValue>(string json)`. Call those to produce bytes this library reads back identically, and to read bytes it wrote, with the leniency described below applied:
+### The BrokeredMessage attribute
 
 ```csharp
-var json = ChatterJson.Serialize(myMessage);
-var roundTripped = ChatterJson.Deserialize<MyMessage>(json);
+[BrokeredMessage(sendingPath: "orders",
+                 receivingPath: "orders",
+                 errorQueueName: "orders-errors",
+                 messageDescription: "Place an order",
+                 infrastructureType: "",
+                 deadletterQueueName: "orders-deadletter")]
+public class PlaceOrder : ICommand { /* ... */ }
 ```
 
-`Serialize` writes the members of the type you DECLARE rather than those of the runtime type, so a base-typed variable holding a derived instance writes the base's members only.
+| Parameter | Description |
+| --- | --- |
+| `sendingPath` | Destination used when you send or publish without naming one. |
+| `receivingPath` | When set, a receiver starts for this type on this path. |
+| `errorQueueName` | Where a message goes once it exceeds its receive limit. |
+| `messageDescription` | Free-text description of the message. |
+| `infrastructureType` | Which transport the receiver uses. Empty means the default transport. |
+| `deadletterQueueName` | Deadletter destination, for transports that use one. |
 
-To CHANGE the format rather than match it, supply your own Body Converter: an `IBrokeredMessageBodyConverter`, selected by `IBodyConverterFactory` on the brokered message's content type, carries its own `JsonSerializerOptions` — see [Brokered Message](#brokered-message). That is the seam for a different wire format; the two methods above are the seam for this one.
+You must supply `sendingPath` or `receivingPath`; the attribute throws `ArgumentException` when both are blank.
 
-### Enum and boolean reading is deliberately lenient
+### How a receiver runs
 
-Reading is more permissive than `System.Text.Json`'s own defaults, on purpose. The shared configuration restores read-parity with `Newtonsoft.Json`, which earlier versions of Chatter serialized with, so that a body written by one version of an application still deserializes in another. During a rolling deploy both versions are on the queue at the same time, and a message must not become undeliverable merely because the two ends disagree about how tolerant a reader ought to be.
+Each receiver runs inside its own `IHostedService`, and only one receiver instance runs per message type. For each delivery it deserializes the body, dispatches to your handler in a fresh DI scope under Recovery, then settles the delivery. A handler that completes acknowledges the message. A failing handler leaves the message for redelivery until its delivery count reaches `MaxReceiveAttempts`, and then it is deadlettered and sent to the Error Queue (see [Recovery](#recovery)).
 
-Writing is not lenient and is unchanged: an enum is written as its numeric value and a boolean as a bare `true` / `false` token, byte-identical to what both `Newtonsoft.Json` and the `System.Text.Json` defaults produce.
+Every receiver carries `ReceiverOptions`:
 
-For a property typed as an enum, all of these are accepted on read:
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `MaxReceiveAttempts` | `int` | `10` | Deliveries allowed before the message is deadlettered and sent to the Error Queue. |
+| `MaxConcurrentCalls` | `int` | `1` | Deliveries handled at once. A value below `1` fails when the receiver starts. |
+| `TransactionMode` | `TransactionMode?` | — | Unset means the `MessageBrokerOptions.TransactionMode` value applies. |
+
+`TransactionMode` is one of `None`, `ReceiveOnly` (the default) or `FullAtomicityViaInfrastructure`. Transport packages expose further receiver tuning, such as concurrency; see each transport's README.
+
+### Registering a receiver without the attribute
+
+Register a receiver in code when the message type lives in an assembly you cannot decorate, or when you need a different receive limit:
+
+```csharp
+using Chatter.MessageBrokers.Receiving;
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options
+        .AddReceiver<PlaceOrder>("orders",
+                                 errorQueuePath: "orders-errors",
+                                 transactionMode: TransactionMode.ReceiveOnly,
+                                 maxReceiveAttempts: 5));
+```
+
+`AddReceiver<TMessage>` also accepts `description`, `senderPath`, `infrastructureType` and `deadletterQueuePath`. It throws `InvalidOperationException` if the type already carries `[BrokeredMessage]`, because that type's receiver is already registered.
+
+### Reading the inbound message
+
+Inside a handler invoked by a receiver, the context is an `IMessageBrokerContext`:
+
+```csharp
+using Chatter.CQRS.Context;
+
+var inbound = context.GetInboundBrokeredMessage();      // null outside a received message
+var messageId = inbound?.MessageId;
+var correlationId = inbound?.CorrelationId;
+var transaction = context.GetTransactionContext();
+```
+
+## Sending and publishing
+
+`IBrokeredMessageDispatcher` is the single outbound surface. It combines `IBrokeredMessageSender` (`Send` a command), `IBrokeredMessagePublisher` (`Publish` one event or a batch) and `IBrokeredMessageForwarder` (`Forward` a received message to a new destination). Inject it anywhere:
+
+```csharp
+await dispatcher.Send(new PlaceOrder { OrderId = id });                 // path from [BrokeredMessage]
+await dispatcher.Send(new PlaceOrder { OrderId = id }, "orders-priority");
+await dispatcher.Publish(new OrderPlaced { OrderId = id }, "order-events");
+await dispatcher.Publish(new[] { firstEvent, secondEvent });           // batch: each path from [BrokeredMessage]
+```
+
+Without a destination, the message type's `sendingPath` is used; if there is none, the call throws `ArgumentNullException`. A batch publish always takes each message's path from its attribute.
+
+### From a handler
+
+Handlers use extensions on `IMessageHandlerContext` (namespace `Chatter.CQRS.Context`). They send over the same transaction context as the delivery being handled:
+
+```csharp
+await context.Send(new ChargePayment { OrderId = message.OrderId }, "payments");
+await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-events");
+await context.InMemory().Dispatch(new ReserveStock { OrderId = message.OrderId });
+```
+
+`context.Send` and `context.Publish` do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next.
+
+### Send options
+
+```csharp
+using Chatter.MessageBrokers.Routing.Options;
+
+var options = new SendOptions { MessageId = order.Id.ToString() }
+    .WithSubject("place-order")
+    .WithGroupId(order.CustomerId.ToString())
+    .WithTimeToLiveInMinutes(30);
+options.SetCorrelationId(correlationId);
+options.SetReplyToAddress("order-replies");
+options.WithMessageContext("tenant", tenantId);
+
+await dispatcher.Send(command, options: options);
+```
+
+| Method | Description |
+| --- | --- |
+| `MessageId` | Sets the message id. When unset, the registered message id generator creates one. |
+| `ContentType` | Selects the Body Converter. Defaults to `application/json`. |
+| `SetCorrelationId(string)` | Sets the correlation id carried with the message. |
+| `WithSubject(string)` | Sets the subject (`SendOptions` only). |
+| `WithGroupId(string)` | Sets the group id, used for sessions where the transport supports them (`SendOptions` only). |
+| `WithTimeToLiveInMinutes(int)` | Sets a time to live (`SendOptions` only). |
+| `SetReplyToAddress(string)` / `SetReplyToGroupId(string)` | Sets reply routing (`SendOptions` only). |
+| `WithMessageContext(string, object)` | Adds a custom Message Context entry. |
+| `UseMessagingInfrastructure(Func<InfrastructureTypes, string>)` | Chooses the transport for this send. |
+
+`PublishOptions` supports the shared members (`MessageId`, `ContentType`, `SetCorrelationId`, `WithMessageContext`, `UseMessagingInfrastructure`).
+
+### Choosing a transport
+
+With more than one transport registered, the first one registered is the default. Pick another per send:
+
+```csharp
+var options = new SendOptions();
+options.UseMessagingInfrastructure(t => t.RabbitMq());
+await dispatcher.Send(command, "billing", options: options);
+```
+
+Each transport package adds an extension on `InfrastructureTypes`: `AzureServiceBus()`, `RabbitMq()` or `SqlServiceBroker()`. Inside a handler, `context.AzureServiceBus()`, `context.RabbitMq()` and `context.SqlServiceBroker()` return the context bound to that transport. They return null outside a handler invoked by a Brokered Message Receiver.
+
+### Message ids
+
+The default generator creates a random GUID. Choose another on the options builder:
+
+```csharp
+using Chatter.MessageBrokers.Configuration;
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options.UseHashedBodyGuidMessageIdGenerator());
+```
+
+| Method | Description |
+| --- | --- |
+| `UseGuidMessageIdGenerator()` | A random GUID (the default). |
+| `UseCombGuidMessageIdGenerator()` | A sequential "comb" GUID, which indexes well in relational stores. |
+| `UseHashedBodyGuidMessageIdGenerator()` | A GUID derived from a SHA-256 hash of the body, so identical bodies get the same id. |
+
+## Routing
+
+### Routing slips
+
+A Routing Slip is an itinerary the message carries with it. Each step is a receiving path. The service at each step receives the same command, runs its handler, and then `RoutingSlipBehavior` sends the command on to the next step.
+
+Add the behavior to the Command Pipeline in every service on the route:
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration,
+                                pipeline => pipeline.WithRoutingSlipBehavior(),
+                                typeof(Program))
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+Build a slip and send the command to its first step:
+
+```csharp
+using Chatter.MessageBrokers.Routing.Slips;
+
+var slip = RoutingSlipBuilder.NewRoutingSlip(Guid.NewGuid())
+    .WithRoute("validate-order")
+    .WithRoute("charge-payment")
+    .WithRoute("ship-order")
+    .Build();
+
+await dispatcher.Send(new PlaceOrder { OrderId = id }, slip);
+```
+
+Inside a handler, `context.Send(command, slip)` does the same, `context.Forward(slip)` forwards the inbound message to the slip's next step, and `context.TryGetRoutingSlip(out var slip)` reads the slip and its `Attachments`. `SendOptions.WithRoutingSlip(slip)` attaches a slip to options you already have.
+
+### Forwarding and replies
+
+`Forward` re-sends a received message to a new destination unchanged; forwarding is a specialization of routing. `SetReplyToAddress` and `SetReplyToGroupId` carry reply routing with a message. On the receiving side, `IReplyRouter` routes a reply for an inbound message over the transport that message arrived on.
+
+## Serialization
+
+Body Converters read and write message bodies. JSON bodies use one shared `System.Text.Json` configuration inside this package. To produce bytes the library reads back identically, or to read bytes it wrote, use `ChatterJson`:
+
+```csharp
+using Chatter.MessageBrokers;
+
+string json = ChatterJson.Serialize(new PlaceOrder { OrderId = id, Sku = "ABC-1" });
+PlaceOrder roundTripped = ChatterJson.Deserialize<PlaceOrder>(json);
+```
+
+`Serialize` writes the members of the type you declare, not the runtime type, so a base-typed variable holding a derived instance writes the base members only. The shared configuration itself is not public. To use a different wire format, implement `IBrokeredMessageBodyConverter` with its own `JsonSerializerOptions`; `IBodyConverterFactory` selects it by content type.
+
+### Lenient reading of enums and booleans
+
+Reading is deliberately as tolerant as Newtonsoft.Json, so two versions of an application can share a queue during a rolling deploy. Writing is strict: an enum is written as its number and a boolean as a bare `true` / `false`.
+
+For an enum-typed property, all of these read:
 
 | JSON value | Read as |
 | --- | --- |
 | `{"Status":1}` | the member whose value is `1` |
 | `{"Status":"Booked"}` | the member named `Booked` |
-| `{"Status":"booked"}` | the same member — names are matched case-insensitively |
-| `{"Status":999}` | `999`, whether or not a member is declared with that value |
+| `{"Status":"booked"}` | the same member; names match case-insensitively |
+| `{"Status":999}` | `999`, whether or not a member has that value |
 | `{"Status":"999"}` | the same, quoted as a string |
 | `{"Status":"-1"}` | `-1`, for an enum with a signed underlying type |
-| `{"Status":"Booked,Cancelled"}` | both members combined — Newtonsoft's comma syntax, accepted whether or not the enum is `[Flags]` |
+| `{"Status":"Booked,Cancelled"}` | both members combined, whether or not the enum is `[Flags]` |
 
-A string that names no declared member and is not a number — `{"Status":"NotARealStatus"}` — is a genuine error and throws `JsonException`.
+A string that names no member and is not a number, such as `{"Status":"NotARealStatus"}`, throws `JsonException`.
 
-For a property typed `bool` or `bool?`, all of these are accepted on read:
+For a `bool` or `bool?` property, all of these read:
 
 | JSON value | Read as |
 | --- | --- |
 | `{"Enabled":true}` | `true` |
-| `{"Enabled":"true"}` | `true`, quoted — matched case-insensitively, so `"TRUE"` and `"False"` read too |
-| `{"Enabled":" true "}` | `true` — surrounding whitespace is trimmed |
+| `{"Enabled":"true"}` | `true`; case-insensitive, so `"TRUE"` and `"False"` read too |
+| `{"Enabled":" true "}` | `true`; surrounding whitespace is trimmed |
 | `{"Enabled":"1"}` / `{"Enabled":"0"}` | `true` / `false` |
 | `{"Enabled":1}` / `{"Enabled":0}` | `true` / `false`, as bare numbers |
 
-A `bool?` reads JSON `null` as `null`. Any other quoted value — `{"Enabled":"notabool"}` — throws `JsonException`.
+A `bool?` reads JSON `null` as `null`. Any other quoted value, such as `{"Enabled":"notabool"}`, throws `JsonException`.
 
-Each row above is pinned by a test: `WhenSerializing` and `WhenLenientlyReadingEnumsAndBooleans` under `tests/Serialization/UsingChatterJson`, and `WhenConverting` under `tests/UsingJsonBodyConverter`.
-
-### Deserialization does not validate enum membership
-
-Note the `{"Status":999}` row. Deserialization is a wire-format concern and applies no domain rule, so an undefined numeric value round-trips straight into the enum-typed property and the value you are handed names no declared member.
-
-**A message handler must validate enum membership itself.** Do not assume a deserialized enum value is one of the members you declared; check it — with `Enum.IsDefined`, or with a guard on the domain type the value feeds — before branching on it. The handler is the only thing that knows what an unrecognised value means for its own work: whether it came from a newer version and should be deadlettered, or whether it can be safely ignored.
-
-### The leniency is intentional and will not be tightened
-
-None of the above is an oversight awaiting a fix, and none of it will be narrowed. Tightening a read — rejecting an undefined enum value, say, or refusing a quoted boolean — would make a message written by one version undeserializable by another, which is exactly the rolling-deploy break the parity exists to prevent. The rejection would also land on the receiving side, turning a producer's wire change into a poison message on a queue the producer does not own.
+> **Important:** Deserialization does not validate enum membership. `{"Status":999}` reaches your handler as an undefined value, so check it with `Enum.IsDefined` or a domain guard before branching on it. This leniency is intentional and will not be tightened, because a stricter read would turn one version's message into a poison message for another.
 
 ## Reliability
 
+Two stores make brokered messaging reliable. The **Outbox** records outgoing messages so they are published alongside your local state change. The **Inbox** records received message ids so a redelivery is skipped. This package ships in-memory versions of both, registered as process-lifetime singletons, for development and single-node hosts.
+
+For durable stores, use [Chatter.MessageBrokers.Reliability.EntityFramework](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md) or [Chatter.MessageBrokers.Reliability.Cosmos](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md).
+
 ### Outbox
-The Outbox pattern records outgoing messages so they can be published reliably alongside local state changes. Enable it via `AddReliabilityOptions`:
+
+Route sends through the Outbox and drain it with the background poller:
 
 ```csharp
-.AddMessageBrokers(options =>
-{
-    options.AddReliabilityOptions(r => r
-        .WithOutboxRouting()                 // route outbound messages through the outbox
-        .WithOutboxPollingProcessor(5000)    // BrokeredMessageOutboxProcessor drains it every 5s
-        .WithOutboxPollBatchSize(100));      // at most 100 messages per poll (the default)
-});
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options
+        .AddReliabilityOptions(r => r
+            .WithOutboxRouting()                  // Send and Publish write to the Outbox
+            .WithOutboxPollingProcessor(5000)     // drain every 5 seconds
+            .WithOutboxPollBatchSize(100)         // at most 100 messages per poll
+            .WithOutboxDispatchBackoff(5, 60)     // wait 5 s after a failed publish, doubling to 60 s
+            .WithOutboxMaxDispatchAttempts(20)))  // stop after 20 failed publishes
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
 
-`WithOutboxRouting()` swaps `IRouteBrokeredMessages` for `OutboxBrokeredMessageRouter`. `WithOutboxPollingProcessor(...)` registers `BrokeredMessageOutboxProcessor` (an `IHostedService`). `WithOutboxPollBatchSize(...)` sets `ReliabilityOptions.OutboxPollBatchSize`, the most messages a single poll takes; it defaults to `100` and a value below `1` is refused while the options are being built. The default store is `InMemoryBrokeredMessageOutbox`; `WithInMemoryOutboxTimeToLive(minutes)` controls its retention.
+`WithOutboxRouting()` makes `Send` and `Publish` write to the Outbox instead of the broker. `WithOutboxPollingProcessor(...)` registers the background poller that publishes from the Outbox. `WithInMemoryOutboxTimeToLive(minutes)` sets how long the in-memory Outbox keeps rows it has already published.
 
-The shipped in-memory outbox and inbox are registered as process-lifetime singletons, not per DI scope. A receiver's `ScopedReceivedMessageDispatcher` opens a fresh scope for every delivery, so a per-scope instance would start every poll and every delivery with an empty store: the outbox would never have anything to drain and the inbox would deduplicate nothing. `MinutesToLiveInMemory` is unchanged in what it means — it is still the outbox's cleanup of already-processed rows — but that cleanup now runs across polls instead of being discarded with the scope it used to live in. One consequence worth calling out: `SendToOutbox` throwing `InvalidOperationException` for a repeated `MessageId` is now reachable in practice, because the store the second call sees is the same store the first call wrote into, rather than a fresh empty one.
+**Draining.** A poll takes at most `OutboxPollBatchSize` messages that are due, oldest first. After a full batch the poller polls again right away; after a shorter batch it waits the polling interval. A drain also stops when a poll returns no message it has not already seen, or after it has seen 10,000 messages; the next interval picks up the rest.
 
-#### Draining: a bounded poll, repeated until the backlog is gone
+**Backoff and giving up.** A failed publish leaves the message in the Outbox and schedules its next attempt one backoff ahead: 5 s, then 10 s, 20 s and so on up to 60 s. The backoff always applies. No attempt ceiling applies unless you set `OutboxMaxDispatchAttempts`; with it set, a message that has failed that many times is skipped by every later poll and stays in the store.
 
-A single poll takes one **Outbox Poll Batch** — at most `OutboxPollBatchSize` unprocessed messages that are **due**, oldest `SentToOutboxAtUtc` first — so the cost of a poll is bounded by that number rather than by the size of the backlog. On its own a bounded poll is just a throttle: at the defaults it would ship 100 messages every 5000 ms no matter how far behind the outbox was. So the poller **re-polls immediately after a batch of the full size** and waits `OutboxProcessingIntervalInMilliseconds` only after a shorter one, which lets a backlog larger than the batch size leave in one interval instead of one batch per interval (`MustRepollImmediatelyAfterAFullOutboxPollBatchAndStopAfterAShortOne`). An empty first batch is a short batch, so an idle outbox polls once and waits (`MustNotRepollWhenTheFirstOutboxPollBatchIsEmpty`). Each poll opens its **own DI scope**, so draining a large backlog does not accumulate every row of every batch in one store instance.
+**Delivery is at-least-once.** A publish that succeeds followed by a failure to mark the row can publish the same message twice. Put handlers that are not naturally idempotent behind the Inbox. The in-memory Outbox throws `InvalidOperationException` if you add a message whose `MessageId` it already holds.
 
-A full batch carrying **no message the drain has not already seen** also ends the drain and falls through to the interval wait. `OutboxProcessor.Process` logs and swallows every dispatch failure, so a batch of exactly the batch size that cannot be dispatched is re-fetched on the next poll; without this no-progress guard it would spin against the store forever and never reach the wait. A message is recognised by its `(Id, MessageId)` pair — the message id is part of the key because `InMemoryBrokeredMessageOutbox` never assigns an `Id`, so an `Id`-only key would end every one of its drains on the second poll and cap the in-memory outbox at one batch per interval. The seen set spans the whole drain rather than just the poll before, and it is keyed on identity rather than on position, so the same poison batch still ends the drain when it comes back unchanged (`MustStopRepollingWhenAFullOutboxPollBatchRepeatsUnchanged`), when it comes back reversed (`MustStopRepollingWhenAFullOutboxPollBatchRepeatsInADifferentOrder`), and when consecutive polls return different subsets of rows sharing one `SentToOutboxAtUtc` (`MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage`). That set is bounded in turn: a drain that has seen 10,000 distinct messages ends and takes the interval (`MustEndTheDrainOnceTheDrainIdentityCeilingIsReached`), which says the pass has run long enough — **not** that the store made no progress — and the rest of the backlog is taken by the next poll. The drain also honours the stopping token between polls (`MustStopDrainingWhenCancellationIsRequestedMidDrain`).
+**Several hosts draining one Outbox.** Before publishing a row, a drain claims it by moving the row's next-attempt time forward, and publishes only if the claim succeeds. Over a relational store the claim is part of the publishing transaction, so a second drain waits on that row's lock and then publishes nothing. A publish slower than the `DbContext` command timeout (30 seconds by the provider default) makes the waiting drain give up and defer the row. Over the in-memory store the claim lasts one backoff, so a publish longer than one backoff can be duplicated, never lost.
 
-`IPollableOutboxStore.GetUnprocessedMessagesFromOutbox` documents all three clauses of that contract — the cap, the ordering and the due gate — and `InMemoryBrokeredMessageOutbox` honours them, ordering before capping (`MustReturnNoMoreMessagesThanTheOutboxPollBatchSize`, `MustReturnOldestSentToOutboxMessagesFirst`) and gating before both (`MustSpendNoBatchSlotOnAMessageThatIsNotDue`). **A custom store is asked for all three, not held to them.** The no-progress guard rests on none of them: it recognises a re-fetched message by its `(Id, MessageId)` pair, so a store that caps without ordering cannot defeat the guard, though it can still starve an old row behind newer ones. What the guard does need is that a row keep the same identity across fetches — a store minting a fresh `Id` every time it fetches the same row makes every poll look like progress, and a poison batch then runs the drain up to its identity ceiling instead of ending it on the following poll. A store that answers with more rows than the cap counts as a full batch — still drained, still terminating — but without the bound on poll cost the cap exists for. `GetUnprocessedBatch(batchId)` is a lookup by batch id and is not an Outbox Poll Batch: it is neither capped, ordered nor due-gated by this contract (`MustLeaveTheBatchQueryUngatedByDuenessAndAttempts`). `RecordDispatchAttempt` is the writer the due gate reads, and it is a default interface implementation that records nothing, so a store written against the previous shape of the interface still compiles and still satisfies the cast at the poll site (`OutboxCustomPrimaryImplementingBoth_RecordDispatchAttemptDefaultsToANoOp`) — such a store keeps the pre-existing behaviour, its rows staying at zero attempts and due now.
+#### Implementing a custom outbox store
 
-On each poll, the drain dispatches the message to broker infrastructure first and only stamps the row's processed date once that publish has returned. A dispatch that does not succeed spends one attempt on the row and schedules the next one a backoff ahead: `OutboxDispatchBackoffBaseInSeconds` (default `5`) on the first failure, doubling with each further one and stopping at `OutboxDispatchBackoffCapInSeconds` (default `60`), so the waits run 5s, 10s, 20s. The wait is derived from `OutboxMessage.DispatchAttempts` rather than stored in a column of its own (`MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries`, `MustScheduleTheNextAttemptOneBackoffAhead`). The backoff is **not opt-in** — it applies to every host. Giving up is: a row is abandoned only once `OutboxMaxDispatchAttempts` is configured, and that setting is null, and therefore **disabled**, by default, so a message whose dispatch keeps failing is re-attempted for good unless an operator asks otherwise (`MustAcceptAnOmittedOutboxMaxDispatchAttempts`).
+Register one type as `IBrokeredMessageOutbox` before calling `AddMessageBrokers`. The poller casts that same instance to `IPollableOutboxStore`, so the type must implement both, or the poll fails with `InvalidCastException`. `GetUnprocessedMessagesFromOutbox` should return at most `OutboxPollBatchSize` due messages, oldest `SentToOutboxAtUtc` first.
 
-Delivery is **at-least-once, not exactly-once**: a publish that throws leaves the row unprocessed so a later poll retries it once its backoff has elapsed, and a publish that succeeds followed by a mark/commit failure can dispatch the same message a second time. A handler that is not naturally idempotent should sit behind the Inbox on the receiving side to absorb that duplicate.
-
-#### Arbitration: a drain claims the row before it publishes it
-
-Two hosts polling one outbox can select the same row. So a drain **claims** the row it is about to publish, before it publishes it, and publishes only if the claim is granted. The claim is a compare-and-set on the row's own `NextAttemptAtUtc`: the drain moves it from the instant its poll reported to an instant one backoff ahead — the instant a failed attempt would have been scheduled by — and a second drain comparing against the instant *it* was told no longer matches. **No column is added, there is no schema change and there is no migration**: this is the column the dispatch backoff above already writes.
-
-The claim is taken as the first statement inside the unit of work that carries the publish, and that position is what makes it hold. Over a relational store the claim is scoped to that transaction, so a second drain's claim **blocks on the row's lock for the whole of the winner's publish** and then matches nothing once the winner commits — it publishes nothing and the row costs it no dispatch attempt. Where the winner rolls back instead, the waiting claim is granted and that drain publishes. Only the raced row is locked: a drain blocked on one row leaves every other row claimable while it waits. Measured against a real SQL Server by `MustMakeASecondDrainsClaimWaitOnTheWinningDrainsRowLock`, `MustDenyTheWaitingDrainsClaimOnceTheWinningDrainCommits`, `MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack` and `MustLeaveADifferentRowClaimableWhileADrainIsBlockedOnTheRacedRow`.
-
-A denied drain **returns**: it publishes nothing, stamps nothing and spends no dispatch attempt (`MustDispatchNothingWhenTheDrainClaimIsDenied`, `MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied`). A drain that dies mid-publish needs no cleanup, and there is **no lease to expire and no reaper to run** — but what that leaves behind differs by store. Over a relational store the drain's transaction rolls back and the row is claimable again at once, so a drain already waiting on it is granted the claim and publishes the message (`MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack`). Over the in-memory store there is no transaction to roll back: the claim stands, the row's next attempt sits one backoff ahead and a poll passes the row over until that instant, so it comes back through the ordinary due gate exactly as it would after a failed attempt (`MustLeaveAClaimedMessageDueAgainOneBackoffLater`).
-
-**Two things to know operationally.** A drain now holds a brief exclusive lock on the one row it is publishing, for as long as that publish takes. A publish slower than the `DbContext` command timeout — 30 seconds by the provider's default, not a figure this package sets — makes the waiting drain's claim statement throw; that drain then spends a dispatch attempt and defers the row, which is the outcome you want, since the winner is publishing it. **This adds no setting**: nothing here is configurable.
-
-**The in-memory store arbitrates on different terms, and its window is one backoff.** It has no transaction to enlist in, so its claim takes effect immediately and expires by itself once the claimed instant passes. Two concurrent in-process drains of one row therefore publish it exactly once and the loser walks away instead of blocking (`MustDispatchTheRacedRowExactlyOnce`, `MustCostTheRowNothingWhenTheDrainLosesTheRace`). But a publish that runs **longer than one backoff** leaves the row due again while the winner is still publishing, so a third drain can claim and publish it. That is a duplicate dispatch, never a lost message, inside a window strictly narrower than the always-open one that preceded it — and the Inbox is still the answer for a handler that is not naturally idempotent.
-
-**A custom store is asked to arbitrate, not held to it.** `IPollableOutboxStore.TryClaimForDispatch` is a default interface implementation that **grants**, so a store written against the previous shape of the interface still compiles, still satisfies the cast at the poll site, and behaves exactly as it does today (`OutboxCustomPrimaryImplementingBoth_TryClaimForDispatchGrantsByDefault`). What such a store forgoes is the arbitration itself: each of its drains is told it won, and nothing then holds two of them off one message. Nothing inspects what a store answers, as with the poll contract above.
-
-The decision, the measurements behind it and what it deliberately does not close are recorded in [ADR-0035](https://github.com/brenpike/Chatter/blob/master/docs/adr/0035-the-outbox-drain-claims-the-row-it-is-about-to-publish-inside-the-transaction-that-publishes-it.md).
+`RecordDispatchAttempt` and `TryClaimForDispatch` have default implementations that record nothing and always grant the claim; implement them to get backoff and claim arbitration. Each row must keep the same identity across fetches, or the poller cannot tell a re-fetched row from new work.
 
 ### Inbox
-The Inbox pattern records received messages to enforce idempotent, once-only handling (`IBrokeredMessageInbox`, default `InMemoryBrokeredMessageInbox`, applied via `InboxBehavior`).
 
-The inbox reserves the message id before invoking the handler, not after the handler completes. A concurrent delivery that arrives for the same message id while the first delivery is still in flight finds the id already reserved: it is skipped without the handler being invoked and without throwing. If the handler throws, the reservation is released so a retry re-invokes the handler for that id. Because the reservation exists for the whole time the handler is running, `HasBeenReceived` reports `true` for a message id that is still in flight, not only for one whose handler has already completed.
+Add `InboxBehavior<>` to the Command Pipeline to deduplicate received commands:
 
-A reservation is leased for the deduplication window described below, exactly as a completed receipt is remembered for it: an id is remembered for the window, and a reservation is honoured for the window. A handler that has not returned by the time the lease elapses therefore holds its id for the window and no longer. Once that long has passed, the reservation is abandoned, and from then on it is treated like any other entry the window has released: a redelivery of that id is handled again, `HasBeenReceived` reports `false` for it, and the periodic sweep and the entry cap may both reclaim it. Inside the window nothing changes — a delivery that finds a reservation the window still honours is skipped immediately, and never waits for the reservation's owner or takes the delivery over from it.
+```csharp
+using Chatter.MessageBrokers.Reliability.Inbox;
 
-**The lease does not distinguish a dead handler from a slow one.** The inbox has no way to tell whether a handler that has not returned has hung or is simply still working, so it pre-empts both identically: a merely SLOW but perfectly live handler loses its reservation the moment the lease elapses. A redelivery arriving after that point is handled again, so a **second handler runs concurrently with the first**. When the first one finally completes, its completion stamp is silently discarded — the conditional update it makes no longer matches the reservation it took, which is deliberate, since that reservation belongs to whatever took its place. Nothing is logged for that discarded completion. **A handler that can run longer than the deduplication window must therefore be idempotent, and the window should be sized above the slowest handler expected to run behind the inbox.** Pinned by `MustNeverHoldAnInFlightReservationBeyondTheWindowUnderEveryConfigurableWindow`.
+builder.Services.AddChatterCqrs(builder.Configuration,
+                                pipeline => pipeline.WithBehavior(typeof(InboxBehavior<>)),
+                                typeof(Program))
+    .AddMessageBrokers(options => options
+        .AddReliabilityOptions(r => r
+            .WithInMemoryInboxDeduplicationWindow(60)   // minutes
+            .WithInMemoryInboxMaxEntries(200000)));
+```
 
-Like the outbox, the shipped in-memory inbox is a process-lifetime singleton, so a received message id is remembered across scopes rather than only for the delivery that received it. Being process-lifetime, it needs its own retention policy so it doesn't grow without bound:
+The Inbox reserves the message id before your handler runs. A concurrent delivery of the same id is skipped without running the handler and without throwing. If the handler throws, the reservation is released so a retry runs the handler again.
 
-- **`InMemoryInboxDeduplicationWindowInMinutes`** (default `60`) is the deduplication window and the PRIMARY guarantee. After a receipt completes, a redelivery of the same message id is skipped for this long; once the window has elapsed, that id is handled again. The same window is the lease on an in-flight reservation, so it is also how long a handler that has not returned holds its id. **It is mandatory and must be at least `1` minute; anything below that is refused while the options are being built.** The window is the store's only reclamation rule — nothing else releases an entry, and the cap below never takes a reservation the window still honours — so a window that could be switched off would leave an entry the store had no way to remove.
-- **`InMemoryInboxMaxEntries`** (default `200000`) is an out-of-memory safety valve, not the deduplication guarantee. It is refused below `1`. When the store reaches the cap it first reclaims everything the window has already released — completed receipts past their window, and reservations past their lease — and only then evicts entries the window still owes; if it evicts anything still inside its window, it logs a warning exactly once per store, because the advertised window is no longer being honoured under that load. The one entry the cap will never take is a reservation the window still honours, so the cap bounds memory without cancelling a handler that is still running inside the window it was promised. If every entry holds such a reservation, the store grows past the cap rather than blocking or throwing — and because the window is always positive, that growth is bounded in time unconditionally: every one of those reservations becomes reclaimable once its lease elapses, and the store returns to its cap on the next receipt. Pinned by `MustReturnToItsCapOnceTheWindowElapsesForTheEntriesThatGrewPastIt`.
-- `HasBeenReceived` reports `true` for a reservation the window still honours and for a completed receipt still inside the window, and `false` once the window has elapsed for either of them.
+The in-memory Inbox has two settings:
 
-Expiry is decided on contact, not by the periodic sweep: a receipt that has passed its window is already treated as expired — a redelivery of its id is handled again and `HasBeenReceived` returns `false` for it — even before the next sweep has run. The sweep only reclaims the memory such receipts hold; it is not what makes them expire.
+- **Deduplication window** (`InMemoryInboxDeduplicationWindowInMinutes`, default `60`, minimum `1`). After a message completes, a redelivery of its id is skipped for this long. The window is also the lease on an in-flight reservation, so a handler still running when the window ends loses its reservation and a redelivery can run concurrently. A handler that can run longer than the window must be idempotent; size the window above your slowest handler.
+- **Maximum entries** (`InMemoryInboxMaxEntries`, default `200000`, minimum `1`). This is a memory safety valve, not the deduplication guarantee. At the cap the store first drops entries whose window has ended, and only then entries still inside their window, logging a warning once when it does so. It never drops a reservation for a handler still inside its window.
 
-Because the store is process-lifetime, sizing the window and the cap together matters: a rough estimate is that a retained entry costs on the order of 200 bytes, so the cap should stay comfortably above `deduplication window × peak receipt rate`. At the defaults — a 60-minute window and a cap of 200,000 — that bounds sustained throughput to roughly 55 receipts per second before the cap starts truncating the window, and holds the store at an estimated ~40 MB at full occupancy. Raise `InMemoryInboxMaxEntries` (or shorten `InMemoryInboxDeduplicationWindowInMinutes`) for a workload that runs hotter than that.
-
-> **Persistence note:** the in-memory inbox/outbox are for development and single-node scenarios. Durable, transactional EF-backed implementations of `IBrokeredMessageInbox` / `IBrokeredMessageOutbox` (plus `IUnitOfWork` / `IPersistanceTransaction`) live in a sibling EntityFrameworkCore reliability package.
+An entry costs roughly 200 bytes, so keep the cap above deduplication window multiplied by peak receive rate. The defaults hold about 55 receipts per second for 60 minutes in roughly 40 MB. Expiry is decided when an id is looked up, not by the periodic sweep, which only reclaims memory.
 
 ## Recovery
 
-Receiving is wrapped by an `IRecoveryStrategy` — the default `RetryWithCircuitBreakerStrategy` combines Retry and Circuit Breaker. Configure it with `AddRecoveryOptions`:
+Recovery wraps receiving with retry and a circuit breaker, and decides what happens to a message that keeps failing. A common setup retries transient failures with exponential delay and sends exhausted messages to the Error Queue:
 
 ```csharp
-.AddMessageBrokers(options =>
-{
-    options.AddRecoveryOptions(r => r
-        .UseExponentialDelayRecovery(maxRetryAttempts: 10)   // or UseConstantDelayRecovery(ms) / UseNoDelayRecovery()
-        .RetryWhen<MyTransientException>()                   // ADD an exception type to the retry set
-        .UseRouteToErrorQueueRecoveryAction()                // IMaxReceivesExceededAction
-        .WithCircuitBreaker(cb => { /* CircuitBreakerOptionsBuilder */ }));
-});
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options
+        .AddRecoveryOptions(r => r
+            .UseExponentialDelayRecovery(10)
+            .RetryWhen<TimeoutException>()
+            .RetryWhen(e => e is HttpRequestException)
+            .UseRouteToErrorQueueRecoveryAction()
+            .WithCircuitBreaker(cb => cb
+                .SetNumberOfFailuresBeforeOpen(5)
+                .SetOpenToHalfOpenWaitTime(15)
+                .IsTrippedBy<TimeoutException>())));
 ```
 
-- **Retry** — `IRetryStrategy` (`RetryStrategy`) with a pluggable `IRetryDelayStrategy`: `NoDelayRetry` (default), `ConstantDelayRetry`, `ExponentialDelayRetry`. Default max attempts is 5. An exception is retried when its TYPE matches a registered predicate; the default set contains exactly one, matching a transient `BrokeredMessageReceiverException`. No default predicate reads `Exception.Message` — a handler exception routinely echoes message-body content, and text a caller does not control must not be able to influence recovery. `RetryWhen` / `RetryWhen<TException>` **add** to that set — every registered predicate is evaluated, and any single match is enough to retry — they do not replace or restrict it.
-- **Circuit Breaker** — `ICircuitBreaker` (`CircuitBreaker`) halts processing after repeated failures; state lives in `ICircuitBreakerStateStore` (default `InMemoryCircuitBreakerStateStore`). Every call takes exactly **one** decision from the store — `AdmitAsync(openToHalfOpenWaitTime, cancellationToken)` — and acts on the admission it was issued rather than reading state to pick a branch, so no `await` can invalidate the branch it is on. What it does re-check across that `await` is the caller's cancellation token — not the circuit's state — so a cancellation arriving while the store adjudicates stops the action from running (`MustNotRunTheActionWhenCancellationArrivesWhileTheStoreIsAdjudicating`). The admission's verdict is `Refused` (throws `CircuitBreakerOpenException` carrying the store's last exception, **without invoking the action**), `Execute` (runs the action against a closed circuit), or `Trial` (runs the action as one half-open trial). The cooling policy is the store's to adjudicate: while `OpenToHalfOpenWaitTimeInSeconds` has not elapsed the store refuses and leaves the circuit open, and the call that finds the period elapsed is admitted to a trial with the open→half-open transition made as part of that same decision. Because the wait now paces the refusal *after* adjudication, an `OpenToHalfOpenWaitTimeInSeconds` of `0` admits the first call after opening straight to a trial instead of refusing it — at the default of `15` nothing changes. Each half-open admission belongs to an **episode**, and an outcome is recorded only against the episode it was admitted under: a trial that outlives its episode has its success discarded rather than counted toward closing a later one, and its failure discarded rather than re-opening a circuit a later episode has since healed — the exception it carried does not even become the store's last exception. The circuit trips on the same type-only basis as Retry, from its own separate default set (also exactly one predicate, also the same transient `BrokeredMessageReceiverException` check) — so what to retry and what should trip the circuit are two independently registered decisions rather than one type answering both. `IsTrippedBy` / `IsTrippedBy<TException>` **add** to the trip set the same way `RetryWhen` adds to the retry set. A custom `ICircuitBreakerStateStore` implements `AdmitAsync(openToHalfOpenWaitTime, cancellationToken)` plus the two outcome reports — `RecordSuccessAsync(admission, successesToClose, cancellationToken)` and `RecordFailureAsync(admission, ex, failuresToOpen, cancellationToken)` — and adjudicates the transition itself: each report re-checks the admission it is handed against the store's own current episode and performs whatever transition that outcome warrants under the store's own synchronization, answering `true` only when that report is what moved the circuit. All three members carry the `CancellationToken` of the call being adjudicated, which `CircuitBreaker` passes at every call site, so a store whose adjudication is real I/O can carry that cancellation into it; the shipped in-memory store's bodies are synchronous under one lock, so it honours the token by throwing before it takes that lock and recording nothing. A custom store must also measure the cooling interval from a **monotonic** source rather than from the wall clock — `LastStateChangedDateUtc` is a diagnostic that no decision reads, and deciding from `DateTime.UtcNow` minus that stamp admits a trial early after a forward clock correction and holds the circuit open past the configured wait after a backward one (`MustNotAdmitATrialEarlyWhenTheWallClockStampMovesBackward`, `MustStillAdmitATrialWhenTheWallClockStampMovesForward`). The store exposes no unconditional transition command of any kind for a caller to invoke.
-- **Max Receives Exceeded** — when a message's delivery count reaches `MaxReceiveAttempts`, the receiver deadletters it and runs the `IMaxReceivesExceededAction` (default `ErrorQueueDispatcher`). `MaxReceiveAttemptsExceededException` / `MaxRetryAttemptsExceededException` signal the condition.
-- **Critical Failure / Error Queue** — an unrecoverable receive error (`CriticalReceiverException`) stops the receiver loop and raises a Critical Failure via `ICriticalFailureNotifier` (default `CriticalFailureEventDispatcher`, which dispatches a `CriticalFailureEvent`). Failed messages are routed to the **Error Queue** (`ErrorQueueDispatcher`). Poison messages (`PoisonedMessageException`, e.g. a body that won't deserialize) are deadlettered.
+### Retry
 
-## Configuration (appsettings)
-
-Everything configured fluently above can also come from configuration. `AddMessageBrokers` reads the `Chatter:MessageBrokers` section **automatically**: it resolves the section from the `IConfiguration` the Chatter builder already holds, so no extra call is required. Earlier versions never resolved the section on this entry point, so every key underneath it was discarded — which is why configuration appeared to be ignored.
-
-Four sections are bindable. Each section name is a constant on its builder, so it can be referenced instead of retyped:
-
-| Section | Constant |
+| Method | Description |
 | --- | --- |
-| `Chatter:MessageBrokers` | `MessageBrokerOptionsBuilder.MessageBrokerSectionName` |
-| `Chatter:MessageBrokers:Reliability` | `ReliabilityOptionsBuilder.ReliabilityOptionsSectionName` |
-| `Chatter:MessageBrokers:Recovery` | `RecoveryOptionsBuilder.RecoveryOptionsSectionName` |
-| `Chatter:MessageBrokers:Recovery:CircuitBreaker` | `CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName` |
+| `UseNoDelayRecovery()` | Retry immediately (the default). |
+| `UseConstantDelayRecovery(int)` | Wait the same number of milliseconds between attempts. |
+| `UseExponentialDelayRecovery(int)` | Wait longer after each attempt. Also sets `MaxRetryAttempts`, capped at 15. |
+| `WithMaxRetryAttempts(int)` | Attempts per delivery. Default `5`. |
+| `RetryWhen(params Predicate<Exception>[])` / `RetryWhen<TException>()` | Adds exception types that should be retried. |
 
-The last three are children of the first, so the key paths are identical whether the options are built through `AddMessageBrokers` or through a standalone `FromConfig(services, configuration)` on one of the sub-builders. Note that the circuit breaker key is spelled `CircuitBreaker` even though the property it binds onto is named `CircuitBreakerOptions`: `RecoveryOptions.CircuitBreakerOptions` is annotated `[ConfigurationKeyName("CircuitBreaker")]` precisely so that the one documented key works from both entry points.
+An exception is retried when any registered predicate matches it. The default set has one predicate, matching a transient `BrokeredMessageReceiverException`; `RetryWhen` adds to that set rather than replacing it. Predicates match on exception type; no default predicate reads the exception message.
 
-### Bindable keys and their defaults
+### Circuit breaker
 
-The default in each row is the value the fluent builder seeds before configuration is bound, so it is also the value a key keeps when configuration omits it.
+The circuit breaker stops processing after repeated failures and admits trial calls once it has cooled. For each call it receives one decision, called an Admission: `Refused` (throws `CircuitBreakerOpenException` without running the action), `Execute` (run against a closed circuit) or `Trial` (run as one half-open trial). It trips on its own exception set, which by default also matches a transient `BrokeredMessageReceiverException`; `IsTrippedBy` and `IsTrippedBy<TException>` add to it.
 
-`Chatter:MessageBrokers`
+| Method | Option | Default | Description |
+| --- | --- | --- | --- |
+| `SetOpenToHalfOpenWaitTime(int)` | `OpenToHalfOpenWaitTimeInSeconds` | `15` | Seconds the circuit stays open before a trial is admitted. |
+| `SetConcurrentHalfOpenAttempts(int)` | `ConcurrentHalfOpenAttempts` | `1` | Trials admitted at once while half-open. |
+| `SetNumberOfFailuresBeforeOpen(int)` | `NumberOfFailuresBeforeOpen` | `5` | Failures that open the circuit. |
+| `SetNumberOfHalfOpenSuccessesBeforeClose(int)` | `NumberOfHalfOpenSuccessesToClose` | `3` | Successful trials that close it. |
+| `SetTimeOpenBeforeCriticalEvent(int)` | `SecondsOpenBeforeCriticalFailureNotification` | `1800` | Seconds open before a Critical Failure is raised. |
 
-| Key | Type | Default |
-| --- | --- | --- |
-| `TransactionMode` | `None` / `ReceiveOnly` / `FullAtomicityViaInfrastructure` | `ReceiveOnly` |
+Circuit state lives in `ICircuitBreakerStateStore` (in-memory by default). A custom store implements `AdmitAsync`, `RecordSuccessAsync` and `RecordFailureAsync`, makes each state transition itself under its own synchronization, and measures the cooling interval with a monotonic clock rather than the wall clock.
 
-`Chatter:MessageBrokers:Reliability`
+### Failure outcomes
 
-| Key | Type | Default |
-| --- | --- | --- |
-| `RouteMessagesToOutbox` | `bool` | `false` |
-| `MinutesToLiveInMemory` | `double` | `10` |
-| `EnableOutboxPollingProcessor` | `bool` | `false` |
-| `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` |
-| `InMemoryInboxDeduplicationWindowInMinutes` | `int` | `60` |
-| `InMemoryInboxMaxEntries` | `int` | `200000` |
-| `OutboxPollBatchSize` | `int` | `100` |
+- **Max Receives Exceeded.** When a failing message's delivery count reaches `MaxReceiveAttempts`, the receiver deadletters it and runs `IMaxReceivesExceededAction`. The default, `ErrorQueueDispatcher`, forwards the message to its Error Queue.
+- **Poisoned message.** A body that cannot be deserialized raises `PoisonedMessageException`, and the message is deadlettered.
+- **Critical Failure.** A `CriticalReceiverException` stops the receiver and raises a Critical Failure through `ICriticalFailureNotifier`. The default dispatches a `CriticalFailureEvent` in-process, so implement `IMessageHandler<CriticalFailureEvent>` to alert or restart.
+- **Settlement.** Each acknowledge, reject or deadletter reports a Settlement Outcome of `Settled`, `NotRequired` or `Failed`. A transport with nothing to acknowledge reports `NotRequired`, which is not the same as `Failed`.
 
-`Chatter:MessageBrokers:Recovery`
+## Configuration
 
-| Key | Type | Default |
-| --- | --- | --- |
-| `MaxRetryAttempts` | `int` | `5` |
+### Fluent configuration
 
-`Chatter:MessageBrokers:Recovery:CircuitBreaker`
+This sample sets the transaction mode, the Outbox and Recovery together:
 
-| Key | Type | Default |
-| --- | --- | --- |
-| `OpenToHalfOpenWaitTimeInSeconds` | `int` | `15` |
-| `ConcurrentHalfOpenAttempts` | `int` | `1` |
-| `NumberOfFailuresBeforeOpen` | `int` | `5` |
-| `NumberOfHalfOpenSuccessesToClose` | `int` | `3` |
-| `SecondsOpenBeforeCriticalFailureNotification` | `int` | `1800` |
+```csharp
+using Chatter.MessageBrokers.Receiving;
 
-A worked `appsettings.json`, showing every bindable key at its default:
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options
+        .WithTransactionMode(TransactionMode.ReceiveOnly)
+        .AddReliabilityOptions(r => r
+            .WithOutboxRouting()
+            .WithOutboxPollingProcessor(5000)
+            .WithOutboxPollBatchSize(100)
+            .WithOutboxDispatchBackoff(5, 60)
+            .WithOutboxMaxDispatchAttempts(20))
+        .AddRecoveryOptions(r => r
+            .UseExponentialDelayRecovery(10)
+            .RetryWhen<TimeoutException>()
+            .UseRouteToErrorQueueRecoveryAction()
+            .WithCircuitBreaker(cb => cb
+                .SetNumberOfFailuresBeforeOpen(5)
+                .SetOpenToHalfOpenWaitTime(15))))
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+### appsettings.json
+
+`AddMessageBrokers` binds the `Chatter:MessageBrokers` section of the `IConfiguration` you passed to `AddChatterCqrs`; no extra call is needed. Every bindable key at its default:
 
 ```json
 {
@@ -342,7 +551,10 @@ A worked `appsettings.json`, showing every bindable key at its default:
         "OutboxProcessingIntervalInMilliseconds": 5000,
         "InMemoryInboxDeduplicationWindowInMinutes": 60,
         "InMemoryInboxMaxEntries": 200000,
-        "OutboxPollBatchSize": 100
+        "OutboxPollBatchSize": 100,
+        "OutboxDispatchBackoffBaseInSeconds": 5,
+        "OutboxDispatchBackoffCapInSeconds": 60,
+        "OutboxMaxDispatchAttempts": null
       },
       "Recovery": {
         "MaxRetryAttempts": 5,
@@ -359,252 +571,237 @@ A worked `appsettings.json`, showing every bindable key at its default:
 }
 ```
 
-The table above is the whole configurable surface. The remaining fluent calls — the retry delay strategy (`UseNoDelayRecovery`, `UseConstantDelayRecovery`, `UseExponentialDelayRecovery`), the retry and circuit-breaker exception predicates (`RetryWhen`, `IsTrippedBy`), and the max-receives-exceeded action (`UseRouteToErrorQueueRecoveryAction`) — register services and have no configuration key of their own.
+Each section name is a constant on its builder:
 
-`UseExponentialDelayRecovery(int)` is the exception to the second half of that: as well as registering the delay strategy it also sets `MaxRetryAttempts`, clamped to 15 (`MustClampMaxRetryAttemptsToFifteenWhenExponentialDelayExceedsCeiling`). `MaxRetryAttempts` is in the table above, so a configured value binds over whatever that call set it to. The clamp is applied ONCE, and the clamped budget is what both the options and the registered delay strategy are tuned to: `UseExponentialDelayRecovery(30)` gives the strategy the same clamped budget the options ended up carrying, so each wait caps at the delay the fifteenth attempt schedules rather than at the far longer cap the discarded argument would have bought (`MustTuneTheResolvedExponentialDelayStrategyToTheClampedMaxRetryAttempts`). That is the relationship issue #423 left open, and it is settled here.
+| Section | Constant |
+| --- | --- |
+| `Chatter:MessageBrokers` | `MessageBrokerOptionsBuilder.MessageBrokerSectionName` |
+| `Chatter:MessageBrokers:Reliability` | `ReliabilityOptionsBuilder.ReliabilityOptionsSectionName` |
+| `Chatter:MessageBrokers:Recovery` | `RecoveryOptionsBuilder.RecoveryOptionsSectionName` |
+| `Chatter:MessageBrokers:Recovery:CircuitBreaker` | `CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName` |
+
+The key paths are the same when you build a sub-builder on its own with `FromConfig(services, configuration)`.
+
+### Options reference
+
+`Chatter:MessageBrokers`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TransactionMode` | `TransactionMode` | `ReceiveOnly` | `None`, `ReceiveOnly` or `FullAtomicityViaInfrastructure`. Fluent: `WithTransactionMode`. |
+
+`Chatter:MessageBrokers:Reliability`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `RouteMessagesToOutbox` | `bool` | `false` | Send and publish through the Outbox. Fluent: `WithOutboxRouting`. |
+| `MinutesToLiveInMemory` | `double` | `10` | How long the in-memory Outbox keeps published rows; `0` or less keeps them. Fluent: `WithInMemoryOutboxTimeToLive`. |
+| `EnableOutboxPollingProcessor` | `bool` | `false` | Run the background Outbox poller. Fluent: `WithOutboxPollingProcessor`. |
+| `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` | Wait after a short batch. Fluent: `WithOutboxPollingProcessor(int)`. |
+| `OutboxPollBatchSize` | `int` | `100` | Most messages per poll. Fluent: `WithOutboxPollBatchSize`. |
+| `OutboxDispatchBackoffBaseInSeconds` | `int` | `5` | Wait after the first failed publish. Fluent: `WithOutboxDispatchBackoff`. |
+| `OutboxDispatchBackoffCapInSeconds` | `int` | `60` | Longest wait between publish attempts. Fluent: `WithOutboxDispatchBackoff`. |
+| `OutboxMaxDispatchAttempts` | `int?` | `null` | Failed publishes before a message stops being polled; `null` retries forever. Fluent: `WithOutboxMaxDispatchAttempts`. |
+| `InMemoryInboxDeduplicationWindowInMinutes` | `int` | `60` | In-memory Inbox window and reservation lease. Fluent: `WithInMemoryInboxDeduplicationWindow`. |
+| `InMemoryInboxMaxEntries` | `int` | `200000` | In-memory Inbox memory cap. Fluent: `WithInMemoryInboxMaxEntries`. |
+
+`Chatter:MessageBrokers:Recovery`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `MaxRetryAttempts` | `int` | `5` | Attempts per delivery. Fluent: `WithMaxRetryAttempts`, `UseExponentialDelayRecovery`. |
+
+The circuit breaker keys are in the [Circuit breaker](#circuit-breaker) table. The delay strategy, the exception predicates and the Error Queue action are fluent only and have no configuration key.
 
 ### Precedence: configuration wins
 
-Builder defaults are applied first and configuration is bound over them last, so a key present in configuration wins — over the builder default and over an explicit fluent call alike — while a key absent from configuration keeps the builder default. Configuration is bound into the options instance the builder already created, with non-public binding enabled, and never replaces that instance.
-
-The honest reason an explicit fluent call loses is that these builders carry no nullable sentinel: they cannot distinguish an option that was never set fluently from one that was set to the same value as the default, so there is nothing for the bind to skip over.
-
-`Chatter.MessageBrokers.AzureServiceBus` applies the opposite rule: its builder holds each fluent value in a nullable sentinel (`int?`, `bool?`, `TimeSpan?`), can therefore tell "never called" from "called with the default value", and lets an explicit fluent call win over configuration. The divergence is deliberate, and an application that configures both modules needs to know that the same-looking fluent call is authoritative in one module and overridable in the other.
-
-In practice this means a `TransactionMode` in configuration overrides `WithTransactionMode(...)`, and an `OutboxProcessingIntervalInMilliseconds` in configuration overrides `WithOutboxPollingProcessor(2000)`:
+Fluent values are applied first and configuration is bound over them, so a key present in configuration wins over both the default and an explicit fluent call. A key absent from configuration keeps the fluent value. Chatter.MessageBrokers.AzureServiceBus uses the opposite rule, where an explicit fluent call wins, so check which module you are configuring.
 
 ```csharp
-// Chatter:MessageBrokers:TransactionMode = "FullAtomicityViaInfrastructure" in appsettings
-// wins over the fluent call below; remove the key to let the fluent value stand.
-.AddMessageBrokers(options =>
-{
-    options.WithTransactionMode(TransactionMode.ReceiveOnly);
-});
+// With "Chatter:MessageBrokers:TransactionMode": "FullAtomicityViaInfrastructure" in appsettings,
+// the configured value wins over this fluent call. Remove the key to let the fluent value stand.
+.AddMessageBrokers(options => options.WithTransactionMode(TransactionMode.ReceiveOnly))
 ```
 
-Precedence is settled once, while the options are being built, and the settled result is the only thing any injection style can see: `IOptions<T>`, `IOptionsSnapshot<T>` and `IOptionsMonitor<T>` resolve the same instance as injecting the concrete options type — see [Every injection style resolves the same options instance](#every-injection-style-resolves-the-same-options-instance).
+### Refused values
 
-### Configured values are refused at build time
-
-Three kinds of bad configuration fail in three different places, and two of the three fail while the options are being built.
-
-**A value of the wrong TYPE fails during `Build()`, at the binder.** `MinutesToLiveInMemory: "abc"`, `RouteMessagesToOutbox: "not-bool"`, a circuit-breaker count that is not a number, or a `TransactionMode` naming no member of the enum cannot be converted, so `ConfigurationBinder` throws an `InvalidOperationException` out of `Build()` before anything downstream sees the value. The message carries the full key path, such as `Chatter:MessageBrokers:Reliability:MinutesToLiveInMemory`. Nothing in this module raises it; it is the binder's own failure, surfacing wherever the builder runs, which for `AddMessageBrokers` is host start.
-
-**A value of the right type can still be refused during `Build()`, by this module.** The refusal is a `ConfiguredValueRefusedException` (`Chatter.MessageBrokers.Exceptions`) — this module's own named failure for a semantic case, in this module's vocabulary rather than the binder's or the sink's. It carries `OptionName` (the offending property, qualified by its options type), `RefusedValue`, `RequiredBound` and `ConfigurationPath`, the section the refusing builder actually resolved, including a custom section name the builder was retargeted onto (`MustNameTheRefusedPropertyValueBoundAndResolvedSectionPathWhenAConfiguredValueIsRefused`, `MustNameTheResolvedCustomSectionPathWhenAConfiguredValueIsRefusedThroughACustomSectionName`). `ConfigurationPath` is null when the refusing builder resolved no section of its own, and the option name still identifies the property in that case.
-
-Validation is its own phase, between resolving the options graph and publishing it, and it walks the FINALIZED graph — after the outermost bind, before any registration. A value configured for a NESTED option is reached even though the nested builders have no configuration section of their own, because such a value only lands on the graph after the parent bind.
-
-These are the values that are refused:
+A value of the wrong type, such as `"MinutesToLiveInMemory": "abc"`, fails in the configuration binder with an `InvalidOperationException` naming the full key path. A value of the right type that is out of range is refused at startup with `ConfiguredValueRefusedException` (namespace `Chatter.MessageBrokers.Exceptions`). It carries `OptionName`, `RefusedValue`, `RequiredBound` and `ConfigurationPath` (null when no section was bound).
 
 | Option | Refused when |
 | --- | --- |
-| `MessageBrokerOptions.TransactionMode` | the enum does not define it |
-| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included, when the outbox polling processor is enabled |
-| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity` |
-| `ReliabilityOptions.InMemoryInboxMaxEntries` | below `1` |
-| `ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes` | below `1` |
+| `MessageBrokerOptions.TransactionMode` | the enum does not define the value |
+| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, when the Outbox poller is enabled |
+| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or infinite |
 | `ReliabilityOptions.OutboxPollBatchSize` | below `1` |
+| `ReliabilityOptions.OutboxDispatchBackoffBaseInSeconds` | below `1` |
+| `ReliabilityOptions.OutboxDispatchBackoffCapInSeconds` | below `1` |
+| `ReliabilityOptions.OutboxMaxDispatchAttempts` | below `1`, when set |
+| `ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes` | below `1` |
+| `ReliabilityOptions.InMemoryInboxMaxEntries` | below `1` |
 | `RecoveryOptions.MaxRetryAttempts` | below `1` |
 | `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
 | `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait |
 | `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule |
 
-Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredInMemoryInboxMaxEntriesOfZero` and `MustRefuseAConfiguredNegativeInMemoryInboxMaxEntries` for the inbox cap; `MustRefuseAConfiguredInMemoryInboxDeduplicationWindowOfZero`, `MustRefuseAConfiguredNegativeInMemoryInboxDeduplicationWindow` and `MustAcceptTheSmallestInMemoryInboxDeduplicationWindowTheSettingCanExpress` for the deduplication window; `MustRefuseAConfiguredOutboxPollBatchSizeOfZero` and `MustRefuseAConfiguredNegativeOutboxPollBatchSize` for the poll batch size; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
+These edge values are accepted on purpose:
 
-Two reliability rows read alike but are asked of different hosts. `OutboxProcessingIntervalInMilliseconds` is refused only when `EnableOutboxPollingProcessor` is set, because the only thing that waits on it is registered behind that flag, so a stale out-of-range interval is inert on a host that never polls. `OutboxPollBatchSize` is refused on **every** host, poller enabled or not: it carries its default as a property initializer rather than taking it from the builder, and a batch size of zero is not inert the way an unread interval is — it reads like a limit and drains nothing the moment the poller is switched on.
+- `OutboxProcessingIntervalInMilliseconds` of `0` polls without waiting.
+- `MinutesToLiveInMemory` of `0` or less turns off cleanup of published in-memory Outbox rows.
+- `OpenToHalfOpenWaitTimeInSeconds` of `0` admits a trial on the first call after the circuit opens.
+- `NumberOfFailuresBeforeOpen` or `NumberOfHalfOpenSuccessesToClose` of `0` or `1` opens or closes on the first failure or success.
 
-The upper bound on the two circuit-breaker durations is a constant derived from the BCL's maximum supported timeout rather than probed at run time. It is straddled by two theories that offer the seconds either side of it to a real `Task.Delay` and a real `Timer.Change` and require the builder to agree with whichever answer the sink gives (`MustAgreeWithTaskDelayAboutAConfiguredOpenToHalfOpenWaitTime`, `MustAgreeWithTimerChangeAboutAConfiguredTimeOpenBeforeCriticalEvent`), so a move in either BCL bound is loud rather than silent.
-
-**Values that are deliberately still accepted:**
-
-- a zero `OutboxProcessingIntervalInMilliseconds`. `Task.Delay` completes it immediately, so how aggressively the outbox is polled stays the operator's call (`MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval`).
-- a non-positive `MinutesToLiveInMemory`. That is the outbox's own `ttl <= 0` disabled-cleanup branch, not a degenerate value (`MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`). The asymmetry with `InMemoryInboxDeduplicationWindowInMinutes`, which IS refused below `1`, is deliberate: this one governs cleanup of outbox rows that have already been processed, so disabling it only retains them, whereas the inbox window is that store's only reclamation rule and disabling it would leave an entry nothing could remove.
-- a zero `OpenToHalfOpenWaitTimeInSeconds`, which is load-bearing rather than degenerate: a zero wait is always already elapsed, so an open circuit never refuses and the very next call is trialled instead (`MustAcceptAConfiguredOpenToHalfOpenWaitTimeOfZero`, `MustTrialTheOpenCircuitOnTheCallThatFindsItsCoolingPeriodElapsed`).
-- a `NumberOfFailuresBeforeOpen` or `NumberOfHalfOpenSuccessesToClose` of zero. The state store counts both as `++count >= threshold`, so no value faults them, and a threshold of 1 or less states "trip, or close, on the first" — intent an operator is entitled to express (`MustAcceptAConfiguredCountThresholdOfZero`).
-
-**What is still left to the sink.** `ReceiverOptions.MaxConcurrentCalls` below `1` raises an `InvalidOperationException` naming the receiver when that receiver initializes; `ReceiverOptions` is not on the bindable surface above and no builder here inspects it.
-
-The refusal set is scoped to what configuration can reach — the keys in the table above and the nested options composed under them. A fluent-only argument with no configuration key and no field on the options it tunes sits outside that scope by decision rather than by oversight, `UseConstantDelayRecovery(int)` being the one worth naming: its argument is recorded on the builder, reaches the registered delay strategy directly, is never stored on `RecoveryOptions`, and is not validated.
+`UseConstantDelayRecovery(int)` is not validated. `ReceiverOptions.MaxConcurrentCalls` below `1` fails when that receiver starts, not at build time.
 
 ### Every injection style resolves the same options instance
 
-`MessageBrokerOptions`, `ReliabilityOptions`, `RecoveryOptions` and `CircuitBreakerOptions` are each registered twice over the one instance their builder finished: once as the concrete type, and once behind `IOptions<T>`, `IOptionsSnapshot<T>` and `IOptionsMonitor<T>`. Injecting `IOptions<RecoveryOptions>` therefore hands back exactly the object `RecoveryOptionsBuilder.Build()` produced — fluent defaults applied, configuration bound over them — and so does injecting `RecoveryOptions` directly. Every default in the tables above now holds on every injection style rather than only on direct injection of the concrete type.
+`MessageBrokerOptions`, `ReliabilityOptions`, `RecoveryOptions` and `CircuitBreakerOptions` are each registered as the concrete type and as `IOptions<T>`, `IOptionsSnapshot<T>` and `IOptionsMonitor<T>`. All four resolve the one instance the builder produced, with fluent values and configuration applied. A `services.Configure<T>(...)` of your own is not consulted for these four types; use the fluent builder or configuration instead. `IOptionsMonitor<T>` is for resolution only: options are bound once, never reload, and every options name resolves the same instance.
 
-Previously the three facets went to the container's own options factory instead, which built a fresh object from the configuration section alone. That object had never seen the fluent defaults, so an `IOptions<CircuitBreakerOptions>` reader saw `ConcurrentHalfOpenAttempts` as `0` where the built instance held `1`, an `IOptions<RecoveryOptions>` reader saw `MaxRetryAttempts` as `0` and a null `CircuitBreakerOptions` where the built instance held `5` and a populated one, and an `IOptions<ReliabilityOptions>` reader saw `OutboxProcessingIntervalInMilliseconds` as `0` where the built instance held `5000`. The parent options were the worst of them: `IOptions<MessageBrokerOptions>` returned an all-default instance whose `TransactionMode` was `None` and whose `Reliability` and `Recovery` were both `null`, so reading `.Recovery.MaxRetryAttempts` off it raised a `NullReferenceException` rather than returning a wrong number — not one configured key landed.
+## Diagnostics
 
-Nothing inside this package injected those facets. `BrokeredMessageOutboxProcessor`, `RetryStrategy`, `RetryWithCircuitBreakerStrategy` and `CircuitBreaker` all inject the concrete options types, which were always correctly seeded, so the zeroed values were reachable only by an application that resolved a facet itself.
-
-`IOptionsMonitor<T>` is supported for resolution only. Configuration is bound once, while the options are being built, so the built options never reload and the change callback is inert. Named options are not a concept in this package either — every name, including none, resolves the same built instance.
-
-**Behaviour change:** a `services.Configure<MessageBrokerOptions>(...)`, `Configure<ReliabilityOptions>(...)`, `Configure<RecoveryOptions>(...)` or `Configure<CircuitBreakerOptions>(...)` registration of your own is **no longer consulted**. The facets are bound directly to the built instance and never go through the options factory, which is precisely what makes the built instance authoritative, so a post-configure of these four types silently stops applying. The narrowing is intentional, and no known application relies on it, but it is a public behaviour change: configure these options through the fluent builder or through the `Chatter:MessageBrokers` section instead.
-
-The same rule is applied to `ServiceBusOptions` by `Chatter.MessageBrokers.AzureServiceBus`. It is not applied across the whole suite: `Chatter.MessageBrokers.RabbitMQ` and `Chatter.MessageBrokers.SqlServiceBroker` still register only the concrete options singleton, deliberately — neither registers a `Configure<T>`, so neither has anything divergent to close.
-
-## Routing Slips
-
-A **Routing Slip** is a message that carries its own itinerary — an ordered list of destinations to visit. The receiver advances the slip to the next step as each handler completes, enabling itinerary-style choreography without a central orchestrator.
-
-```csharp
-using Chatter.MessageBrokers.Routing.Slips;
-
-var slip = RoutingSlipBuilder.NewRoutingSlip(Guid.NewGuid())
-    .WithRoute("validate.queue")
-    .WithRoute("charge.queue")
-    .WithRoute("ship.queue")
-    .Build();
-```
-
-`RoutingSlipBehavior` advances the slip across the configured `RoutingStep`s; helper extensions (`MessageBrokerContextExtensions`, `SendOptionsExtensions`, `CommandPipelineBuilderExtensions`) attach and read the slip on the message/context.
-
-## Diagnostics and Trace Context (optional, opt-in)
-
-The brokered message boundary is instrumented with OpenTelemetry-compatible tracing and metrics, and W3C **trace context** is propagated across it. Both are **off until an application opts in**, and `Chatter.MessageBrokers` takes **no dependency on any `OpenTelemetry.*` NuGet package** — the instrumentation is built on the .NET base class library only: `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments.
+The broker boundary emits OpenTelemetry-compatible spans and metrics and propagates W3C trace context. Nothing is emitted until your application subscribes. This package takes no dependency on any `OpenTelemetry.*` package; it uses `System.Diagnostics.ActivitySource` and `System.Diagnostics.Metrics.Meter` from the base class library.
 
 ### Turning it on
 
-The `ActivitySource` and the `Meter` are both named after the emitting assembly — **`Chatter.MessageBrokers`**. `Chatter.CQRS` emits under its own separate scope, named after *its* assembly, so send/receive and in-process dispatch can be sampled and filtered independently. Subscribe with a prefix wildcard to get both, or name the scopes exactly:
+The `ActivitySource` and the `Meter` are both named `Chatter.MessageBrokers` (`BrokerDiagnostics.ActivitySourceName` and `BrokerDiagnostics.MeterName`). Chatter.CQRS emits under its own name, so you can subscribe to either or both:
 
 ```csharp
-services.AddOpenTelemetry()
-        .WithTracing(t => t.AddSource("Chatter.*"))    // or .AddSource("Chatter.CQRS", "Chatter.MessageBrokers")
-        .WithMetrics(m => m.AddMeter("Chatter.*"));    // or .AddMeter("Chatter.CQRS", "Chatter.MessageBrokers")
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddSource("Chatter.*"))     // or .AddSource("Chatter.CQRS", "Chatter.MessageBrokers")
+    .WithMetrics(m => m.AddMeter("Chatter.*"));     // or .AddMeter("Chatter.CQRS", "Chatter.MessageBrokers")
 ```
 
-Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTelemetry provider merely subscribes to these base-class-library primitives, it is not a prerequisite for them.
+Any .NET `ActivityListener` or .NET `MeterListener` works as well.
 
-### Off means off
-
-**When nothing subscribes to the `Chatter.MessageBrokers` source or meter, nothing is emitted and nothing extra goes on the wire.** Each emit site checks whether Chatter's own source has a subscriber as its first statement and returns before a span name, a tag collection, or a `traceparent` header is constructed — so an application that never opts in pays no per-message cost and its messages are byte-identical to the un-instrumented ones. In particular, **no `traceparent` is written unless Chatter itself started a span**: the injection is a pure function of the span Chatter started, never of the ambient `Activity.Current`, which is non-null in any host running unrelated instrumentation. The guarantee is per-operation; constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `ActivitySource`-based design.
+**Off means off.** When nothing subscribes to the `Chatter.MessageBrokers` source or meter, each emit site returns before building a span name, tags or a `traceparent` header. Your messages are then byte-identical to uninstrumented ones. A `traceparent` is written only when Chatter itself started a span, never from an unrelated ambient `Activity.Current`.
 
 ### What is emitted
 
-Two spans, one Chatter-native span event alongside the standard `exception` event, and three instruments. Names prefixed `chatter.` are Chatter-native; `messaging.*`, `error.type` and `exception.*` are OpenTelemetry semantic conventions pinned to **v1.30.0**.
+Two spans, one Chatter-native span event plus the standard `exception` event, and three instruments. Names starting `chatter.` are Chatter-native; `messaging.*`, `error.type` and `exception.*` follow the OpenTelemetry semantic conventions v1.30.0. Every row says when it is emitted, and `Always` means the emit site is unconditional.
 
-**Fill rule — every row below states when it is emitted; a blank condition cell is a defect, and `Always` is a positive claim that the emit site is unconditional rather than a default.** A condition on an attribute, event or metric-attribute row is stated *relative to its signal existing at all*: whether a span exists at all is the span table's **Started when**, and whether a measurement is taken at all is the instrument table's **Recorded when**. One row per facet — no comma-joined lists.
-
-**Span name rule.** A span is named `{messaging.operation.name} {messaging.destination.name}`, degrading to the bare operation name when no destination is set. A bare `send` is therefore the same span under this rule rather than a further one, and a name whose destination is resolved only at span stop is rewritten there.
+**Span name rule.** A span is named `{messaging.operation.name} {messaging.destination.name}`, or just the operation name when no destination is set. When the destination is resolved only at span stop, the name is rewritten there.
 
 **Spans**
 
-<!-- Fill rule: every row states when it is emitted; a blank condition cell is a defect, and `Always` is a positive claim that the emit site is unconditional rather than a default. One row per facet - no comma-joined lists. -->
-
 | Span | Name | Kind | Started by | Started when |
 | --- | --- | --- | --- | --- |
-| send | `send {messaging.destination.name}`, per the span name rule | `ActivityKind.Producer` | `BrokeredMessageDispatcher`'s send and publish paths, `ForwardingRouter`, `ReplyRouter`, `OutboxProcessor`'s drain, and the Cosmos change-feed relay's drain (from the sibling reliability package) | Once per dispatch call that reaches the send path, however many messages that call carries, and once per row the outbox drain publishes — and only while a .NET `ActivityListener` is attached to the `Chatter.MessageBrokers` source and samples the span. Two shapes reach no span at all: `ForwardingRouter` returns before any diagnostics when the forward destination is blank, and `ReplyRouter` does the same when the reply routing context is null. A reply whose `BuildReply` throws does start one — the span opens before the reply is built, so a reply that could not be constructed is reported as a failed send rather than as a metric with no span beside it. |
-| receive | `receive {messaging.destination.name}`, per the span name rule; the destination is the receiver path | `ActivityKind.Consumer` | `BrokeredMessageReceiver<TMessage>` at worker entry | Once per delivery, covering every Recovery attempt made for that delivery — and only while a .NET `ActivityListener` is attached to the `Chatter.MessageBrokers` source and samples the span. |
+| send | `send {messaging.destination.name}`, per the span name rule | `ActivityKind.Producer` | The dispatcher's send and publish paths, the forwarding router, the reply router, the Outbox drain, and the Cosmos Outbox Relay's drain | Once per dispatch call that reaches the send path, however many messages it carries, and once per row the Outbox drain publishes, while a .NET `ActivityListener` samples the `Chatter.MessageBrokers` source. A forward with a blank destination and a reply with no reply routing context start no span. A reply whose construction throws does start one, and reports a failed send. |
+| receive | `receive {messaging.destination.name}`, per the span name rule; the destination is the receiver path | `ActivityKind.Consumer` | The Brokered Message Receiver at worker entry | Once per delivery, covering every Recovery attempt for that delivery, while a .NET `ActivityListener` samples the `Chatter.MessageBrokers` source. |
 
-Those two are the whole span inventory; the name rule renames a span, it never adds one. `messaging.operation.type` also declares the semconv values `create`, `process` and `settle`, but Chatter emits none of them, so a query written against those values matches nothing.
+These two are the whole span inventory. Chatter emits none of the semconv `messaging.operation.type` values `create`, `process` or `settle`.
 
 **Span attributes**
 
-An **unset** attribute below is an unconditional write of a null value, not a skipped write: .NET `Activity.SetTag` drops a tag whose value is null.
+An **unset** attribute below is written as null, which .NET `Activity.SetTag` drops.
 
 | Attribute | Span | Value | Emitted | Name origin |
 | --- | --- | --- | --- | --- |
-| `messaging.system` | send | The Messaging Infrastructure identifier the dispatch names — the infrastructure-type entry of the routing options' Message Context, the outbound message's own on a forward, the inbound message's on a reply (the reply aliases that same context, so it is the identity the reply carries and it is known before the reply is built), or the entry persisted with the row on an outbox drain. | Only when the dispatch carries a non-blank identifier; a dispatch carrying none — or one that names the default infrastructure, whose identifier is the empty string — leaves the attribute **unset**, and nothing is invented in its place. | semconv v1.30.0 |
-| `messaging.system` | receive | The receiver's configured `ReceiverOptions.InfrastructureType`, normalized so that a blank value leaves the attribute **unset**. | Only when the Brokered Message Receiver was configured with one; a receiver configured without one leaves the attribute unset. | semconv v1.30.0 |
+| `messaging.system` | send | The Messaging Infrastructure identifier the dispatch names: from the routing options on a send or publish, the outbound message on a forward, the inbound message on a reply, or the row on an Outbox drain. | Only when the identifier is non-blank. A dispatch naming none, or naming the default infrastructure (whose identifier is empty), leaves it **unset**. | semconv v1.30.0 |
+| `messaging.system` | receive | The receiver's `ReceiverOptions.InfrastructureType`; a blank value leaves it **unset**. | Only when the receiver was configured with one. | semconv v1.30.0 |
 | `messaging.operation.name` | send | `send` | Always. | semconv v1.30.0 |
 | `messaging.operation.name` | receive | `receive` | Always. | semconv v1.30.0 |
 | `messaging.operation.type` | send | `send` | Always. | semconv v1.30.0 |
 | `messaging.operation.type` | receive | `receive` | Always. | semconv v1.30.0 |
-| `messaging.destination.name` | send | The destination the call named, when it named one; otherwise the single destination every message of the batch resolved to. | A forward or a reply sets it at span start, from the outbound message's own destination, and never rewrites it. A `Send` / `Publish` given an explicit destination also sets it at span start, then rewrites the same value in the dispatch call's `finally`. An attribute-routed `Send` / `Publish` starts with none and first writes it at span **stop** — in that same `finally`, the destination being resolved by the one enumeration the Router performs — rewriting the span name with it there. **Unset** on that attribute-routed shape alone, when the batch resolved to more than one destination or yielded nothing. | semconv v1.30.0 |
-| `messaging.destination.name` | receive | The receiver path, as the Messaging Infrastructure's path builder resolved it. | Always, at span start — the path is resolved once at receiver startup, before any delivery. | semconv v1.30.0 |
-| `messaging.batch.message_count` | send | How many messages the call handed to the Router: the number a `Send` / `Publish` actually yielded, `1` for a forward, `1` for a drained outbox row, and for a reply `1` once the Router has been called or `0` when the call failed before that — the same number `messaging.client.sent.messages` records for that call. | Always. A forward and a drain set it at span start; a `Send` / `Publish` and a reply write it at span **stop** — in the call's `finally`, the count being unknown until the Router's one enumeration ends, or until the reply has actually been handed to the Router — overwriting the `0` the span started with. | semconv v1.30.0 |
-| `messaging.message.id` | receive | The Messaging Infrastructure's own identifier for the delivered message. | Only when the infrastructure supplied a non-empty one. | semconv v1.30.0 |
-| `chatter.messaging.receive.attempts` | receive | How many Recovery attempts ran for this delivery; `0` when the delivery failed before Recovery began, as a poisoned body does. | Always, written at span stop. | Chatter-native |
-| `chatter.messaging.settlement` | receive | The settlement Chatter answered with: `ack` when handling completed and the worker token was not cancelled; `nack` when handling completed under a cancelled worker token, or a processing fault left the delivery count below `MaxReceiveAttempts`; `deadletter` on a poisoned body, or a processing fault whose delivery count has reached `MaxReceiveAttempts`. | Only on those branches of the worker's error ladder that choose a settlement, and recorded where the branch chooses it rather than after the settlement call, which is best-effort. A delivery that ended in a `CriticalReceiverException`, in a shutdown cancellation, or in a delivery-count probe that itself failed reaches no such branch and carries no settlement. | Chatter-native |
+| `messaging.destination.name` | send | The destination the call named; otherwise the single destination every message in the batch resolved to. | A forward or reply sets it at span start and never rewrites it. A send or publish with an explicit destination sets it at start and writes the same value again at stop. An attribute-routed send or publish first writes it at span **stop**, renaming the span there, and leaves it **unset** when the batch resolved to more than one destination or to none. | semconv v1.30.0 |
+| `messaging.destination.name` | receive | The receiver path, as the transport's path builder resolved it. | Always, at span start. | semconv v1.30.0 |
+| `messaging.batch.message_count` | send | Messages the call handed to the router: the number a send or publish yielded, `1` for a forward, `1` for a drained Outbox row, and for a reply `1` once routed or `0` if it failed first. Matches `messaging.client.sent.messages` for the call. | Always. A forward and a drain set it at start; a send, publish or reply writes it at span **stop**, replacing the starting `0`. | semconv v1.30.0 |
+| `messaging.message.id` | receive | The transport's own identifier for the delivered message. | Only when the transport supplied a non-empty one. | semconv v1.30.0 |
+| `chatter.messaging.receive.attempts` | receive | Recovery attempts made for this delivery; `0` when it failed before Recovery began, as a poisoned body does. | Always, at span stop. | Chatter-native |
+| `chatter.messaging.settlement` | receive | `ack` when handling completed and the worker was not cancelled; `nack` when handling completed under cancellation, or a failure left the delivery count below `MaxReceiveAttempts`; `deadletter` on a poisoned body or a failure that reached `MaxReceiveAttempts`. | Only on the branches that choose a settlement, recorded when the branch chooses it. A delivery ending in a `CriticalReceiverException`, a Shutdown Cancellation, or a failed delivery-count check carries none. | Chatter-native |
 | `error.type` | send | The fully qualified exception type name. | Only when an exception ended the dispatch call. | semconv v1.30.0 |
-| `error.type` | receive | The fully qualified exception type name; or `settlement_failed` when the Messaging Infrastructure *returned* a `Failed` Settlement Outcome without raising anything. | Only when a failure was retained for the delivery. A shutdown cancellation is deliberately not a failed receive — a clean restart would otherwise emit one failure per delivery in flight — and retains none. | semconv v1.30.0 |
-| Status — the span's own status field, not a tag | send | `Error`, with the exception's message as the status description. | Recorded by the same `ActivityOutcome.RecordFailure` call that writes this span's `error.type` above, so the status and the attribute cannot disagree. | `Activity.SetStatus`, .NET base class library |
-| Status — the span's own status field, not a tag | receive | `Error`; the description is the exception's message on an exception-shaped failure, and on the non-exception `settlement_failed` path the description of what did not settle. | Recorded by the same `ActivityOutcome.RecordFailure` call that writes this span's `error.type` above, so the status and the attribute cannot disagree — the `settlement_failed` path included, which sets both without raising anything. | `Activity.SetStatus`, .NET base class library |
+| `error.type` | receive | The fully qualified exception type name, or `settlement_failed` when the transport returned a `Failed` Settlement Outcome without throwing. | Only when a failure was retained for the delivery. A Shutdown Cancellation is not a failed receive and retains none. | semconv v1.30.0 |
+| Status (the span status, not a tag) | send | `Error`, with the exception message as the description. | Set together with this span's `error.type`, so the two always agree. | `Activity.SetStatus`, .NET base class library |
+| Status (the span status, not a tag) | receive | `Error`, described by the exception message, or on the `settlement_failed` path by what did not settle. | Set together with this span's `error.type`, including on the `settlement_failed` path. | `Activity.SetStatus`, .NET base class library |
 
 **Span events**
 
 | Event | Span | Attributes | Emitted |
 | --- | --- | --- | --- |
-| `chatter.messaging.receive.retry` | receive | `chatter.messaging.receive.attempts`, carrying the number of the attempt this event records. | On every Recovery attempt after the first, and only while `Activity.IsAllDataRequested` is true, so a sampled-out or recording-only span pays nothing to construct it. |
-| `exception` | send | The `exception.*` set, written by the base class library's `Activity.AddException`. | Only when an exception ended the dispatch call and `Activity.IsAllDataRequested` is true. |
-| `exception` | receive | The `exception.*` set, written by `Activity.AddException` exactly as on the send span. | Only when an exception ended the delivery and `Activity.IsAllDataRequested` is true. A `Failed` Settlement Outcome the infrastructure returned without raising carries no event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened. A shutdown cancellation likewise carries none. |
+| `chatter.messaging.receive.retry` | receive | `chatter.messaging.receive.attempts`, the number of the attempt this event records. | On every Recovery attempt after the first, and only while `Activity.IsAllDataRequested` is true. |
+| `exception` | send | The `exception.*` set, written by `Activity.AddException`. | Only when an exception ended the dispatch call and `Activity.IsAllDataRequested` is true. |
+| `exception` | receive | The `exception.*` set, written by `Activity.AddException`. | Only when an exception ended the delivery and `Activity.IsAllDataRequested` is true. A `Failed` Settlement Outcome returned without an exception carries no event, and neither does a Shutdown Cancellation. |
 
-**A shutdown cancellation is logged at `Debug`, not `Error`.** A shutdown cancellation, as the rows above use the term, is an `OperationCanceledException` or an `ObjectDisposedException` that ends a delivery while the receiver's receive loop is stopping. When one cuts a dispatch short, `BrokeredMessageReceiver` passes it to `LogDebug` once, with the exception attached, in place of the `LogError` call it makes for a failed dispatch, and rethrows it unchanged; the worker then drops it without logging it again (`MustLogAShutdownCancelledDispatchAtDebugInsteadOfError`, `MustLogAShutdownObjectDisposedExceptionAtDebugInsteadOfError`). The same exception raised while the receiver is still running is a failed dispatch, and the receiver passes it to `LogError` (`MustStillLogErrorWhenTheCancellationWasNotRequestedByTheReceiverShutdown`). The predicate that keeps a shutdown cancellation out of `error.type` is the one that picks the log level. The reasons are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md) D11 and [ADR-0040](https://github.com/brenpike/Chatter/blob/master/docs/adr/0040-caller-requested-cancellation-is-not-a-dispatch-failure.md).
+**A Shutdown Cancellation is logged at `Debug`, not `Error`.** A Shutdown Cancellation is an `OperationCanceledException` or `ObjectDisposedException` that ends a delivery while the receiver is stopping. The receiver logs it once at `Debug` and rethrows it unchanged. The same exception while the receiver is still running is a failed dispatch and is logged at `Error`.
 
 **Metrics**
 
 | Instrument | Type | Unit | Advised buckets | Records | Recorded when |
 | --- | --- | --- | --- | --- | --- |
-| `messaging.client.operation.duration` | `Histogram<double>` | `s` | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — see **Histogram bucket boundaries** below. | The elapsed time of one dispatch call, of one outbox drain publish, or of one delivery. | Once per dispatch call that reaches the send path, once per row the outbox drain publishes, and once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing either; a reply whose `BuildReply` throws records here and on the send span alongside it. |
-| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | Not applicable — a `Counter<long>` has no buckets. | The number of messages the dispatch call handed to broker infrastructure: the number a `Send` / `Publish` yielded, `1` for a forward, `1` for each row the outbox drain publishes, and for a reply `1` once the Router has been called or `0` when the call failed before that. | Once per dispatch call that reaches the send path, once per row the outbox drain publishes, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing here either. |
-| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | Not applicable — a `Counter<long>` has no buckets. | One message per delivery. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. | Once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
+| `messaging.client.operation.duration` | `Histogram<double>` | `s` | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10`; see [Histogram bucket boundaries](#histogram-bucket-boundaries) | Elapsed time of one dispatch call, one Outbox drain publish, or one delivery. | Once per dispatch call that reaches the send path, once per row the Outbox drain publishes, and once per delivery, on failure as well as success, while a .NET `MeterListener` has enabled the instrument. The blank-destination forward and the reply with no routing context record nothing; a reply whose construction throws records here. |
+| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | — | Messages the dispatch call handed to the transport: the number a send or publish yielded, `1` for a forward, `1` per drained Outbox row, and for a reply `1` once routed or `0` if it failed first. | Once per dispatch call that reaches the send path and once per row the Outbox drain publishes, on failure as well as success, while a .NET `MeterListener` has enabled the instrument. The blank-destination forward and the reply with no routing context record nothing. |
+| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | — | One message per delivery. "Consumed" is the specification's name for what this package calls receiving. | Once per delivery, on failure as well as success, while a .NET `MeterListener` has enabled the instrument. |
 
 **Metric attributes**
 
 | Attribute | Instruments | Value | Emitted |
 | --- | --- | --- | --- |
-| `messaging.system` | all three | On a send measurement, the Messaging Infrastructure identifier the dispatch names — **null** when it names none, or names the default infrastructure, whose identifier is the empty string. A reply resolves it off the inbound message before the reply is built, so a reply whose `BuildReply` throws still carries the inbound infrastructure's identifier rather than null; a drain carries the identifier persisted with the row. On a receive measurement, the receiver's configured `ReceiverOptions.InfrastructureType` — **null** when the receiver was configured without one. | Always, as a key, whatever the value. |
-| `messaging.operation.name` | all three | `send` on a send measurement, `receive` on a receive measurement. | Always, as a key. |
-| `messaging.operation.type` | all three | `send` on a send measurement, `receive` on a receive measurement. | Always, as a key. |
-| `messaging.destination.name` | all three | On a send measurement, the destination the call named or the single destination the batch resolved to — **null** when the call named none and the batch resolved to more than one, or yielded nothing. On a receive measurement, the receiver path. | Always, as a key, whatever the value. |
-| `error.type` | all three | The fully qualified exception type name; or `settlement_failed` for a `Failed` Settlement Outcome the Messaging Infrastructure returned without raising anything. | Only when a non-blank error type was resolved for the operation; an operation that did not fail carries no `error.type` key at all. |
+| `messaging.system` | all three | On a send, the infrastructure identifier the dispatch names, or **null** when it names none or the default. A reply takes it from the inbound message before building the reply; a drain uses the value stored with the row. On a receive, the receiver's `ReceiverOptions.InfrastructureType`, or **null** when not configured. | Always, as a key, whatever the value. |
+| `messaging.operation.name` | all three | `send` or `receive`. | Always, as a key. |
+| `messaging.operation.type` | all three | `send` or `receive`. | Always, as a key. |
+| `messaging.destination.name` | all three | On a send, the named destination or the single destination the batch resolved to, or **null** when the call named none and the batch resolved to several or none. On a receive, the receiver path. | Always, as a key, whatever the value. |
+| `error.type` | all three | The fully qualified exception type name, or `settlement_failed` for a `Failed` Settlement Outcome returned without an exception. | Only when the operation failed; a successful operation has no `error.type` key. |
 
-Where a span leaves an attribute **unset**, the instruments still carry that attribute as a key with a null value. Query the spans for a missing attribute; query the instruments for a null one.
+An attribute unset on the span still appears on the instruments as a key with a null value. Query spans for a missing attribute and instruments for a null one.
 
-**Metric attribute names are a strict subset of the span attribute names.** A rate broken down by settlement outcome, by message id or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
+Metric attribute names are a subset of the span attribute names. A breakdown by settlement, message id or attempt count must come from the spans.
 
 ### Histogram bucket boundaries
 
-`messaging.client.operation.duration` records **seconds**. The OpenTelemetry .NET SDK's default explicit histogram boundaries are millisecond-sized (`0, 5, 10, 25, ... 10000`), so a collector that applies them puts every realistic measurement in the first bucket and P50, P90 and P99 all report the same number forever. `Chatter.MessageBrokers` therefore publishes seconds-sized bucket boundaries on the duration histogram itself; the two counters alongside it have no buckets to advise. The boundaries match the OpenTelemetry messaging semantic conventions and are listed in the Metrics table above.
+`messaging.client.operation.duration` records seconds. The OpenTelemetry .NET SDK's default boundaries are sized for milliseconds, which would put every measurement in the first bucket. This package therefore publishes seconds-sized boundaries, matching the OpenTelemetry messaging conventions, as instrument advice.
 
-**They are advice, not a setting.** The boundaries are published as instrument *advice* — a **default** that an application's own view **overrides**. An application that already registers a view for `messaging.client.operation.duration` keeps winning exactly as it did before; nothing it configured changes. Advice is the right layer for this precisely because it cannot take that choice away from the application.
-
-**To choose other boundaries, register a view in your own application**, starting from the published set below. `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
+Advice is a default, and a view registered by your application overrides it. To choose other boundaries, register a view; `AddView` and `ExplicitBucketHistogramConfiguration` come from your application's OpenTelemetry packages:
 
 ```csharp
 using OpenTelemetry.Metrics;
 
-services.AddOpenTelemetry()
-        .WithMetrics(m => m
-            .AddMeter("Chatter.MessageBrokers")
-            .AddView("messaging.client.operation.duration", new ExplicitBucketHistogramConfiguration
-            {
-                Boundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
-            }));
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(m => m
+        .AddMeter("Chatter.MessageBrokers")
+        .AddView("messaging.client.operation.duration", new ExplicitBucketHistogramConfiguration
+        {
+            Boundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
+        }));
 ```
 
 ### Attribute names are data, not API
 
-Broker-boundary spans carry OpenTelemetry semantic-convention attributes pinned to **v1.30.0** (`messaging.system`, `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`, `messaging.message.id`, `messaging.batch.message_count`, `error.type`). Because telemetry attributes are emitted data rather than a compile-time type surface, **they may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in this package's CHANGELOG.
+The semantic-convention attributes (`messaging.system`, `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`, `messaging.message.id`, `messaging.batch.message_count`, `error.type`) follow semantic conventions **v1.30.0**. Telemetry attributes are emitted data, not a compile-time API, so **they may change in a minor release** when that version advances. Dashboards and alerts that hard-code attribute names should expect to be revisited; any change is announced in this package's CHANGELOG.
 
-### Propagation scope
+### Trace context propagation
 
-Trace context rides the **Message Context** as the ordinary `traceparent` / `tracestate` headers, so it survives anywhere the whole context survives. Scope is deliberately partial and stated honestly.
+Trace context travels in the Message Context as the standard `traceparent` and `tracestate` headers (`TraceContextHeaders.TraceParent` and `TraceContextHeaders.TraceState`). It survives wherever the whole Message Context survives. It is separate from `CorrelationId`, which is an application-facing identity.
 
-**Trace context flows for:**
-
-| Path | Notes |
+| Path | Trace context |
 | --- | --- |
-| Azure Service Bus | Both directions — the context is projected onto the message's application properties on send and read back on receive. |
-| RabbitMQ | Both directions, as a preserved non-core header. |
-| The EntityFramework outbox | Persisted with the context and rehydrated on drain — and, with diagnostics on, **reparented** there, as below. |
-| The Cosmos outbox | Same shape — serialized on stage, materialized on relay — and, with diagnostics on, **reparented** there as well, exactly as the EntityFramework outbox is. |
-| Outbox replay generally | A `traceparent` round-trips as a string through context materialization. |
+| Azure Service Bus | Flows both ways, as application properties. |
+| RabbitMQ | Flows both ways, as a message header. |
+| EntityFramework Outbox | Stored with the row and restored on drain, where the drain reparents it. |
+| Cosmos Outbox | Stored with the document and restored by the Outbox Relay, which reparents it the same way. |
+| Outbox replay in general | A `traceparent` round-trips as a string. |
+| SQL Server Service Broker, `DEFAULT` message type and deadletter paths | Does not flow; these paths build fresh headers. The Chatter envelope path does carry it. |
+| Chatter.SqlChangeFeed | Does not flow; its messages come from a SQL trigger and carry no headers. |
 
-**The outbox drain reparents; it does not break the chain.** Both drains behave the same way here: `OutboxProcessor` polling the EntityFramework outbox, and the Cosmos change-feed relay draining the Cosmos outbox. With diagnostics on, each publishes the drained row or document under a fresh send span parented to the `traceparent` persisted with that row or document, then writes **that span's** context onto the outgoing message. A downstream receive therefore parents to the drain span rather than directly to the write span, and the trace reads write → drain → receive: one extra hop, and it is the hop that actually put the message on the broker, minutes after the write and in another process. A row or document that carries no persisted context — one written while diagnostics were off, or received over a path that propagates none — starts a fresh root instead, with the ambient activity of the drain loop or of the change feed attached as a link rather than promoted to parent, because neither the poll nor the feed caused the message.
+**Outbox drains reparent.** With diagnostics on, the EntityFramework Outbox drain and the Cosmos Outbox Relay each publish a drained message under a new send span whose parent is the stored `traceparent`, then write that span's context onto the outgoing message. The trace reads write, drain, receive. A row stored without trace context starts a new root, with the drain's ambient activity attached as a link. With diagnostics off, or the drain span sampled out, the stored `traceparent` goes out unchanged.
 
-**The Cosmos drain opens this module's send span; it declares none of its own.** `Chatter.MessageBrokers.Reliability.Cosmos` emits its own drain metrics — lag, per-document outcome, batch size and batch count — under its own assembly-named scope, and no span at all: it publishes each drained document under the `Chatter.MessageBrokers` send span described above and never re-emits that span under its own scope, so one drained document is never reported by two send spans. Its instruments are documented in [that package's README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md).
+The Cosmos Outbox Relay uses this package's send span and emits no span of its own; it emits its own metrics, described in the [Chatter.MessageBrokers.Reliability.Cosmos README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md#diagnostics). The SQL Server Service Broker and SqlChangeFeed gaps are limitations of those receive paths and affect every header alike.
 
-The reparenting happens **only when diagnostics are opted into**, on either drain. With them off, on the metrics-only path, and when the drain span is sampled out, nothing is written and the persisted `traceparent` rides out unchanged.
+## Related packages
 
-**Trace context does NOT flow for:**
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): the in-process Commands, Queries, Events and Command Pipeline this package builds on.
+- [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
+- [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth): Microsoft Entra ID authentication for the Azure Service Bus transport.
+- [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ): RabbitMQ transport.
+- [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
+- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB Inbox and Outbox Relay.
+- [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed): typed change notifications from a SQL Server table.
 
-- **`Chatter.MessageBrokers.SqlServiceBroker`'s `DEFAULT`-message-type receive path.** That path builds a fresh header dictionary, so all upstream context is dropped. Only the Chatter envelope path — taken when the sending application supplies the Chatter brokered-message type — round-trips the context. The deadletter path likewise builds a fresh dictionary.
-- **`Chatter.SqlChangeFeed`.** Its messages originate from a SQL trigger. There is no producer-side Chatter dispatch and no headers at all, so there is nothing to propagate and nothing to extract.
+## Learn more
 
-Both gaps are **pre-existing limitations that affect all headers alike** — they are not introduced by tracing, and closing them is a change to those receive paths, not to the instrumentation. Both are pinned by conformance tests, so a change that accidentally fixes or worsens either is visible.
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/CONTEXT.md)
+- [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/CHANGELOG.md)
+- [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
+- [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)
 
-Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+## License
 
-## Domain Language
-
-Terminology used throughout this module (Brokered Message, Receiver, Dispatcher, Router/Forwarder, Inbox/Outbox, Recovery, Circuit Breaker, Critical Failure, Error Queue, Max Receives Exceeded, Body Converter) is defined in the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/CONTEXT.md).
-
-[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
+Licensed under the [MIT License](https://github.com/brenpike/Chatter/blob/master/LICENSE).
