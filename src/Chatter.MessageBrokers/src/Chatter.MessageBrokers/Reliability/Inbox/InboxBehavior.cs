@@ -31,8 +31,12 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             // MustReceiveViaInboxOnlyTheMessageTheDeliveryAdmitted and
             // MustInvokeTheHandlerOfASiblingDispatchedAfterTheAdmittedMessageCompleted; binding on a first-call flag
             // instead of the instance reddens MustReceiveViaInboxAgainWhenTheAdmittedMessageIsRedispatchedAfterItsHandlerFailed.
-            // A handler that re-dispatches the received INSTANCE itself is still gated, and so skipped while its
-            // own receipt holds the id; no test pins that.
+            // A handler that re-dispatches the received INSTANCE itself is gated again - the Admits() check
+            // reports true for the same instance on every call, so it reaches ReceiveViaInbox again - and what
+            // happens next is the store's own duplicate rule: the in-memory store skips it, while the relational
+            // and standalone Cosmos stores re-claim or take over the still-open claim and run it (EF
+            // BrokeredMessageInbox, Chatter.MessageBrokers.Reliability.Cosmos CosmosBrokeredMessageInbox); no test
+            // pins that.
             if (messageHandlerContext is IMessageBrokerContext messageBrokerContext
                 && messageBrokerContext.Container.GetOrNew<InboxDeliveryEntry>().Admits(message))
             {
