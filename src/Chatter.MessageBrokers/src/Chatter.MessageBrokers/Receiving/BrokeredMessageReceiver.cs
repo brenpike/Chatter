@@ -1042,6 +1042,9 @@ namespace Chatter.MessageBrokers.Receiving
             // INVARIANT: a dispatch cancelled because the receiver is shutting down is not a failed dispatch, so it is
             // logged at Debug, not Error, and rethrown unchanged (ADR-0010 D11; ADR-0040). The filter is
             // IsShutdownCancellation itself, so the log decision and the diagnostics exemption cannot drift apart.
+            // Each reader reads the worker token at its own point, so a token signalled between those reads can
+            // still give an Error record with an unmarked receive — a read race inherited from ADR-0010 D11's
+            // multiple readers, recorded as ADR-0040 R3; no test pins it.
             // Pinned by WhenDispatchingReceivedMessage: deleting this clause reddens its two Debug-instead-of-Error
             // facts; widening the filter to a bare catch (OperationCanceledException) reddens
             // MustStillLogErrorWhenTheCancellationWasNotRequestedByTheReceiverShutdown; wrapping the rethrow reddens
