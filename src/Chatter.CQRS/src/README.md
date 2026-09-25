@@ -58,12 +58,14 @@ services.AddChatterCqrs(
 
 #### Failing composition when two handlers claim one command
 
-`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It checks the same assemblies `AddChatterCqrs` scanned, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
+`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It checks the assemblies scanned by every `AddChatterCqrs` call on the same service collection, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
 
 ```csharp
 services.AddChatterCqrs(configuration, typeof(CreateOrderHandler))
         .ThrowOnDuplicateCommandHandlers();
 ```
+
+Call it after your last `AddChatterCqrs`, because it reports what has been registered up to the moment it is called.
 
 The check is **off unless you call it**: no `AddChatterCqrs` overload invokes it, so an application that never calls it composes exactly as it did before. A handler registered by hand before `AddChatterCqrs`, or registered by another module after it, is not compared against the scanned ones. Duplicate **event** handlers are not reported either: event handlers are appended rather than replaced, so several handlers for one event all register and all run. Duplicate **query** handlers need no such flag — query handlers are registered with a *throw* strategy, so two distinct scanned handler types for the same closed `IQueryHandler<TQuery, TResult>` fail the scan itself.
 
