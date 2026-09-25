@@ -9,7 +9,8 @@ When a dispatch ends in an `OperationCanceledException` while the cancellation t
 supplied is signalled, `Chatter.CQRS` now treats it as the routine end of a cancelled dispatch rather than as a failed
 one. The dispatcher logs it at `Debug` instead of `Error`, and neither the `dispatch` span nor the
 `chatter.cqrs.dispatch.duration` measurement marks it as failed. Every other cancellation is still a dispatch failure.
-This ADR records why the decision keys on the supplied token rather than on the exception type, why a `Debug` record
+The message broker receiver's dispatch seam likewise logs a dispatch cut short by its own shutdown at `Debug` instead
+of `Error`. This ADR records why the decision keys on the supplied token rather than on the exception type, why a `Debug` record
 is kept, how the decision lines up with the message broker receiver's own shutdown handling, and what it leaves as it
 was.
 
@@ -49,8 +50,11 @@ CQRS dispatch seam is the receiver's shutdown token.
 `OperationCanceledException` or an `ObjectDisposedException` when its worker token is signalled, with an empty catch
 body and no log (`BrokeredMessageReceiver.cs:877-882`). The receiver's diagnostics exempt exactly that case from the
 receive metric's `error.type` through `IsShutdownCancellation`
-(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.Diagnostics.cs:382-384`),
-so a clean shutdown does not show up as a burst of failed receives. The CQRS seam had no equivalent.
+(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.Diagnostics.cs:386-388`),
+so a clean shutdown does not show up as a burst of failed receives. The CQRS seam had no equivalent. Nor did the
+receiver's own dispatch seam: `BrokeredMessageReceiver.DispatchReceivedMessageAsync` wrapped the dispatch in a single
+`catch (Exception e)` that passed the exception to `LogError` and rethrew it, so a dispatch cut short by the
+receiver's shutdown was logged at `Error` there before the ladder swallowed it.
 
 **What OpenTelemetry says.** No semantic convention covers in-process CQRS dispatch; ADR-0010 D4 already records that
 and names the `chatter.` attributes on that basis. The closest rule is in the HTTP span conventions: "If the HTTP
@@ -95,18 +99,18 @@ with its oracle, in the `INVARIANT:` at `CallerRequestedCancellation.cs:26-29`.
 call with the exception attached (for a command, "Dispatch of command '{MessageType}' was cancelled by the caller."),
 and rethrows the same exception unchanged. A fault the predicate does not explain falls through to the existing `LogError`
 clause, as before. The clauses are at `src/Chatter.CQRS/src/Chatter.CQRS/Commands/CommandDispatcher.cs:81-89`,
-`src/Chatter.CQRS/src/Chatter.CQRS/Events/EventDispatcher.cs:92-100` and
+`src/Chatter.CQRS/src/Chatter.CQRS/Events/EventDispatcher.cs:93-101` and
 `src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:60-68` and `:88-94`. The rule that only a cancellation
 the caller requested is routine is stated in the `INVARIANT:` on each of the first three; the second query clause
 cites the first.
 
 **The telemetry.** The command and event diagnostics wrappers gain the same filtered clause ahead of their
-`catch (Exception e)`, with a bare `throw;` as its body (`CommandDispatcher.cs:108-111`, `EventDispatcher.cs:119-122`).
+`catch (Exception e)`, with a bare `throw;` as its body (`CommandDispatcher.cs:108-111`, `EventDispatcher.cs:120-123`).
 A caller-requested cancellation therefore skips both the `error.type` resolution and `ActivityOutcome.RecordFailure`:
 the span status stays `Unset`, the span carries no `error.type` tag and no `exception` event, and the local `errorType`
 stays `null`. The `finally` block still records the duration measurement once, without `error.type`
-(`CommandDispatcher.cs:124-126`, `EventDispatcher.cs:135-137`). The reason one clause skips both signals is stated in
-the `INVARIANT:` at `CommandDispatcher.cs:114-119` and `EventDispatcher.cs:125-130`.
+(`CommandDispatcher.cs:124-126`, `EventDispatcher.cs:136-138`). The reason one clause skips both signals is stated in
+the `INVARIANT:` at `CommandDispatcher.cs:114-119` and `EventDispatcher.cs:126-131`.
 
 **Why one predicate governs both.** The log and the telemetry must not give different answers about the same
 dispatch. ADR-0010 D4 already requires the span status and the metric's `error.type` to come from one resolved value;
@@ -120,13 +124,30 @@ is recorded as residual R3.
 that impossible, and `Information` would put one record per in-flight dispatch into every shutdown's default log
 output. This was the user's choice.
 
+**The receiver's dispatch seam.** `BrokeredMessageReceiver.DispatchReceivedMessageAsync` gains a filtered clause ahead
+of its `catch (Exception e)`: `catch (Exception e) when (IsShutdownCancellation(e, receiverTokenSource))`. It makes one
+`LogDebug` call with the exception attached ("Dispatch of brokered message was cancelled because the receiver is
+shutting down."), and rethrows the same exception unchanged, which the worker's ladder then swallows without a log, as
+before. Any other fault still reaches the `LogError` clause. `receiverTokenSource` is the worker token, passed
+unchanged from the worker through `ProcessMessageAsync`, so the clause reads the same token as the ladder's
+shutdown-swallow filters and the diagnostics exemption. The clause is at `BrokeredMessageReceiver.cs:1049-1053`, and
+its rule is stated, with its oracles, in the `INVARIANT:` at `:1042-1048`. It keeps `Debug` for the reason given
+above.
+
+**One predicate per bounded context.** Each context decides with its own predicate: `CallerRequestedCancellation.Explains`
+in `Chatter.CQRS`, and `IsShutdownCancellation` in the receiver. They differ in one respect. The receiver's predicate
+also covers an `ObjectDisposedException` raised while its token is signalled, because ADR-0010 D11 records that a
+worker whose receiver is torn down underneath it can observe either exception, so under a signalled worker token a
+disposed object is the receiver's own teardown. The CQRS predicate does not cover it, because inside a handler a
+disposed object is usually a real bug; the consequence is recorded as residual R1. This was the user's choice.
+
 **The context-less overloads.** `IMessageDispatcher.Dispatch<TMessage>(TMessage)` and the two single-argument
 `QueryDispatcher` overloads create a context with the default token, which can never be signalled, so a cancellation
 in a dispatch made through them is always a failure. A caller who wants its cancellation treated as routine passes a
 context carrying its token.
 
-**No public API changes.** `CallerRequestedCancellation` is internal. The log level and the emitted telemetry change;
-no type, member or signature does.
+**No public API changes.** `CallerRequestedCancellation` is internal and `IsShutdownCancellation` is private. The log
+level and the emitted telemetry change; no type, member or signature does.
 
 ## Closed-by-Construction Acceptance Test
 
@@ -141,6 +162,13 @@ reading a token twice, not from two rules.
 **ELIMINATED CLASS: "a genuine timeout is hidden because it looks like a cancellation".** The predicate requires the
 caller's token to be signalled. A timeout, or a handler's own linked token, raises the same exception type while the
 caller's token is not signalled, and it still logs at `Error` and still marks the span and the measurement failed.
+
+**ELIMINATED CLASS: "the receiver's ladder, its receive metric and its dispatch log classify one shutdown cancellation
+differently".** The receiver has three readers of one condition. The dispatch seam's log clause and the diagnostics
+exemption for a delivery fault both call `IsShutdownCancellation` (`BrokeredMessageReceiver.cs:1049`;
+`BrokeredMessageReceiver.Diagnostics.cs:262`), and the ladder's two shutdown-swallow filters (`BrokeredMessageReceiver.cs:877-882`) test the same thing,
+which the predicate mirrors as ADR-0010 D11 records. All three read the worker token. The only divergence left is the
+race recorded as R3.
 
 **What it does NOT close** is listed under *Recorded residuals*.
 
@@ -183,12 +211,16 @@ caller's token is not signalled, and it still logs at `Error` and still marks th
   from `chatter.cqrs.dispatch.duration` stop seeing caller-cancelled dispatches in that series.** This is intended: a
   cancelled dispatch is still counted in the histogram, only without `error.type`. A cancellation the caller did not
   request still carries it.
-- **A broker-delivered dispatch cancelled at shutdown is still passed to `LogError` once by the receiver.**
-  `BrokeredMessageReceiver.DispatchReceivedMessageAsync` wraps the dispatch in its own `catch (Exception e)` that calls
-  `LogError` and rethrows (`BrokeredMessageReceiver.cs:1034-1047`), and it has no cancellation clause, so it logs the
-  rethrown cancellation at `Error` before the worker's ladder swallows it without a log. This decision changes the
-  four CQRS catches, as #453 scoped it; the receiver's catch in `Chatter.MessageBrokers` is unchanged. No test pins the
-  receiver's record for this case.
+- **A broker-delivered dispatch cut short by the receiver's shutdown writes one `Debug` record at the receiver's
+  dispatch seam instead of an `Error` record, and the same exception is rethrown.** This holds for an
+  `OperationCanceledException` and for an `ObjectDisposedException`. Pinned by
+  `WhenDispatchingReceivedMessage.MustLogAShutdownCancelledDispatchAtDebugInsteadOfError`,
+  `MustLogAShutdownObjectDisposedExceptionAtDebugInsteadOfError` and `MustRethrowTheShutdownCancellationUnchanged`
+  (`src/Chatter.MessageBrokers/tests/Receiving/UsingBrokeredMessageReceiver/WhenDispatchingReceivedMessage.cs`). The
+  receiver still logs at `Error` a cancellation or a disposal raised while its token is not signalled, and any other
+  fault raised while it is, pinned by `MustStillLogErrorWhenTheCancellationWasNotRequestedByTheReceiverShutdown`,
+  `MustStillLogErrorForAnObjectDisposedExceptionWhenTheReceiverIsNotShuttingDown` and
+  `MustStillLogErrorForANonCancellationFaultWhileTheReceiverIsShuttingDown`.
 
 ### Recorded residuals
 
@@ -200,6 +232,9 @@ These are decisions, not open work, and no issues are filed for them.
   with a shutdown. This was the user's choice. The consequence is that during a drain the CQRS seam can log such a
   fault at `Error` and mark the `dispatch` span and the measurement failed, while the receiver's own receive metric
   does not mark the same delivery failed. Pinned by `WhenDeciding.MustNotExplainObjectDisposedExceptionEvenWhenTokenIsSignalled`.
+  Because the receiver's dispatch seam also reads `IsShutdownCancellation`, the split reaches the log as well: that
+  fault gets an `Error` record from `Chatter.CQRS` and a `Debug` record from the receiver. The receiver's half is
+  pinned by `WhenDispatchingReceivedMessage.MustLogAShutdownObjectDisposedExceptionAtDebugInsteadOfError`.
 - **R2: an `AggregateException` that wraps an `OperationCanceledException` is not unwrapped.** The predicate tests the
   fault's own type, so such a fault stays an `Error` whatever the token says. A handler that blocks on a task with
   `.Wait()` or `.Result` produces this shape; one that awaits does not. No test pins this case.
@@ -210,7 +245,9 @@ These are decisions, not open work, and no issues are filed for them.
   twice for one fault, first in the log clause and then in the diagnostics wrapper, and a token can only go from
   unsignalled to signalled. So if the token is signalled between the two reads, the dispatch is logged at `Error` but
   not marked failed on the span or the measurement. The opposite split, a `Debug` record with a failed span, cannot
-  happen. No test pins the race.
+  happen. The receiver reads its token the same way, first in its dispatch seam's log clause and later in the
+  diagnostics exemption and the ladder, so a token signalled between those reads gives an `Error` record with an
+  unmarked receive, and never the reverse. No test pins either race.
 
 ## References
 
@@ -220,7 +257,8 @@ These are decisions, not open work, and no issues are filed for them.
   seam into this behaviour.
 - ADR-0010 — *Optional BCL-only telemetry: per-assembly instrumentation scopes and the off-guard*. D4 for the one
   resolved `error.type` value shared by the span and the metric, and for the absence of a CQRS semantic convention;
-  D11 for the receiver's shutdown-cancellation exemption.
+  D11 for the receiver's shutdown-cancellation exemption, and D11's 2026-09-25 amendment for the receiver's `Debug`
+  record.
 - ADR-0012 — *Event fan-out: abort on the first failing handler, documented rather than aggregated*. A cancelled event
   dispatch still ends at the handler that raised it and rethrows unchanged.
 - ADR-0027 — *An `INVARIANT:` comment names the oracle that falsifies it, and states its rationale once*. Rule 2 is
@@ -232,10 +270,13 @@ These are decisions, not open work, and no issues are filed for them.
   `INVARIANT:` (`:26-29`).
 - `src/Chatter.CQRS/src/Chatter.CQRS/Commands/CommandDispatcher.cs` — the log clause (`:81-89`), the telemetry clause
   (`:108-111`) and its `INVARIANT:` (`:114-119`).
-- `src/Chatter.CQRS/src/Chatter.CQRS/Events/EventDispatcher.cs` — the log clause (`:92-100`), the telemetry clause
-  (`:119-122`) and its `INVARIANT:` (`:125-130`).
+- `src/Chatter.CQRS/src/Chatter.CQRS/Events/EventDispatcher.cs` — the log clause (`:93-101`), the telemetry clause
+  (`:120-123`) and its `INVARIANT:` (`:126-131`).
 - `src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs` — the two log clauses (`:60-68`, `:88-94`).
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs` — the receive call with
-  the loop token (`:708`), the ladder's shutdown swallows (`:877-882`) and `DispatchReceivedMessageAsync` (`:1034-1047`).
+  the loop token (`:708`), the ladder's shutdown swallows (`:877-882`) and `DispatchReceivedMessageAsync`
+  (`:1034-1059`), with its shutdown log clause (`:1049-1053`) and that clause's `INVARIANT:` (`:1042-1048`).
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.Diagnostics.cs` —
-  `IsShutdownCancellation` (`:382-384`).
+  `IsShutdownCancellation` (`:386-388`) and the delivery-fault exemption that calls it (`:262`).
+- `src/Chatter.MessageBrokers/tests/Receiving/UsingBrokeredMessageReceiver/WhenDispatchingReceivedMessage.cs` — the
+  receiver dispatch seam's oracles.
