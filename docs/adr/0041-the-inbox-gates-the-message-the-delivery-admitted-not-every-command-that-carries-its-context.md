@@ -5,9 +5,9 @@ date: 2026-09-25
 
 # The Inbox gates the message the delivery admitted, not every command that carries its context
 
-The Inbox deduplicates a delivery. `InboxBehavior<TMessage>` now gates only the Delivery Entry: the message instance
-the delivery admitted into the Command Pipeline. Every other message dispatched on that delivery's context goes straight
-to `next()`. Before this change the behaviour gated any Command whose context was an `IMessageBrokerContext`, and a
+The Inbox deduplicates a delivery. `InboxBehavior<TMessage>` now gates only the Delivery Entry: the first message
+instance the delivery's current receive attempt admitted into the Command Pipeline. Every other message dispatched on
+that delivery's context in that attempt goes straight to `next()`. Before this change the behaviour gated any Command whose context was an `IMessageBrokerContext`, and a
 Command dispatched in-process from inside a received handler carries that same context. This ADR records what that
 did on each reliability tier, the options considered, the one that was chosen, and what it leaves as it was.
 
@@ -81,7 +81,7 @@ the Inbox would run for every received message whether or not the application re
 It would stop nested Commands from reaching the Inbox, but it would also take them out of the delivery they run
 inside. `UnitOfWorkBehavior` (`Reliability/UnitOfWorkBehavior.cs:19`) and `OutboxProcessingBehavior`
 (`Reliability/Outbox/OutboxProcessingBehavior.cs:26`) find the delivery's `TransactionContext` in the context's
-container, where the receiver put it (`BrokeredMessageReceiver.cs:1077`). The Cosmos document tier finds the delivery
+container, where the receiver put it (`BrokeredMessageReceiver.cs:1096`). The Cosmos document tier finds the delivery
 through `GetInboundBrokeredMessage()` (`DocumentTierBatchLifecycleBehavior.cs:83`), which is the same
 `is IMessageBrokerContext` test (`MessageHandlerContextExtensions.cs:161-169`). A nested Command given a fresh
 non-broker context would find neither, so the reliability behaviours would treat it as work outside the delivery's
@@ -101,17 +101,40 @@ pass the gate and run itself again.
 
 Recorded under *Decision*.
 
+### Option 6 — stamp the attempt ordinal on the delivery's container (REJECTED)
+
+The receiver would stamp each Recovery attempt's ordinal on the delivery's container, and `InboxDeliveryEntry` would
+rebind whenever the ordinal it was bound under differs from the stamped one. It needs the same cooperation from the
+receive seam as Option 5, which installs a fresh entry at that seam instead, and it has more parts: a second container
+value, the ordinal's bookkeeping and a comparison in the entry. It closes no case that Option 5 leaves open.
+
+### Option 7 — key the Delivery Entry on the deserialized payload instance (REJECTED)
+
+The receiver would record the payload instance it deserialized, and the Inbox would gate only that instance. A retry
+re-presents that instance, so it would be gated again. But `InboxBehavior` is a Command behaviour, so when the
+delivered payload is an Event the payload never reaches the Inbox, and no Command dispatched during the delivery would
+be gated at all. The same holds for every `ChangeFeedReceiver` delivery: its override of `DispatchReceivedMessageAsync`
+never dispatches the payload and dispatches Events built from it instead. Those deliveries would lose the
+deduplication they had on master, where the first Command their handlers dispatched was gated under the delivery's
+message id (see R1).
+
 ## Decision
 
-**The Inbox deduplicates a delivery, and gates only that delivery's Delivery Entry.** The Delivery Entry is the
-message instance the delivery admitted into the Command Pipeline. An internal type, `InboxDeliveryEntry`, binds it on
-the delivery's `ContextContainer`: the first message to reach `InboxBehavior` on a delivery's context becomes the
-Delivery Entry, and only a message that is that same instance is sent through `ReceiveViaInbox`. Every other message
-dispatched on that context, at any depth and by any dispatcher, goes straight to `next()`.
+**The Inbox deduplicates a delivery, and gates only the Delivery Entry of each receive attempt.** The Delivery Entry
+is the first message instance the delivery's current receive attempt admitted into the Command Pipeline. An internal
+type, `InboxDeliveryEntry`, binds it on the delivery's `ContextContainer`, and the receiver installs a fresh
+`InboxDeliveryEntry` there at the start of every Recovery attempt (`BrokeredMessageReceiver.BeginReceiveAttempt`). The
+first message to reach `InboxBehavior` on the delivery's context in an attempt becomes that attempt's Delivery Entry,
+and only a message that is that same instance is sent through `ReceiveViaInbox`. Every other message dispatched on that
+context in the attempt, at any depth and by any dispatcher, goes straight to `next()`.
 
-**A recovery retry is gated again.** The receiver deserializes the payload once (`BrokeredMessageReceiver.cs:1081`) and
-its recovery strategy re-dispatches that same instance on the same context (`:1089-1094`). The retry therefore
-presents the Delivery Entry again, and the Inbox gates it again, exactly as it did before this change.
+**A recovery retry is gated again, whoever constructs the Command.** The receiver runs every Recovery attempt on the
+same context (`BrokeredMessageReceiver.cs:1108-1113`), and each attempt first calls `BeginReceiveAttempt`
+(`:1069-1081`), which installs a fresh Delivery Entry before the attempt dispatches anything. The first Command a retry
+dispatches is therefore that attempt's Delivery Entry, and the Inbox gates it again. That holds whether the Command is
+the payload the receiver deserialized once (`:1100`) or a fresh Command that a handler or an overriding receiver builds
+on each attempt. An entry bound by an earlier attempt would never admit such a fresh Command, so the retry would bypass
+the Inbox.
 
 **One edit fixes all three tiers.** The change is in `InboxBehavior`, above every store. No store's contract,
 `IBrokeredMessageInbox.ReceiveViaInbox`, or any store implementation changes.
@@ -144,8 +167,23 @@ Pinned by these facts in `src/Chatter.MessageBrokers/tests/Reliability/Inbox/Usi
 - `MustReceiveViaInboxOnlyTheMessageTheDeliveryAdmitted`: only the Delivery Entry is sent through `ReceiveViaInbox`.
 - `MustInvokeTheHandlerOfASiblingDispatchedAfterTheAdmittedMessageCompleted`: a Command dispatched on the same context
   after the Delivery Entry's handler returned still runs.
-- `MustReceiveViaInboxAgainWhenTheAdmittedMessageIsRedispatchedAfterItsHandlerFailed`: a recovery retry of the
-  Delivery Entry is gated again.
+- `MustReceiveViaInboxAgainWhenTheAdmittedMessageIsRedispatchedAfterItsHandlerFailed`: the instance the entry bound,
+  dispatched again on the same context after its handler failed, is gated again.
+
+**ELIMINATED CLASS: "a receive attempt inherits gate state bound by an earlier attempt of the same delivery".**
+`BeginReceiveAttempt` installs a fresh `InboxDeliveryEntry` on the delivery's container at the start of every Recovery
+attempt, before the attempt dispatches anything, so no attempt can find an entry that an earlier attempt bound. The seam
+is in `ProcessMessageAsync`, above the virtual `DispatchReceivedMessageAsync`, so a receiver that overrides that
+method, as `ChangeFeedReceiver` does, is covered by construction.
+
+Pinned by these facts in
+`src/Chatter.MessageBrokers/tests/Receiving/UsingBrokeredMessageReceiver/WhenGatingTheInboxAcrossRecoveryAttempts.cs`,
+which drive the real receiver loop, a real retry strategy and a real `InboxBehavior`:
+
+- `MustGateTheFirstCommandOfEveryRecoveryAttemptWhenTheHandlerBuildsAFreshOne`: when the handler builds a fresh
+  Command on every attempt, each attempt's Command is sent through `ReceiveViaInbox`.
+- `MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch`: the same holds when a receiver overrides
+  `DispatchReceivedMessageAsync` and builds its own Command on every attempt.
 
 ## Consequences
 
@@ -159,24 +197,36 @@ Pinned by these facts in `src/Chatter.MessageBrokers/tests/Reliability/Inbox/Usi
 - **The Inbox is not a loop guard.** A handler that dispatches a new Command of its own type now dispatches it for real
   on every tier, so a handler that does so unconditionally recurses without end. The Entity Framework and Cosmos tiers
   already did this; the in-memory tier used to stop it by accident, by dropping the nested Command.
-- **`InboxDeliveryEntry` takes no lock.** The context container is unsynchronized by decision (ADR-0011), and a
-  delivery's nested dispatches are awaited one at a time on that delivery's context.
+- **`InboxDeliveryEntry` takes no lock.** The context container is unsynchronized by decision (ADR-0011). One worker
+  runs a delivery's Recovery attempts one after another, and an attempt's nested dispatches are awaited one at a time
+  on that delivery's context.
 - **`ChangeFeedReceiver` fans one delivery out as many Events on one context.** `DispatchReceivedMessageAsync`
   (`src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/ChangeFeedReceiver.cs:35-79`) dispatches one Event per changed
-  row on the delivery's context (`:57`, `:63`, `:69`). The first Command any of those Events' handlers dispatches
-  takes the Delivery Entry and is gated; every later one runs. Before this change every later one was gated under the
-  same message id and, once the first one's receipt existed, skipped on every tier.
+  row on the delivery's context (`:57`, `:63`, `:69`). In each receive attempt, the first Command any of those Events'
+  handlers dispatches takes that attempt's Delivery Entry and is gated; every later one in the attempt runs. A retry
+  starts with a fresh entry, so its first Command is gated again. Before this change every later one was gated under
+  the same message id and, once the first one's receipt existed, skipped on every tier.
 
 ### Recorded residuals
 
 These are decisions, not open work.
 
-- **R1: a broker-received Event is not itself deduplicated, so the first Command its handler dispatches takes the
-  Delivery Entry.** `InboxBehavior` is a Command behaviour and never sees the Event. When the delivered payload is an
-  Event, the first Command dispatched on the delivery's context is the first message to reach the Inbox, and it is
-  gated under the delivery's message id. This is inherited, not introduced: that Command was gated before this change
-  as well. It is bounded: later sibling Commands now run, and nothing is silently dropped. The obvious remedy, gating
-  at the receive seam, was rejected as Option 2. No issue is filed for it.
+- **R1: a broker-received Event is not itself deduplicated, so the first Command its handlers dispatch in each receive
+  attempt takes that attempt's Delivery Entry.** `InboxBehavior` is a Command behaviour and never sees the Event. When
+  the delivered payload is an Event, the first Command dispatched on the delivery's context in a receive attempt is the
+  first message to reach the Inbox in that attempt, and it is gated under the delivery's message id. This is inherited,
+  not introduced: that Command was gated before this change as well. It is bounded: later sibling Commands in the
+  attempt now run, and nothing is silently dropped. The obvious remedy, gating at the receive seam, was rejected as
+  Option 2. No issue is filed for it.
+- **R2: a direct call to `DispatchReceivedMessageAsync` bypasses the attempt seam.** `DispatchReceivedMessageAsync` is
+  public and virtual (`BrokeredMessageReceiver.cs:1035`), and `BeginReceiveAttempt` runs in `ProcessMessageAsync`
+  before it, not inside it. A caller that invokes it directly installs no fresh entry, so `InboxBehavior` reuses
+  whatever `InboxDeliveryEntry` the context already holds, or creates one through `GetOrNew` when the context holds
+  none. The root cause is that the seam that scopes the entry to an attempt belongs to the receive loop, and the public
+  dispatch method can be reached without passing through it. It was raised as finding 2cc65ed4 in the local review of
+  #534. It is bounded: it needs a caller that drives the dispatch by hand and reuses one delivery context across
+  calls, and even then the gate behaves as it did in the previous revision of this change, where the entry was scoped
+  to the delivery. It is never worse than that revision. No issue is filed for it.
 
 Related work that is tracked: the Cosmos document tier has its own gate with the same root class, a nested participant
 Command being treated as the delivery, and it is not changed here. That is #538.
@@ -204,7 +254,11 @@ Command being treated as the delivery, and it is not changed here. That is #538.
   (`:34-35`) and `GetInboundBrokeredMessage()` (`:161-169`).
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Sending/InMemoryDispatcher.cs` — nested dispatch on the
   handler's own context (`:14-22`).
-- `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs` — the transaction
-  context placed on the delivery's container (`:1077`), the single deserialization (`:1081`) and the recovery
-  re-dispatch (`:1089-1094`).
-- `src/Chatter.MessageBrokers/tests/Reliability/Inbox/UsingInboxBehavior/WhenHandling.cs` — the oracles.
+- `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs` — the public virtual
+  `DispatchReceivedMessageAsync` (`:1035`), `BeginReceiveAttempt` (`:1069-1081`), which installs each attempt's fresh
+  Delivery Entry (`:1080`), the transaction context placed on the delivery's container (`:1096`), the single
+  deserialization (`:1100`) and the Recovery attempt that calls `BeginReceiveAttempt` before the dispatch
+  (`:1108-1113`).
+- `src/Chatter.MessageBrokers/tests/Reliability/Inbox/UsingInboxBehavior/WhenHandling.cs` — the gate's oracles.
+- `src/Chatter.MessageBrokers/tests/Receiving/UsingBrokeredMessageReceiver/WhenGatingTheInboxAcrossRecoveryAttempts.cs`
+  — the attempt-scope oracles.
