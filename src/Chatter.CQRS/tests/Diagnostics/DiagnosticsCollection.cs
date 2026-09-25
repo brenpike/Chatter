@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -35,6 +36,12 @@ namespace Chatter.CQRS.Tests.Diagnostics
 
     /// <summary>A Command whose handler always fails, so failure spans and failure metrics can be observed.</summary>
     public sealed class FailingCommand : ICommand { }
+
+    /// <summary>A Command whose handler always faults with an <see cref="OperationCanceledException"/>.</summary>
+    public sealed class CancelledCommand : ICommand { }
+
+    /// <summary>An Event whose handler always faults with an <see cref="OperationCanceledException"/>.</summary>
+    public sealed class CancelledEvent : IEvent { }
 
     /// <summary>The exception a <see cref="ThrowingMessageHandler{TMessage}"/> raises.</summary>
     public sealed class DiagnosticsProbeException : Exception
@@ -94,6 +101,17 @@ namespace Chatter.CQRS.Tests.Diagnostics
     }
 
     /// <summary>
+    /// A handler that always throws <see cref="Failure"/>, an <see cref="OperationCanceledException"/>, the same
+    /// instance on every invocation, whether or not the dispatch's cancellation token is signalled.
+    /// </summary>
+    public sealed class ThrowingCancellationHandler<TMessage> : IMessageHandler<TMessage> where TMessage : IMessage
+    {
+        public OperationCanceledException Failure { get; } = new OperationCanceledException("The handled message was cancelled deliberately.");
+
+        public Task Handle(TMessage message, IMessageHandlerContext context) => throw Failure;
+    }
+
+    /// <summary>
     /// A real Message Dispatcher over a real service provider, so the diagnostics tests exercise the whole
     /// dispatch path rather than a mocked stand-in for it.
     /// </summary>
@@ -111,12 +129,16 @@ namespace Chatter.CQRS.Tests.Diagnostics
             EventMessageHandler = new AmbientActivityRecordingHandler<TracedEvent>();
             FailingCommandHandler = new ThrowingMessageHandler<FailingCommand>();
             GenericFailingCommandHandler = new ThrowingGenericMessageHandler<GenericFailingCommand>();
+            CancelledCommandHandler = new ThrowingCancellationHandler<CancelledCommand>();
+            CancelledEventHandler = new ThrowingCancellationHandler<CancelledEvent>();
 
             var services = new ServiceCollection();
             services.AddSingleton<IMessageHandler<TracedCommand>>(CommandHandler);
             services.AddSingleton<IMessageHandler<TracedEvent>>(EventMessageHandler);
             services.AddSingleton<IMessageHandler<FailingCommand>>(FailingCommandHandler);
             services.AddSingleton<IMessageHandler<GenericFailingCommand>>(GenericFailingCommandHandler);
+            services.AddSingleton<IMessageHandler<CancelledCommand>>(CancelledCommandHandler);
+            services.AddSingleton<IMessageHandler<CancelledEvent>>(CancelledEventHandler);
             services.AddSingleton<IDispatchMessages>(provider => new CommandDispatcher(provider, NullLogger<CommandDispatcher>.Instance));
             services.AddSingleton<IDispatchMessages>(provider => new EventDispatcher(provider, NullLogger<EventDispatcher>.Instance));
             services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
@@ -138,6 +160,10 @@ namespace Chatter.CQRS.Tests.Diagnostics
 
         public ThrowingGenericMessageHandler<GenericFailingCommand> GenericFailingCommandHandler { get; }
 
+        public ThrowingCancellationHandler<CancelledCommand> CancelledCommandHandler { get; }
+
+        public ThrowingCancellationHandler<CancelledEvent> CancelledEventHandler { get; }
+
         public Task DispatchCommand() => Dispatcher.Dispatch(new TracedCommand());
 
         public Task DispatchEvent() => Dispatcher.Dispatch(new TracedEvent());
@@ -145,6 +171,14 @@ namespace Chatter.CQRS.Tests.Diagnostics
         public Task DispatchFailingCommand() => Dispatcher.Dispatch(new FailingCommand());
 
         public Task DispatchGenericFailingCommand() => Dispatcher.Dispatch(new GenericFailingCommand());
+
+        /// <summary>Dispatches a <see cref="CancelledCommand"/> under a context carrying <paramref name="callerToken"/>.</summary>
+        public Task DispatchCancelledCommand(CancellationToken callerToken)
+            => Dispatcher.Dispatch(new CancelledCommand(), new MessageHandlerContext(callerToken));
+
+        /// <summary>Dispatches a <see cref="CancelledEvent"/> under a context carrying <paramref name="callerToken"/>.</summary>
+        public Task DispatchCancelledEvent(CancellationToken callerToken)
+            => Dispatcher.Dispatch(new CancelledEvent(), new MessageHandlerContext(callerToken));
 
         public void Dispose() => _serviceProvider.Dispose();
     }

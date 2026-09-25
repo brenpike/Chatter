@@ -105,10 +105,18 @@ namespace Chatter.CQRS.Commands
                 {
                     await DispatchToHandler(message, messageHandlerContext).ConfigureAwait(false);
                 }
+                catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, messageHandlerContext))
+                {
+                    throw;
+                }
                 catch (Exception e)
                 {
                     // INVARIANT: the span status and the metric's error.type come from the same resolver, so the
-                    // two signals can never disagree about how a dispatch failed (ADR-0010 D4).
+                    // two signals can never disagree about how a dispatch failed (ADR-0010 D4). The caller-requested
+                    // cancellation clause above skips both in one step, so such a dispatch marks neither. Pinned by
+                    // WhenChatterTracingIsOptedInto.MustLeaveTheSpanStatusUnsetWhenTheCallerCancelledTheCommandDispatch
+                    // and MustNotMarkTheMeasurementWithAnErrorTypeWhenTheCallerCancelledTheCommandDispatch, which go
+                    // red when that clause is deleted. Rationale: ADR-0040.
                     errorType = ActivityOutcome.ResolveErrorType(e);
                     ActivityOutcome.RecordFailure(activity, e);
                     throw;
