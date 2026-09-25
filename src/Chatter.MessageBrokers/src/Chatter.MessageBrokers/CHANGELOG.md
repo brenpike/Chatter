@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.35.2] - 2026-09-25
+
+### Fixed
+
+- **`BrokeredMessageReceiver` no longer logs `Error` when a dispatch is cut short because the receiver is stopping.** An `OperationCanceledException` or `ObjectDisposedException` raised while its receive token is signalled is now logged once at `Debug` and rethrown; the worker's ladder then drops it without a further log, as before. A cancellation raised while the receiver is still running is still logged at `Error`. The decision uses the same shutdown condition the worker and the receive telemetry already use. ADR-0010 D11, ADR-0040 (#453).
+
 ## [0.35.1] - 2026-09-24
 
 ### Removed
