@@ -177,16 +177,19 @@ it as any other fault, so a cancelled handler ends the dispatch the way a failin
 have forced a separate choice about whether cancellation short-circuits the remaining handlers or is
 collected alongside ordinary faults.
 
-**Amended 2026-09-25 (#453): a cancellation the caller requested no longer takes the `catch (Exception)`
-path.** `EventDispatcher` now carries a filtered
-`catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, messageHandlerContext))`
-clause ahead of the `catch (Exception)` described above, so such a fault is passed to `LogDebug` once instead
-of `LogError`, and the instrumented path leaves the span status unset, adds no `error.type` tag and no
-`exception` event, and records the dispatch duration without `error.type`. **The control flow this ADR decides
-is unchanged:** the fan-out still stops at the handler that raised it, no subsequent handler is invoked, and the
+**Amended 2026-09-25 (#453): a cancellation the caller requested is no longer RECORDED as a failure, though it
+still travels the `catch (Exception)` path this ADR describes.** `EventDispatcher` holds no cancellation
+predicate in any catch clause. Each of its two frames has exactly one fault clause — the uninstrumented
+`catch (Exception e) when (handleFault)`, whose filter only decides WHICH frame logs, and the diagnostics
+wrapper's own `catch (Exception e)` — and both hand the fault to the private `LogDispatchFault`. That method
+asks `CallerRequestedCancellation.Explains(fault, messageHandlerContext)` ONCE and, on that single answer,
+passes the exception to `LogDebug` in place of `LogError` and tells the wrapper not to mark the dispatch
+failed, so the instrumented path leaves the span status unset, adds no `error.type` tag and no `exception`
+event, and records the dispatch duration without `error.type`. **The control flow this ADR decides is
+unchanged:** the fan-out still stops at the handler that raised it, no subsequent handler is invoked, and the
 exception still reaches the caller exactly as the handler threw it. Only the classification of that one fault
-changed, and only when the token on the supplied context is signalled; every other cancellation still takes the
-`catch (Exception)` path. See ADR-0040.
+changed, and only when the token on the supplied context is signalled; a cancellation the caller did not
+request is still passed to `LogError` and still recorded as a failure. See ADR-0040.
 
 The caller-facing statement of the contract lives in `src/Chatter.CQRS/src/README.md` (Events: Domain vs
 Integration); the CQRS `CONTEXT.md` and the `EventDispatcher.Dispatch` XML remarks point here for the

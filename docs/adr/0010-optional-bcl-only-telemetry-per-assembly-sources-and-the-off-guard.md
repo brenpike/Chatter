@@ -937,6 +937,14 @@ consequence, stated plainly: **that state machine now exists whether or not diag
 belongs to the dispatch itself, not to the instrumentation, and it is no longer something the off
 path can be described as avoiding.
 
+**Amended 2026-09-25 (#453): the `CommandDispatcher` citation above is re-measured.** Deciding a dispatch
+fault once, so that the log and the telemetry cannot read the caller's token separately, moved the line
+ranges the paragraph above cites. `Dispatch` is unchanged at `:40-54`; `DispatchToHandler` is now at
+`:56-90`, having gained a `handleFault` filter on its `catch` and a call to the private `LogDispatchFault`
+that classifies the fault. Nothing the amendment above decides changes — the uninstrumented dispatch is
+still `async`, and that state machine still exists whether or not diagnostics are on. Only the line numbers
+move. See ADR-0040.
+
 R4's INTENT is unchanged and is still enforced by the off-guard: `Dispatch` evaluates
 `ChatterDiagnostics.IsEnabled` before any argument is constructed and returns the uninstrumented
 `Task` on the off path, so an application that never opted in still reads no timestamp, builds no
