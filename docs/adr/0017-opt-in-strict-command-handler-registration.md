@@ -68,6 +68,10 @@ what this ADR settles.
   are stated plainly under *Non-goals*: it only sees what the scan sees, and what the scan sees can move
   between two applications of the same filter.
 
+  **Amended 2026-09-24 (#468): the second weakness no longer applies when the builder's service collection
+  carries a scan record.** `AddChatterCqrs` records the assemblies it scanned on the `IServiceCollection`, and the
+  check probes those instead of applying the filter again; see the amendment under *Decision* and ADR-0039.
+
 ### Why an `IChatterBuilder` extension rather than a parameter
 
 The module's one composition idiom is the `IChatterBuilder` extension — 15 extension methods across the
@@ -109,6 +113,23 @@ set is stable, because `AssemblySourceFilterBuilder` materializes a `List<Assemb
 filter set is not reported is pinned by `MustNotReportCompetingHandlersInAnAssemblyOutsideTheFilterSet`
 (`WhenThrowingOnDuplicateCommandHandlers.cs:113-123`); the deferred-set gap is recorded as a tracked
 non-goal below.
+
+**Amended 2026-09-24 (#468): the check no longer re-applies the filter when the builder's service collection
+carries a scan record.** `AddChatterCqrs` now materializes `filter.Apply()` once (`CqrsExtensions.cs:47`), feeds
+that list to its scans, and records it in an internal `HandlerScanRecord` on the `IServiceCollection`
+(`CqrsExtensions.cs:52`). Each call forks a new, frozen record, holding the assemblies of every record the
+collection carries followed by those it scanned, and writes it in place of the collection's first record
+descriptor, removing any other (`HandlerScanRecord.Record`; ADR-0039, *Decision*). The check reads the union of
+every record the collection carries (`HandlerScanRecord.FindScannedAssemblies`) through `IChatterBuilder.Services`
+(`GetAssembliesToProbe`, `CqrsExtensions.cs:129-143`), so it also covers two `AddChatterCqrs` calls on one
+collection, a check on the builder from the earlier call, and a wrapper that forwards `Services`. It re-applies the filter only when the collection
+carries no record, for example a builder from the public `ChatterBuilder.Create` over a collection that no
+`AddChatterCqrs` call has seen. `ChatterBuilder` is unchanged and still exposes the same filter instance as
+`IChatterBuilder.AssemblySourceFilter`. The mechanism above is also stated too broadly. `Apply()` calls
+`GetSourceAssemblies()` once per `Apply()` call, not once per enumeration (`AssemblySourceFilter.cs:56-59,64-66`);
+only the `Where` over the returned sequence is deferred, so re-enumerating one result re-reads the source only when
+the provider's own sequence re-evaluates, and the default provider's is an array read when `Apply()` runs. The
+conclusion held for the check all the same, because the check was a second `Apply()` call. See ADR-0039.
 
 **Candidates are not chosen by the check. They are read back out of the scan.**
 `FindCommandsWithCompetingHandlers` (`CqrsExtensions.cs:118-127`) runs `ScanCommandHandlers`
@@ -155,6 +176,15 @@ land in one set. The query scan carries the matching characterization pin,
 red if the scan stops deduplicating types; two DISTINCT scanned handler types for one closed
 `IQueryHandler<TQuery, TResult>` still throw, pinned by `MustThrowWhenTwoScannedHandlersHandleTheSameQuery`
 (`WhenAddingQueryHandlers.cs:16-28`).
+
+**Amended 2026-09-24 (#468): the probe's `.Distinct()` is still unpinned, and the pin named in the body does not
+guard it.** The body above says `MustNotReportOneHandlerReachableFromTwoScannedAssemblies` pins the dedupe. It does
+not: measured on this change, removing the `.Distinct()` leaves that test green, because Scrutor 7.0.0's
+`types.ToHashSet()` in `AddSelector` collapses the repeated type before the probe groups anything. No test in this
+repository pins the `.Distinct()`. The same holds for the case #468 adds, one assembly scanned by two
+`AddChatterCqrs` calls on one collection: `MustNotReportOneHandlerWhenTheSameAssemblyIsScannedByTwoCalls` is a
+characterization pin that no mutation of Chatter code reddens (ADR-0039, *Consequences*). The `.Distinct()` stays
+as a defensive guard.
 
 **This shape replaced a parallel copy of the candidate rule, and the copy had already drifted.** The
 previous check re-derived its own candidates — its own type source, its own
@@ -230,6 +260,12 @@ whose `GetTypes()` throws anything other than `ReflectionTypeLoadException` stil
 aborts the check the same way; explicit-assembly mode never calls it. This is read from Scrutor 7.0.0's source and
 this module's; no test in this repository pins the loadable-subset composition or the abort.
 
+**Amended 2026-09-24 (#468): the re-derived-set caveat and the aborted check now apply only when the builder's
+service collection carries no scan record.** When it carries one, the probe scans the assemblies the registration
+scans recorded (ADR-0039), so it sees the same assembly set as well as the same loadable subset. It also does not
+run `Apply()`, so the namespace-selection pass cannot abort the check on that path. A builder whose collection
+carries no record is still probed through `Apply()`, and both statements above still hold for it.
+
 **Grouping is by closed command-handler interface, not by handler type.** The probe groups the descriptors
 by `ServiceType` (`CqrsExtensions.cs:121`), and the scan registers each handler only as the interfaces
 returned by `GetMessageHandlerInterfacesFor(typeof(ICommand))` (`CqrsExtensions.cs:189,194-197`), so a class
@@ -292,6 +328,11 @@ is answered here rather than treated as a bug.
   own scan produced, never the application's `IServiceCollection`; a handler registered by hand before
   `AddChatterCqrs` and then replaced by a scanned one produces no group of two scanned types and is not
   reported.
+
+  **Amended 2026-09-24 (#468): still not covered, now by decision.** The check now reads the application's
+  collection through `IChatterBuilder.Services`, but only to find the scan record; the probe still groups only the
+  descriptors its own scan produced. Comparing the scan against the application's collection is rejected on its
+  merits, because it would also flag the deliberate overrides other modules make (ADR-0039, residual R1).
 - **A handler registered by another module after `AddChatterCqrs` is not covered**, for the same reason.
   The check is a snapshot of the scan at the moment it is called.
 - **Deferred (tracked) — the scan set is re-derived, not frozen** (issue
@@ -316,6 +357,24 @@ is answered here rather than treated as a bug.
   collectible `AssemblyLoadContext.Unload()` removes assemblies. An earlier revision of this bullet bounded
   the impact to "the false-POSITIVE direction only" and claimed it "can never produce a false negative for
   what was registered". Neither is earned, and both are DELETED here rather than softened.
+
+  **Amended 2026-09-24 (#468): resolved by ADR-0039 when the builder's service collection carries a scan
+  record.** `AddChatterCqrs` materializes the set once (`CqrsExtensions.cs:47`) and records it on the
+  `IServiceCollection` (`CqrsExtensions.cs:52`), where the check reads it through `IChatterBuilder.Services`. Neither
+  route above was taken: no public `IChatterBuilder` member is added, the builder still exposes the same filter
+  instance, and `AddMessageBrokers` still applies that filter itself. The gap remains, in both directions, for a
+  builder whose collection carries no record, which the check still probes by applying its filter (ADR-0039,
+  residual R3). The correction to the `Apply()` mechanism recorded under *Decision* applies to this bullet too.
+
+  **Amended 2026-09-24 (#468): correction of record — the constraint this bullet calls locked was never a user
+  decision.** The user decided only that the check is opt-in and off by default, and that it ships as a public
+  extension method on `IChatterBuilder`. "No new public `IChatterBuilder` member" was not one of those decisions
+  (ADR-0039, *Correction*). The public-member route was later weighed on its merits and rejected for a different
+  reason (ADR-0039, Option A). The bullet also overstates the same-instance pin.
+  `WhenGettingProperties.MustGetMarkerAssemblies` (`WhenGettingProperties.cs:35-37`) builds its builder with the
+  public `ChatterBuilder.Create` over a mock filter, so it goes red only if the filter is wrapped inside
+  `ChatterBuilder`, not if `AddChatterCqrs` wraps it before calling `Create` (ADR-0039, Option F). The non-goal
+  itself is resolved by ADR-0039, as the amendment above records.
 - **Events are out of scope by design.** `AddEventHandlers` uses `RegistrationStrategy.Append`
   (`CqrsExtensions.cs:168`), so several handlers for one Event all register and all run; that is the
   documented fan-out contract (see ADR-0012), not a displacement. Pinned by
@@ -343,6 +402,11 @@ not a minor.
   rebuilds every command-handler descriptor into a throwaway collection (`CqrsExtensions.cs:119`). That is
   startup-only and opt-in, and it is what buys the probe its agreement with the registration: the price of
   measuring the registration is performing it.
+
+  **Amended 2026-09-24 (#468): the check no longer re-applies the filter when the builder's service collection
+  carries a scan record** (ADR-0039); it scans the assemblies the registration recorded. The second Scrutor type
+  scan and the throwaway descriptor collection remain, and they are still what buys the agreement. A builder whose
+  collection carries no record still pays for re-applying its filter.
 - **Documentation must not describe the replace strategy as enforcement.** The strategy selects ONE
   registration; it does not verify that only one candidate existed. Any claim that scanning "enforces that
   a Command resolves to exactly one handler" is false about registration and must be deleted rather than
@@ -374,6 +438,51 @@ Separately, and predating #394, the package citations under Options 2 and 3 (`Ch
 describe two target-framework legs: the module now targets `net10.0` only (ADR-0038), with
 `Microsoft.Extensions.Logging.Abstractions` at `:20` and `Microsoft.Extensions.Hosting` at `:21`. Neither option's
 conclusion depends on it.
+
+**Amended 2026-09-24 (#468): line citations re-measured.** This change added the materialization, the scan record
+and `GetAssembliesToProbe` to `CqrsExtensions.cs`, the internal `WithSourceProvider` to
+`AssemblySourceFilterBuilder.cs`, and one `using` and several facts to `WhenThrowingOnDuplicateCommandHandlers.cs`,
+so citations into those files in this ADR, References included, have moved. Each line below was located by name at
+this change, not by offset; several printed ranges were already off before it. The claims they carry are unchanged
+except where an amendment above says otherwise. In `CqrsExtensions.cs`: the five `AddChatterCqrs` overloads at
+`:30-62`, `:72-73`, `:82-83`, `:92-93` and `:102-103` (signatures at `:30,72,82,92,102`); in the first of them, the
+filter built at `:32-34`, the materialization at `:47` with its `INVARIANT:` at `:35-46`, `ChatterBuilder.Create` at
+`:48`, the registration scans at `:50-51` and the record at `:52`, so the body's `:32-37` now spans `:32-48` and its
+`:39` is `:50`; `ThrowOnDuplicateCommandHandlers` at `:111-121`, its throw at `:115-118` and its return of the same
+builder at `:120`; `GetAssembliesToProbe` at `:129-143` with its two `INVARIANT:` blocks at `:131-141`;
+`FindCommandsWithCompetingHandlers` at `:152-161`, with the `INVARIANT:` in its doc comment at `:148-150`, the
+throwaway `new ServiceCollection()` and `Append` at `:153`, the null-`ImplementationType` filter at `:154`, the
+`GroupBy` on `ServiceType` at `:155`, the Command read from the group key at `:157`, `.Distinct()` and the handler
+ordering at `:158`, the two-or-more filter at `:159` and the Command ordering at `:160`; `DescribeAmbiguousCommands`
+at `:163-176`, its opening sentence at `:165`, the per-Command lines at `:167-173` and the rendered handler names at
+`:172`; the event scan `AddEventHandlers` at `:196-207`, with `AddClasses` at `:201-202` and `Append` at `:203`;
+`AddCommandHandlers` and its `Replace()` at `:209-210`; `ScanCommandHandlers` at `:217-228`, its `AddClasses` at
+`:222-223` and its `.As(...)` at `:225`; `GetMessageHandlerInterfacesFor` at `:230-233`; `IsClosedHandlerType` and
+`IsValidMessageHandler` at `:235-240`; the query scan `AddQueryHandlers` at `:247-248` for `AddClasses` and `:249`
+for `Throw`, within `:242-253`. The References ranges read: the extension, the probe and the message builder at
+`:111-176`, the command scan at `:209-228`, and the event and query registrations at `:196-207` and `:242-253`. The
+namespace at `:15` has not moved. `ChatterBuilder.cs` is unchanged by this change, and its citations are correct:
+`Configuration` at `:19`, `AssemblySourceFilter` at `:21` and the public `Create` at `:35`; so is
+`IChatterBuilder.cs:16`. In `AssemblySourceFilterBuilder.cs` the `List<Assembly>` field stays at `:12`; the `Union`
+in `WithMarkerTypes` is at `:77`, the `Union` in `WithExplicitAssemblies` at `:90`, and `Build` at `:98-102`
+constructs the filter from that list at `:101`, so `:12,75,86` reads `:12,90,101` and `:62,75` reads `:77,90`.
+`AssemblySourceFilter.cs` is unchanged and its citations are correct. In
+`WhenThrowingOnDuplicateCommandHandlers.cs`: `MustNotThrowWhenSeveralHandlersHandleTheSameEvent` at `:34-40`;
+`MustNotThrowWhenTheOnlyOtherHandlersOfACommandAreAbstractOrOpenGeneric` at `:42-50`;
+`MustReportEveryAmbiguousCommandInOneExceptionOrderedByFullName` at `:52-74`;
+`MustRegisterTheLastHandlerScannedWithoutThrowingWhenTheCheckIsNotEnabled` at `:76-88`;
+`MustReturnTheSameBuilderWhenNoCommandIsHandledMoreThanOnce` at `:90-96`;
+`MustNotThrowForAHandlerOfBothACommandAndAnEvent` at `:106-112`;
+`MustNotReportCompetingHandlersInAnAssemblyOutsideTheFilterSet` at `:114-124`;
+`MustNotReportACompilerGeneratedHandlerBecauseItIsNeverRegistered` at `:126-136`;
+`MustRegisterAndReportNonPublicCompetingHandlers` at `:138-163`, with its doc comment at `:138-146` and its
+`IsVisible` assertion at `:155`; `MustNotReportOneHandlerReachableFromTwoScannedAssemblies` at `:165-174`;
+`MustLeaveTheApplicationServiceCollectionUntouched` at `:176-188`; `MustDescribeTheScanOrderTheScanActuallyUses` at
+`:190-200`; and the fixture pattern, `New.Common().Assembly.WithTypes(...)` with `WithExplicitAssemblies`, in the
+`AddChatterCqrsScanning` helper at `:409-414`. That doc comment no longer carries the stale sentence the #394
+amendment describes; it names the two-argument overload with `publicOnly: false` passed explicitly, and it read that
+way before this change. Separately, and predating this change, the dynamic-assembly exclusion that the body cites
+as `CurrentAppDomainAssemblyProvider.cs:17` and the #394 amendment as `:19` is at `:22`.
 
 ## References
 
@@ -416,3 +525,6 @@ conclusion depends on it.
   several handlers for one Event are intended and are not a displacement.
 - ADR-0015 — *Inbound header trust: ground truth stamped over wire values, and no trust boundary*. Source
   of the delete-the-unearned-claim doctrine applied to the documentation consequence above.
+- ADR-0039 — *The duplicate command handler check reads the scan record on the service collection* (added
+  2026-09-24, #468). Resolves the #468 non-goal when the builder's service collection carries a scan record, and
+  withdraws the constraint that non-goal presented as locked; the dated amendments above record what it changed.

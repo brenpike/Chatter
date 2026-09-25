@@ -36,5 +36,19 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilterBuilde
         [Fact]
         public void MustThrowIfNullAssemblySourceProvider()
             => FluentActions.Invoking(() => AssemblySourceFilterBuilder.WithAssemblySourceProvider(null)).Should().ThrowExactly<ArgumentNullException>();
+
+        [Fact]
+        public void MustSetTheSourceProviderOnAnExistingBuilder()
+        {
+            var builder = AssemblySourceFilterBuilder.New();
+
+            builder.WithSourceProvider(_mockAssemblySourceProvider.Object).Should().BeSameAs(builder);
+            builder.Build().AssemblySourceProvider.Should().BeSameAs(_mockAssemblySourceProvider.Object);
+        }
+
+        [Fact]
+        public void MustThrowWhenTheSourceProviderIsNull()
+            => FluentActions.Invoking(() => AssemblySourceFilterBuilder.New().WithSourceProvider(null))
+                            .Should().ThrowExactly<ArgumentNullException>();
     }
 }

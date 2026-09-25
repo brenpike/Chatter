@@ -58,14 +58,16 @@ services.AddChatterCqrs(
 
 #### Failing composition when two handlers claim one command
 
-`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It re-reads the same assembly source filter `AddChatterCqrs` scanned, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
+`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It checks the assemblies scanned by every `AddChatterCqrs` call on the same service collection, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
 
 ```csharp
 services.AddChatterCqrs(configuration, typeof(CreateOrderHandler))
         .ThrowOnDuplicateCommandHandlers();
 ```
 
-The check is **off unless you call it**: no `AddChatterCqrs` overload invokes it, so an application that never calls it composes exactly as it did before. A handler registered by hand before `AddChatterCqrs`, or registered by another module after it, is not compared against the scanned ones. Duplicate **event** handlers are not reported either: event handlers are appended rather than replaced, so several handlers for one event all register and all run. Duplicate **query** handlers need no such flag — query handlers are registered with a *throw* strategy, so two distinct scanned handler types for the same closed `IQueryHandler<TQuery, TResult>` fail the scan itself.
+Call it after your last `AddChatterCqrs`, because it checks the assemblies recorded by the `AddChatterCqrs` calls made before it.
+
+The check is **off unless you call it**: no `AddChatterCqrs` overload invokes it, so an application that never calls it resolves exactly the services it did before. One thing does change for every application: each `AddChatterCqrs` call now leaves a single internal bookkeeping descriptor on the service collection, which nothing resolves and which holds the assemblies that call scanned; [ADR-0039](https://github.com/brenpike/Chatter/blob/master/docs/adr/0039-the-duplicate-command-handler-check-reads-the-scan-record-on-the-service-collection.md) records why it is written unconditionally and what it retains. A handler registered by hand before `AddChatterCqrs`, or registered by another module after it, is not compared against the scanned ones. Duplicate **event** handlers are not reported either: event handlers are appended rather than replaced, so several handlers for one event all register and all run. Duplicate **query** handlers need no such flag — query handlers are registered with a *throw* strategy, so two distinct scanned handler types for the same closed `IQueryHandler<TQuery, TResult>` fail the scan itself.
 
 Why the check is opt-in, and why turning it on by default would be a major-version change, is recorded in [ADR-0017](https://github.com/brenpike/Chatter/blob/master/docs/adr/0017-opt-in-strict-command-handler-registration.md).
 
