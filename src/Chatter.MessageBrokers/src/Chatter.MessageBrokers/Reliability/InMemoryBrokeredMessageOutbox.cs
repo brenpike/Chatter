@@ -283,10 +283,18 @@ namespace Chatter.MessageBrokers.Reliability
                 // timestamp, so no expiry instant is computed and there is nothing left to overflow -
                 // subtracting two DateTime values always fits a TimeSpan and comparing two doubles is total.
                 // AddMinutes was the one operation here that could throw, and OutboxProcessor calls
-                // UpdateProcessedDate inside its unit of work BEFORE dispatching and catches every exception
-                // around the whole block, so a ttl too large to add stamped each message processed, logged one
-                // line and left it never dispatched and never retried. A ttl no elapsed time can reach now
-                // simply never expires anything, which is what such a ttl asks for.
+                // UpdateProcessedDate inside its unit of work AFTER dispatching and catches every exception
+                // around the whole block, so a ttl too large to add stamped each message processed - the stamp
+                // lands before this scan runs - and then threw on a message the publish had ALREADY put on the
+                // broker. Nothing was lost and nothing was published twice: the in-memory unit of work has no
+                // rollback to discard that stamp, and no later poll hands back a stamped row. What it cost was
+                // the failure ladder that followed every drain - one logged line, a second from the re-claim of
+                // the published row throwing the same way, and a dispatch attempt spent on a row already
+                // processed. A ttl no elapsed time can reach now simply never expires anything, which is what
+                // such a ttl asks for.
+                // Oracle: MustRetainProcessedMessageWithoutFaultingWhenMinutesToLiveOutrunsTheDateRange -
+                // restoring the AddMinutes form reddens it. The pre-fix failure ladder described above is
+                // history rather than behaviour this file has now, and no test pins it.
                 if ((DateTime.UtcNow - message.ProcessedFromOutboxAtUtc.Value).TotalMinutes < ttl)
                 {
                     continue;

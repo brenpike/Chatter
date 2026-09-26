@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery;
+using Chatter.MessageBrokers.Reliability.Inbox;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -1061,6 +1062,27 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
+        /// <summary>
+        /// Begins one Recovery attempt at <paramref name="messageContext"/>: counts the attempt and installs a fresh
+        /// Delivery Entry, so the first command this attempt dispatches is the one the inbox gates.
+        /// </summary>
+        private static void BeginReceiveAttempt(MessageBrokerContext messageContext)
+        {
+            CountReceiveAttempt();
+
+            // INVARIANT: the Delivery Entry is attempt-scoped. A retry re-runs the dispatch on the SAME context, and a
+            // handler (or an overriding receiver such as ChangeFeedReceiver) may construct a fresh command per attempt,
+            // which an entry bound on an earlier attempt would never admit, so that attempt would bypass the inbox. The
+            // entry is installed here, not inside CountReceiveAttempt, because that returns early when BrokerDiagnostics
+            // has no listeners. Pinned by WhenGatingTheInboxAcrossRecoveryAttempts: deleting this Include reddens
+            // MustGateTheFirstCommandOfEveryRecoveryAttemptWhenTheHandlerBuildsAFreshOne and
+            // MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch. The seam is in
+            // ProcessMessageAsync, above the public virtual DispatchReceivedMessageAsync, so a caller that invokes that
+            // method directly installs no fresh entry and is outside the guarantee (ADR-0041 G3; see #539); no test
+            // pins that.
+            messageContext.Container.Include(new InboxDeliveryEntry());
+        }
+
         async Task ProcessMessageAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
         {
             receiverTokenSource.ThrowIfCancellationRequested();
@@ -1088,7 +1110,7 @@ namespace Chatter.MessageBrokers.Receiving
             using var localTransaction = _infrastructureReceiver.CreateLocalTransaction(transactionContext);
             await _recoveryStrategy.ExecuteAsync(async () =>
                 {
-                    CountReceiveAttempt();
+                    BeginReceiveAttempt(messageContext);
                     await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
                     return true;
                 }, receiverTokenSource);

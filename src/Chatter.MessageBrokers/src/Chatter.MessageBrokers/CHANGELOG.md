@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.35.3] - 2026-09-25
+
+### Fixed
+
+- **A Command a received handler dispatches in-process now runs.** `InboxBehavior<>` gated every Command dispatched with the delivery's context, so a Command a handler dispatched with `context.InMemory()` looked like the delivery itself. The in-memory Inbox silently skipped it; the relational Inbox re-claimed it and could skip a second one; the standalone Cosmos Inbox completed the delivery's marker before the outer handler finished, so a later failure of the outer handler could be lost on redelivery. The Inbox now gates only the first message each receive attempt admits (each retry attempt's first Command is gated again, even when the handler builds a fresh one). No code change is needed. The Inbox is not a loop guard: a handler that dispatches a new Command back into itself now loops on every Inbox. For a delivered Event whose handler(s) dispatch several Commands in one receive attempt, only the first is deduplicated; later ones are at-least-once on retry or redelivery. A direct call to `DispatchReceivedMessageAsync` is outside this guarantee. A behavior registered outside `InboxBehavior<>` that dispatches a command before it calls the next behavior takes the Delivery Entry, so the delivered command runs again on a retry or redelivery; no behavior this package ships does so. Deduplicating the whole delivery is tracked in #539. ADR-0041 (#534).
+- **A code comment on `InMemoryBrokeredMessageOutbox` that described `OutboxProcessor` as stamping a dispatched message's processed date BEFORE dispatching is corrected to say AFTER dispatching, matching the code it describes.** This carries no code change and no user-facing effect (#534).
+
 ## [0.35.2] - 2026-09-25
 
 ### Fixed
