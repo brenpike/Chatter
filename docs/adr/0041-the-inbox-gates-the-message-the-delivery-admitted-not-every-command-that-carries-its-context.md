@@ -202,8 +202,12 @@ which drive the real receiver loop, a real retry strategy and a real `InboxBehav
   on every tier, so a handler that does so unconditionally recurses without end. The Entity Framework and Cosmos tiers
   already did this; the in-memory tier used to stop it by accident, by dropping the nested Command.
 - **`InboxDeliveryEntry` takes no lock.** The context container is unsynchronized by decision (ADR-0011). One worker
-  runs a delivery's Recovery attempts one after another, and an attempt's nested dispatches are awaited one at a time
-  on that delivery's context.
+  running a delivery's Recovery attempts one after another is a construction fact; an attempt's nested dispatches
+  being awaited one at a time on that delivery's context is not — ADR-0011 places that on the application as a
+  requirement it deliberately does not enforce, and records that a missing `await` is enough to break it. An
+  application that breaks it corrupts the container's own dictionary before this entry's field is ever read, so the
+  entry adds no exposure the container does not already carry, and reopening the decision belongs to #333 rather than
+  here.
 - **`ChangeFeedReceiver` fans one delivery out as many Events on one context.** `DispatchReceivedMessageAsync`
   (`src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/ChangeFeedReceiver.cs:35-79`) dispatches one Event per changed
   row on the delivery's context (`:57`, `:63`, `:69`). What the Inbox guarantees for those deliveries is G2, under
@@ -214,9 +218,15 @@ which drive the real receiver loop, a real retry strategy and a real `InboxBehav
 This design is interim (see *Decision*). It covers a delivery fully only when the delivered payload is a Command. The
 limits below are closed by epic #539's idempotent receiver, not by further work on this design.
 
-- **G1: a delivered Command, and every Command it dispatches in-process, is fully covered.** The payload is the
-  attempt's Delivery Entry, and nested Commands join the same unit of work. Pinned by the facts listed under
-  *Closed-by-Construction Acceptance Test*.
+- **G1: a delivered Command, and every Command it dispatches in-process, is fully covered by the delivery's own
+  inbox receipt.** The payload is the attempt's Delivery Entry, so no nested Command is ever gated on its own and the
+  delivery's receipt is what covers all of them. Coverage is what G1 claims; atomicity is a per-tier property and is
+  not. Only the relational tier runs those nested Commands inside the delivery's ambient transaction, so only there
+  does an outer failure roll their writes back (ADR-0006). The in-memory tier and the standalone Cosmos inbox register
+  no unit of work — `WithCosmosInbox` is cited for that at *Context* above — so an outer failure rolls nothing back
+  and a nested Command's effects re-run when the delivery is redelivered. That is the at-least-once posture ADR-0009
+  already records for non-batched effects, and this design leaves it exactly as it was. Pinned by the facts listed
+  under *Closed-by-Construction Acceptance Test*.
 - **G2: a delivered Event is not itself deduplicated.** The first Command its handler(s) dispatch in each receive
   attempt is gated; later Commands in that attempt are at-least-once on retry or redelivery (strictly better than
   master, which silently dropped them). This covers `ChangeFeedReceiver`, which fans one delivery into N Events on one
