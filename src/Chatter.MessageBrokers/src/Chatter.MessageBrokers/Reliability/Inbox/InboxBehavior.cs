@@ -31,7 +31,9 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             // a fresh command is gated again; GetOrNew still creates one lazily for a dispatch that never passed that
             // seam. When the delivered payload is an Event the Inbox never sees it, so the attempt's first Command
             // takes the entry and later sibling Commands in that attempt are at-least-once on retry or redelivery
-            // (ADR-0041 G2; see #539). No test pins that bound.
+            // (ADR-0041 G2; see #539). No test pins that bound. A behavior outside this one that dispatches on the
+            // delivery's context before calling next() binds the entry first, so the delivered Command goes straight
+            // to next() and is at-least-once on retry or redelivery (ADR-0041 G4; see #539). No test pins that bound.
             // Pinned by WhenGatingTheInboxAcrossRecoveryAttempts: deleting the Include in BeginReceiveAttempt
             // reddens MustGateTheFirstCommandOfEveryRecoveryAttemptWhenTheHandlerBuildsAFreshOne and
             // MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch. Pinned by WhenHandling: restoring the bare `is IMessageBrokerContext` gate
