@@ -116,9 +116,13 @@ delivered payload is an Event the payload never reaches the Inbox, and no Comman
 be gated at all. The same holds for every `ChangeFeedReceiver` delivery: its override of `DispatchReceivedMessageAsync`
 never dispatches the payload and dispatches Events built from it instead. Those deliveries would lose the
 deduplication they had on master, where the first Command their handlers dispatched was gated under the delivery's
-message id (see R1).
+message id (see G2).
 
 ## Decision
+
+**This design is interim.** It is superseded when the design of epic #539 lands. The real fix is an idempotent
+receiver at the delivery boundary: the unit of work, the Inbox and the outbox wrapped around the whole delivery. Until
+then, the guarantee this design gives is stated, with its limits, under *Scope limits*.
 
 **The Inbox deduplicates a delivery, and gates only the Delivery Entry of each receive attempt.** The Delivery Entry
 is the first message instance the delivery's current receive attempt admitted into the Command Pipeline. An internal
@@ -202,41 +206,48 @@ which drive the real receiver loop, a real retry strategy and a real `InboxBehav
   on that delivery's context.
 - **`ChangeFeedReceiver` fans one delivery out as many Events on one context.** `DispatchReceivedMessageAsync`
   (`src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/ChangeFeedReceiver.cs:35-79`) dispatches one Event per changed
-  row on the delivery's context (`:57`, `:63`, `:69`). In each receive attempt, the first Command any of those Events'
-  handlers dispatches takes that attempt's Delivery Entry and is gated; every later one in the attempt runs. A retry
-  starts with a fresh entry, so its first Command is gated again. Before this change every later one was gated under
-  the same message id and, once the first one's receipt existed, skipped on every tier.
+  row on the delivery's context (`:57`, `:63`, `:69`). What the Inbox guarantees for those deliveries is G2, under
+  *Scope limits*.
 
-### Recorded residuals
+### Scope limits
 
-These are decisions, not open work.
+This design is interim (see *Decision*). It covers a delivery fully only when the delivered payload is a Command. The
+limits below are closed by epic #539's idempotent receiver, not by further work on this design.
 
-- **R1: a broker-received Event is not itself deduplicated, so the first Command its handlers dispatch in each receive
-  attempt takes that attempt's Delivery Entry.** `InboxBehavior` is a Command behaviour and never sees the Event. When
-  the delivered payload is an Event, the first Command dispatched on the delivery's context in a receive attempt is the
-  first message to reach the Inbox in that attempt, and it is gated under the delivery's message id. This is inherited,
-  not introduced: that Command was gated before this change as well. It is bounded: later sibling Commands in the
-  attempt now run, and nothing is silently dropped. The obvious remedy, gating at the receive seam, was rejected as
-  Option 2. No issue is filed for it.
-- **R2: a direct call to `DispatchReceivedMessageAsync` bypasses the attempt seam.** `DispatchReceivedMessageAsync` is
-  public and virtual (`BrokeredMessageReceiver.cs:1035`), and `BeginReceiveAttempt` runs in `ProcessMessageAsync`
-  before it, not inside it. A caller that invokes it directly installs no fresh entry, so `InboxBehavior` reuses
-  whatever `InboxDeliveryEntry` the context already holds, or creates one through `GetOrNew` when the context holds
-  none. The root cause is that the seam that scopes the entry to an attempt belongs to the receive loop, and the public
-  dispatch method can be reached without passing through it. It was raised as finding 2cc65ed4 in the local review of
-  #534. It is bounded: it needs a caller that drives the dispatch by hand and reuses one delivery context across
-  calls, and even then the gate behaves as it did in the previous revision of this change, where the entry was scoped
-  to the delivery. It is never worse than that revision. No issue is filed for it.
+- **G1: a delivered Command, and every Command it dispatches in-process, is fully covered.** The payload is the
+  attempt's Delivery Entry, and nested Commands join the same unit of work. Pinned by the facts listed under
+  *Closed-by-Construction Acceptance Test*.
+- **G2: a delivered Event is not itself deduplicated.** The first Command its handler(s) dispatch in each receive
+  attempt is gated; later Commands in that attempt are at-least-once on retry or redelivery (strictly better than
+  master, which silently dropped them). This covers `ChangeFeedReceiver`, which fans one delivery into N Events on one
+  context. `InboxBehavior` is a Command behaviour and never sees the Event, so the first Command dispatched on the
+  delivery's context in a receive attempt is the first message to reach the Inbox in that attempt, and it is gated
+  under the delivery's message id. A retry starts with a fresh entry, so its first Command is gated again. This is
+  inherited, not introduced: that Command was gated before this change as well. It is bounded: later sibling Commands
+  in the attempt now run, and nothing is silently dropped. Gating at the receive seam alone was rejected as Option 2,
+  because the unit of work opens inside the Command Pipeline. Tracked by epic #539.
+- **G3: a direct call to the public virtual `DispatchReceivedMessageAsync` bypasses `BeginReceiveAttempt`, so it
+  reuses whatever entry the context holds, outside the guarantee.** `DispatchReceivedMessageAsync` is public and
+  virtual (`BrokeredMessageReceiver.cs:1035`), and `BeginReceiveAttempt` runs in `ProcessMessageAsync` before it, not
+  inside it. A caller that invokes it directly installs no fresh entry, so `InboxBehavior` reuses whatever
+  `InboxDeliveryEntry` the context already holds, or creates one through `GetOrNew` when the context holds none. The
+  root cause is that the seam that scopes the entry to an attempt belongs to the receive loop, and the public dispatch
+  method can be reached without passing through it. It was raised as finding 2cc65ed4 in the local review of #534. It
+  is bounded: it needs a caller that drives the dispatch by hand and reuses one delivery context across calls, and
+  even then the gate behaves as it did in the previous revision of this change, where the entry was scoped to the
+  delivery. It is never worse than that revision. No test pins it. Tracked by epic #539.
 
-Related work that is tracked: the Cosmos document tier has its own gate with the same root class, a nested participant
-Command being treated as the delivery, and it is not changed here. That is #538.
+Related work: the Cosmos document tier has its own gate with the same root class, a nested participant Command being
+treated as the delivery, and it is not changed here. That was #538, which is folded into epic #539.
 
 ## References
 
 - Issue #534 — *In-memory Inbox silently skips a Command dispatched with context.InMemory() from inside a received
   handler*. The defect this ADR resolves.
 - Issue #538 — *Cosmos document tier silently discards a nested participant command's writes*. The same root class on
-  the document tier, tracked separately.
+  the document tier. Folded into epic #539.
+- Epic #539 — *Idempotent receiver: move the unit of work, inbox and outbox processing to the delivery boundary*. The
+  design that supersedes this one and closes G2 and G3.
 - ADR-0006 — *Two-tier reliability*. The relational canonical behaviour order this decision leaves unchanged, and the
   inbox-plus-handler atomicity inside the unit of work that rules out Option 2.
 - ADR-0008 — *Document-tier participation model*. The document tier's own gate, which this decision does not change.

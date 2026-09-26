@@ -1076,7 +1076,10 @@ namespace Chatter.MessageBrokers.Receiving
             // entry is installed here, not inside CountReceiveAttempt, because that returns early when BrokerDiagnostics
             // has no listeners. Pinned by WhenGatingTheInboxAcrossRecoveryAttempts: deleting this Include reddens
             // MustGateTheFirstCommandOfEveryRecoveryAttemptWhenTheHandlerBuildsAFreshOne and
-            // MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch.
+            // MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch. The seam is in
+            // ProcessMessageAsync, above the public virtual DispatchReceivedMessageAsync, so a caller that invokes that
+            // method directly installs no fresh entry and is outside the guarantee (ADR-0041 G3; see #539); no test
+            // pins that.
             messageContext.Container.Include(new InboxDeliveryEntry());
         }
 

@@ -29,7 +29,10 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             // delivery's message id (ADR-0041). The entry is attempt-scoped: the receiver installs a fresh one at the
             // start of every Recovery attempt (BrokeredMessageReceiver.BeginReceiveAttempt), so a retry that constructs
             // a fresh command is gated again; GetOrNew still creates one lazily for a dispatch that never passed that
-            // seam. Pinned by WhenGatingTheInboxAcrossRecoveryAttempts: deleting the Include in BeginReceiveAttempt
+            // seam. When the delivered payload is an Event the Inbox never sees it, so the attempt's first Command
+            // takes the entry and later sibling Commands in that attempt are at-least-once on retry or redelivery
+            // (ADR-0041 G2; see #539). No test pins that bound.
+            // Pinned by WhenGatingTheInboxAcrossRecoveryAttempts: deleting the Include in BeginReceiveAttempt
             // reddens MustGateTheFirstCommandOfEveryRecoveryAttemptWhenTheHandlerBuildsAFreshOne and
             // MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch. Pinned by WhenHandling: restoring the bare `is IMessageBrokerContext` gate
             // reddens MustInvokeTheNestedHandlerWhenAGatedHandlersOwnDispatchReEntersTheBehavior,
