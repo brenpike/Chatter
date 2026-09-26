@@ -226,7 +226,9 @@ limits below are closed by epic #539's idempotent receiver, not by further work 
   no unit of work — `WithCosmosInbox` is cited for that at *Context* above — so an outer failure rolls nothing back
   and a nested Command's effects re-run when the delivery is redelivered. That is the at-least-once posture ADR-0009
   already records for non-batched effects, and this design leaves it exactly as it was. Pinned by the facts listed
-  under *Closed-by-Construction Acceptance Test*.
+  under *Closed-by-Construction Acceptance Test*. G4, below, qualifies this claim: when another behaviour dispatches a
+  Command on the delivery's context before `InboxBehavior` sees the delivered Command, coverage shifts to that other
+  Command instead.
 - **G2: a delivered Event is not itself deduplicated.** The first Command its handler(s) dispatch in each receive
   attempt is gated; later Commands in that attempt are at-least-once on retry or redelivery (strictly better than
   master, which silently dropped them). This covers `ChangeFeedReceiver`, which fans one delivery into N Events on one
@@ -246,6 +248,21 @@ limits below are closed by epic #539's idempotent receiver, not by further work 
   is bounded: it needs a caller that drives the dispatch by hand and reuses one delivery context across calls, and
   even then the gate behaves as it did in the previous revision of this change, where the entry was scoped to the
   delivery. It is never worse than that revision. No test pins it. Tracked by epic #539.
+- **G4: a Command another behaviour dispatches before `InboxBehavior` sees the delivered Command takes the Delivery
+  Entry, and the delivered Command is then at-least-once.** A behaviour registered outside `InboxBehavior` in the
+  Command Pipeline that dispatches a Command on the delivery's context before it invokes `next()` sends that Command
+  through `InboxBehavior` first, and `Admits` binds the attempt's entry to it. The delivered Command then goes
+  straight to `next()` and never passes through `ReceiveViaInbox`. On redelivery the Inbox skips only the other
+  Command's receipt, and the delivered handler runs again. The root cause is that the entry binds on arrival order at
+  the Inbox, not on the message the receive seam admitted, and only the receive seam knows which message that is. It
+  is bounded: it needs an application behaviour ordered outside `InboxBehavior` that dispatches before `next()`. No
+  behaviour this package ships does so, and ADR-0006's relational canonical order puts `InboxBehavior` innermost, so
+  any application behaviour sits outside it. The cost is a duplicate run of the delivered handler, never lost work.
+  This is inherited, and strictly better than master: there, the nested Command took the delivery's claim and the
+  delivered Command was then read as a duplicate and skipped, so its work was lost. Seeding the entry with the
+  delivered payload at the receive seam was rejected as Option 7 above, because `ChangeFeedReceiver` never dispatches
+  its payload, so its deliveries would lose the deduplication they have today. Raised in the review of PR #540. No
+  test pins it. Tracked by epic #539.
 
 Related work: the Cosmos document tier has its own gate with the same root class, a nested participant Command being
 treated as the delivery, and it is not changed here. That was #538, which is folded into epic #539.
@@ -257,7 +274,7 @@ treated as the delivery, and it is not changed here. That was #538, which is fol
 - Issue #538 — *Cosmos document tier silently discards a nested participant command's writes*. The same root class on
   the document tier. Folded into epic #539.
 - Epic #539 — *Idempotent receiver: move the unit of work, inbox and outbox processing to the delivery boundary*. The
-  design that supersedes this one and closes G2 and G3.
+  design that supersedes this one and closes G2, G3 and G4.
 - ADR-0006 — *Two-tier reliability*. The relational canonical behaviour order this decision leaves unchanged, and the
   inbox-plus-handler atomicity inside the unit of work that rules out Option 2.
 - ADR-0008 — *Document-tier participation model*. The document tier's own gate, which this decision does not change.
