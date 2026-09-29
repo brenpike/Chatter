@@ -311,11 +311,11 @@ Each receiver counts deliveries so it can dead-letter a message once `maxReceive
 
 ### Quorum queues
 
-Quorum is the default and the recommended choice. A failed message is negatively acknowledged with requeue, which returns the same message to the queue rather than publishing a copy. On its next delivery the receiver reads the attempt number from the native `x-delivery-count` header. RabbitMQ decides where a returned message goes, so it can be delivered after messages that were queued behind it.
+Quorum is the default and the recommended choice. When a handler fails, the receiver returns the message with `basic.reject` and requeue, which puts the same message back on the queue rather than publishing a copy. RabbitMQ counts the return as a failed delivery attempt and advances the message's native `x-delivery-count` header, and on the next delivery the receiver reads the attempt number from that header. RabbitMQ decides where a returned message goes, so it can be delivered after messages that were queued behind it.
 
-The count rises only when RabbitMQ counts a `basic.nack` with requeue as a failed delivery, which RabbitMQ versions before 4.3 do. From RabbitMQ 4.3, `basic.nack` does not increment `x-delivery-count` or count toward the queue's `delivery-limit`, so a message that keeps failing is redelivered indefinitely and never reaches `maxReceiveAttempts`. On RabbitMQ 4.3 or later, use classic queues, which count with their own header.
+On RabbitMQ 4.3 and later, a quorum-queue delayed retry of type `failed` applies to these returns, because each one advances the delivery count.
 
-> **Note:** From RabbitMQ 4.0, quorum queues have a broker-side `delivery-limit` of 20 by default. RabbitMQ drops or dead-letters a message past that limit itself, so keep `maxReceiveAttempts` below the queue's `delivery-limit`.
+> **Note:** From RabbitMQ 4.0, quorum queues have a broker-side `delivery-limit` of 20 by default, and each failed delivery attempt counts toward it. Keep `maxReceiveAttempts` below the queue's `delivery-limit`. At or above it, RabbitMQ can drop the message, or dead-letter it through the queue's DLX, before the receiver reaches `maxReceiveAttempts`. This package provisions no topology and does not read the queue's `delivery-limit`.
 
 ### Classic queues
 
@@ -611,10 +611,6 @@ The application's RabbitMQ user needs:
 ### One RabbitMQ queue receiver per process
 
 A process supports exactly one RabbitMQ queue receiver. The connection owns one receive channel and one AMQP subscription, so a second receiver would displace the first. Registering a second one, whether through `AddQueueReceiver` or a `[BrokeredMessage]` receiver that resolves to RabbitMQ, makes `AddRabbitMq` throw `NotSupportedException` before the host starts. Split receivers across processes or services; multi-receiver support is tracked in [#195](https://github.com/brenpike/Chatter/issues/195).
-
-### Quorum-queue counting on RabbitMQ 4.3 and later
-
-On RabbitMQ 4.3 and later, a quorum-queue receiver's attempt count does not rise when a delivery fails, so a failing message is redelivered without reaching `maxReceiveAttempts`. See [Quorum queues](#quorum-queues). Tracked in [#533](https://github.com/brenpike/Chatter/issues/533).
 
 ## Diagnostics
 

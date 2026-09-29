@@ -235,9 +235,11 @@ The adapter maps the core's three terminal operations onto AMQP, all on the gate
 and all epoch-guarded:
 
 - **Ack on success** (`AckMessageAsync`) → `BasicAck(deliveryTag)`. Epoch-guarded.
-- **Nack → redelivery on failure** (`NackMessageAsync`) → `BasicNack(deliveryTag, requeue: true)`
-  (Quorum) — the broker increments native `x-delivery-count` and redelivers. (Classic uses the
-  header-stamped republish counter; see §6.) Epoch-guarded.
+- **Nack → redelivery on failure** (`NackMessageAsync`) → `BasicReject(deliveryTag, requeue: true)`
+  (Quorum) — the broker counts a failed delivery attempt, increments native `x-delivery-count` and
+  redelivers. `BasicReject`, not `BasicNack`: from RabbitMQ 4.3 a quorum queue counts only
+  `basic.reject` as a failed delivery, and before 4.3 the two verbs run the same broker code (ADR 0042).
+  (Classic uses the header-stamped republish counter; see §6.) Epoch-guarded.
 - **Deadletter once Max Receives Exceeded** (`DeadletterMessageAsync`) → the adapter **republishes**
   the body to the **attribute-declared** DeadletterQueueName / ErrorQueueName (an adapter-owned
   republish, authoritative over any broker-side DLX configuration), then **acks the original**. This
@@ -255,7 +257,7 @@ stateDiagram-v2
     [*] --> Received: push consumer buffers delivery
     Received --> Handling: core pulls + dispatches to handler
     Handling --> Acked: handler success → BasicAck
-    Handling --> NackedRedelivered: handler failure,<br/>count ≤ limit → BasicNack(requeue) / classic republish
+    Handling --> NackedRedelivered: handler failure,<br/>count ≤ limit → BasicReject(requeue) / classic republish
     Handling --> DeadLettered: Max Receives Exceeded →<br/>republish to declared DLQ/Error, then ack original
     NackedRedelivered --> Received: broker redelivers
     Acked --> [*]
@@ -278,8 +280,11 @@ single value (ADR 0001).
 A `QueueType` option selects the strategy (default **Quorum**, recommended):
 
 - **Quorum strategy** — reads RabbitMQ's **native `x-delivery-count`** header, which the broker
-  increments per redelivery. Adapter computes attempts = `x-delivery-count + 1` and stamps
-  `ReceiveAttempts`. Redelivery on failure is a plain `BasicNack(requeue: true)`.
+  increments per failed delivery attempt. Adapter computes attempts = `x-delivery-count + 1` and
+  stamps `ReceiveAttempts`. Redelivery on failure is a plain `BasicReject(requeue: true)`, which
+  RabbitMQ counts as a failed delivery attempt; from RabbitMQ 4.3 `BasicNack(requeue: true)` does not
+  advance `x-delivery-count` (ADR 0042). The 4.3+ `x-acquired-count` header counts assignments to a
+  consumer, not failures, so the adapter strips it and never reads it as the attempt count.
 - **Classic strategy** — classic queues expose no native counter, so the adapter uses a
   **header-stamped republish counter**: on retry it republishes the message to its own queue with a
   custom `x-chatter-delivery-count` header incremented by 1 (publisher-confirmed), then acks the
@@ -298,7 +303,7 @@ flowchart TD
     Count --> Stamp["stamp MessageContext.ReceiveAttempts<br/>(MANDATORY — absent or unusable falls to the core's dead-letter sentinel)"]
     Stamp --> Decide{"attempts > maxReceiveAttempts?"}
     Decide -- no, handler succeeded --> Ack["BasicAck"]
-    Decide -- "no, handler failed" --> Redeliver["Quorum: BasicNack(requeue)<br/>Classic: republish w/ incremented header + ack original"]
+    Decide -- "no, handler failed" --> Redeliver["Quorum: BasicReject(requeue)<br/>Classic: republish w/ incremented header + ack original"]
     Decide -- yes --> DLQ["republish to declared<br/>Deadletter / Error path, then ack original"]
 ```
 

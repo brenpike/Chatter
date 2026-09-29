@@ -52,7 +52,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// </remarks>
     internal sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
     {
-        // The native quorum-queue redelivery counter the broker increments per redelivery.
+        // The native quorum-queue delivery counter. On RabbitMQ 4.3+ the broker advances it per FAILED delivery
+        // (basic.reject or a lost consumer), not per basic.nack return; before 4.3 it advances per redelivery.
         private const string _nativeDeliveryCountHeader = "x-delivery-count";
 
         // The native quorum-queue assignment counter RabbitMQ 4.3+ stamps on each redelivery. Stripped, never read.
