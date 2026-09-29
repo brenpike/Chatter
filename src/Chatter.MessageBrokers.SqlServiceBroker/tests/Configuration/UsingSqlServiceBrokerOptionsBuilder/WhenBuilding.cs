@@ -275,6 +275,29 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Configuration.UsingSqlSe
         }
 
         [Fact]
+        public void MustApplyWithMessageBodyCompressionBoolTrueAndReturnBuilder()
+        {
+            var builder = NewBuilder().AddSqlServiceBrokerOptions("Server=.;", compressMessageBody: false);
+            builder.WithMessageBodyCompression(true).Should().BeSameAs(builder);
+            builder.Build().CompressMessageBody.Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustApplyWithMessageBodyCompressionBoolFalseAndReturnBuilder()
+        {
+            var builder = NewBuilder().AddSqlServiceBrokerOptions("Server=.;");
+            builder.WithMessageBodyCompression(false).Should().BeSameAs(builder);
+            builder.Build().CompressMessageBody.Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustDisableCompressionWhenWithMessageBodyCompressionFalseIsTheFirstCall()
+        {
+            NewBuilder().WithMessageBodyCompression(false).WithConnectionString("Server=.;").Build()
+                .CompressMessageBody.Should().BeFalse();
+        }
+
+        [Fact]
         public void MustApplyWithConversationCleanupAsTrueAndReturnBuilder()
         {
             var builder = NewBuilder().AddSqlServiceBrokerOptions("Server=.;");

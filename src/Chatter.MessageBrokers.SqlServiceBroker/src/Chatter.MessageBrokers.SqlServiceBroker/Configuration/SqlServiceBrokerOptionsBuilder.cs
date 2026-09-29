@@ -141,11 +141,18 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         }
 
         /// <summary>
-        /// Specifies whether or not messages sent should be compressed (gzip). 
+        /// Specifies whether or not messages sent should be compressed (gzip).
         /// </summary>
         public SqlServiceBrokerOptionsBuilder WithMessageBodyCompression()
+            => WithMessageBodyCompression(true);
+
+        /// <summary>
+        /// Specifies whether or not messages sent should be compressed (gzip).
+        /// </summary>
+        /// <param name="compressMessageBody">Whether the message body should be compressed.</param>
+        public SqlServiceBrokerOptionsBuilder WithMessageBodyCompression(bool compressMessageBody)
         {
-            EnsureOptions().CompressMessageBody = true;
+            EnsureOptions().CompressMessageBody = compressMessageBody;
             return this;
         }
 
