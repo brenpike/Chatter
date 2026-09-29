@@ -1,5 +1,8 @@
+using Chatter.CQRS.Commands;
 using Chatter.CQRS.DependencyInjection;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.DependencyInjection;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -194,6 +197,433 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
             var services = BuildRegistration();
 
             services.Should().NotContain(d => d.ServiceType == typeof(IBrokeredMessagePathBuilder));
+        }
+
+        private const string _alphaQueue = "alpha-queue";
+        private const string _betaQueue = "beta-queue";
+        private const string _divergentConnectionString =
+            "Server=other;Database=other;Trusted_Connection=True;";
+
+        public sealed class AlphaCommand : ICommand { }
+
+        public sealed class BetaCommand : ICommand { }
+
+        [BrokeredMessage("decorated-sending-path")]
+        public sealed class DecoratedCommand : ICommand { }
+
+        private static IChatterBuilder NewBareBuilder(IServiceCollection services)
+            => ChatterBuilder.Create(services, EmptyConfig(), AssemblySourceFilterBuilder.New().Build());
+
+        private static IDiscoveredReceiverRegistry EffectiveDiscoveredReceiverRegistry(IServiceCollection services)
+            => services.LastOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
+                       .ImplementationInstance as IDiscoveredReceiverRegistry;
+
+        // Registers Alpha on the fixture connection string, then returns a delegate that registers Beta on the
+        // connection string it is given, so each fact varies only the second call's transport configuration.
+        private static Action RegisterBetaAfterAlpha(IServiceCollection services, string betaConnectionString)
+        {
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                              .AddQueueReceiver<AlphaCommand>(_alphaQueue));
+            return () => builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(betaConnectionString)
+                                                           .AddQueueReceiver<BetaCommand>(_betaQueue));
+        }
+
+        [Fact]
+        public void MustRegisterOneSqlServiceBrokerOptionsWhenASecondCallConfiguresEquivalentOptions()
+        {
+            var services = new ServiceCollection();
+
+            RegisterBetaAfterAlpha(services, new string(_connectionString.AsSpan()))();
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerOptions)).Should().Be(1);
+        }
+
+        [Fact]
+        public void MustRecordTheTransportOnceWhenASecondCallConfiguresEquivalentOptions()
+        {
+            var services = new ServiceCollection();
+
+            RegisterBetaAfterAlpha(services, new string(_connectionString.AsSpan()))();
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerTransportRegistration)).Should().Be(1);
+        }
+
+        [Fact]
+        public void MustRegisterTheReceiversOfEveryCallWhenASecondCallConfiguresEquivalentOptions()
+        {
+            var services = new ServiceCollection();
+
+            RegisterBetaAfterAlpha(services, new string(_connectionString.AsSpan()))();
+
+            EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers
+                .Select(receiver => receiver.MessageReceiverPath)
+                .Should().Equal(_alphaQueue, _betaQueue);
+            services.Should().Contain(d => d.ServiceType == typeof(IBrokeredMessageReceiver<AlphaCommand>));
+            services.Should().Contain(d => d.ServiceType == typeof(IBrokeredMessageReceiver<BetaCommand>));
+        }
+
+        [Fact]
+        public void MustRegisterTheReceiverOfASingleCall()
+        {
+            var services = new ServiceCollection();
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                                               .AddQueueReceiver<AlphaCommand>(_alphaQueue));
+
+            EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers
+                .Select(receiver => receiver.MessageReceiverPath)
+                .Should().Equal(_alphaQueue);
+            services.Should().Contain(d => d.ServiceType == typeof(IBrokeredMessageReceiver<AlphaCommand>));
+        }
+
+        [Fact]
+        public void MustRefuseASecondCallWhoseConnectionStringDiverges()
+        {
+            var services = new ServiceCollection();
+
+            var registerBeta = RegisterBetaAfterAlpha(services, _divergentConnectionString);
+
+            registerBeta.Should().Throw<NotSupportedException>()
+                        .Which.Message.Should().Contain(nameof(SqlServiceBrokerOptions.ConnectionString))
+                                       .And.Contain("https://github.com/brenpike/Chatter/issues/542")
+                                       .And.NotContain(_connectionString)
+                                       .And.NotContain(_divergentConnectionString);
+        }
+
+        [Fact]
+        public void MustNameEveryDivergingSettingWhenASecondCallIsRefused()
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            Action registerDivergent = () => builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                                                                .WithReceiverTimeout(5000)
+                                                                                .UseConversationEncryption());
+
+            registerDivergent.Should().Throw<NotSupportedException>()
+                             .Which.Message.Should().Contain(nameof(SqlServiceBrokerOptions.ReceiverTimeoutInMilliseconds))
+                                            .And.Contain(nameof(SqlServiceBrokerOptions.ConversationEncryption))
+                                            .And.NotContain(nameof(SqlServiceBrokerOptions.ConnectionString));
+        }
+
+        [Fact]
+        public void MustLeaveTheServiceCollectionExactlyAsItWasWhenADivergentCallIsRefused()
+        {
+            var services = new ServiceCollection();
+            var registerBeta = RegisterBetaAfterAlpha(services, _divergentConnectionString);
+            var beforeTheRefusedCall = services.ToList();
+
+            registerBeta.Should().Throw<NotSupportedException>();
+
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused call must not register anything - the same descriptors must still sit in the same slots");
+        }
+
+        [Fact]
+        public void MustLeaveTheDiscoveredReceiversUnchangedWhenADivergentCallIsRefused()
+        {
+            var services = new ServiceCollection();
+            var registerBeta = RegisterBetaAfterAlpha(services, _divergentConnectionString);
+            var discoveredBeforeTheRefusedCall = EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers.ToList();
+
+            registerBeta.Should().Throw<NotSupportedException>();
+
+            EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers.Should().Equal(discoveredBeforeTheRefusedCall);
+        }
+
+        private const string _messageBodyType = "application/json; charset=utf-16";
+
+        [Fact]
+        public void MustAcceptAFirstCallWhenSqlServiceBrokerOptionsWereRegisteredWithoutIt()
+        {
+            var services = new ServiceCollection();
+            services.AddSingleton(new SqlServiceBrokerOptions(_divergentConnectionString, _messageBodyType));
+
+            Action register = () => NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            register.Should().NotThrow();
+        }
+
+        public static TheoryData<string> OptionsRegisteredWithoutAnInstance() => new TheoryData<string>
+        {
+            "by type",
+            "by factory",
+        };
+
+        private static void RegisterOptionsWithoutAnInstance(IServiceCollection services, string registration)
+        {
+            switch (registration)
+            {
+                case "by type":
+                    services.AddSingleton<SqlServiceBrokerOptions>();
+                    return;
+                case "by factory":
+                    services.AddSingleton(_ => new SqlServiceBrokerOptions(_divergentConnectionString, _messageBodyType));
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(registration), registration, "Unknown options registration.");
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(OptionsRegisteredWithoutAnInstance))]
+        public void MustRefuseADivergentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance(string registration)
+        {
+            var services = new ServiceCollection();
+            var registerBeta = RegisterBetaAfterAlpha(services, _divergentConnectionString);
+            RegisterOptionsWithoutAnInstance(services, registration);
+
+            registerBeta.Should().Throw<NotSupportedException>();
+        }
+
+        [Theory]
+        [MemberData(nameof(OptionsRegisteredWithoutAnInstance))]
+        public void MustAddNoOptionsDescriptorForAnEquivalentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance(string registration)
+        {
+            var services = new ServiceCollection();
+            var registerBeta = RegisterBetaAfterAlpha(services, new string(_connectionString.AsSpan()));
+            RegisterOptionsWithoutAnInstance(services, registration);
+
+            registerBeta();
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerOptions)).Should().Be(2);
+        }
+
+        // Registers the caller's own options instance, then changes that instance's receiver timeout to 5000.
+        private static IChatterBuilder RegisterOptionsThenChangeThem(IServiceCollection services)
+        {
+            var builder = NewBareBuilder(services);
+            var callersOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(callersOptions));
+            callersOptions.ReceiverTimeoutInMilliseconds = 5000;
+            return builder;
+        }
+
+        [Fact]
+        public void MustAcceptALaterCallWithTheRegisteredValuesAfterTheCallerChangesItsOptionsInstance()
+        {
+            var builder = RegisterOptionsThenChangeThem(new ServiceCollection());
+
+            Action registerOriginal = () => builder.AddSqlServiceBroker(
+                o => o.AddSqlServiceBrokerOptions(new SqlServiceBrokerOptions(_connectionString, _messageBodyType)));
+
+            registerOriginal.Should().NotThrow();
+        }
+
+        [Fact]
+        public void MustRefuseALaterCallWithTheChangedValuesAfterTheCallerChangesItsOptionsInstance()
+        {
+            var builder = RegisterOptionsThenChangeThem(new ServiceCollection());
+
+            Action registerChanged = () => builder.AddSqlServiceBroker(
+                o => o.AddSqlServiceBrokerOptions(new SqlServiceBrokerOptions(_connectionString, _messageBodyType, receiverTimeoutInMilliseconds: 5000)));
+
+            registerChanged.Should().Throw<NotSupportedException>()
+                           .Which.Message.Should().Contain(nameof(SqlServiceBrokerOptions.ReceiverTimeoutInMilliseconds));
+        }
+
+        private static void CopyDescriptors(IServiceCollection source, IServiceCollection destination)
+        {
+            foreach (var descriptor in source)
+            {
+                destination.Add(descriptor);
+            }
+        }
+
+        [Fact]
+        public void MustRefuseADivergentCallOnACollectionTheRegisteredDescriptorsWereCopiedInto()
+        {
+            IServiceCollection original = new ServiceCollection();
+            NewBareBuilder(original).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            IServiceCollection copy = new ServiceCollection();
+            CopyDescriptors(original, copy);
+
+            Action registerDivergent = () => NewBareBuilder(copy).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_divergentConnectionString));
+
+            registerDivergent.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustCompareWithTheLastRegisteredTransportWhenDescriptorsOfAnotherRegistrationWereCopiedIn()
+        {
+            IServiceCollection copiedFrom = new ServiceCollection();
+            NewBareBuilder(copiedFrom).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_divergentConnectionString));
+            IServiceCollection services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            CopyDescriptors(copiedFrom, services);
+
+            Action registerFirstTransportAgain = () => builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            registerFirstTransportAgain.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustRegisterTheOptionsWhenOnlyTheTransportRecordWasCopiedIn()
+        {
+            IServiceCollection original = new ServiceCollection();
+            NewBareBuilder(original).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            IServiceCollection services = new ServiceCollection();
+            services.Add(original.First(d => d.ServiceType == typeof(SqlServiceBrokerTransportRegistration)));
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerOptions)).Should().Be(1);
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<SqlServiceBrokerOptions>().ConnectionString.Should().Be(_connectionString);
+        }
+
+        public static TheoryData<string> BuildRefusals() => new TheoryData<string>
+        {
+            "no options",
+            "blank connection string",
+            "blank message body type",
+        };
+
+        private static void ConfigureBuildRefusal(SqlServiceBrokerOptionsBuilder builder, string refusal)
+        {
+            builder.AddQueueReceiver<AlphaCommand>(_alphaQueue);
+            switch (refusal)
+            {
+                case "no options":
+                    return;
+                case "blank connection string":
+                    builder.AddSqlServiceBrokerOptions(" ");
+                    return;
+                case "blank message body type":
+                    builder.AddSqlServiceBrokerOptions(_connectionString, messageBodyType: " ");
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(refusal), refusal, "Unknown Build() refusal.");
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(BuildRefusals))]
+        public void MustLeaveTheServiceCollectionExactlyAsItWasWhenBuildRefusesTheOptions(string refusal)
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            var beforeTheRefusedCall = services.ToList();
+
+            Action register = () => builder.AddSqlServiceBroker(o => ConfigureBuildRefusal(o, refusal));
+
+            register.Should().Throw<ArgumentNullException>();
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused call must not register anything - the same descriptors must still sit in the same slots");
+        }
+
+        [Fact]
+        public void MustRefuseASecondCallWithoutAnOptionsBuilder()
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            Action registerWithoutOptions = () => builder.AddSqlServiceBroker(optionsBuilder: null);
+
+            registerWithoutOptions.Should().Throw<ArgumentNullException>();
+        }
+
+        [Fact]
+        public void MustRefuseAQueueReceiverForABrokeredMessageDecoratedTypeWhenItIsAdded()
+        {
+            var optionsBuilder = new SqlServiceBrokerOptionsBuilder(new ServiceCollection());
+
+            Action addDecoratedReceiver = () => optionsBuilder.AddQueueReceiver<DecoratedCommand>(_alphaQueue);
+
+            addDecoratedReceiver.Should().Throw<InvalidOperationException>()
+                                .WithMessage($"*{nameof(DecoratedCommand)}*{nameof(BrokeredMessageAttribute)}*");
+        }
+
+        public sealed class DeferredRegistrationMarker { }
+
+        private static ServiceDescriptor NewDeferredDescriptor()
+            => ServiceDescriptor.Singleton(new DeferredRegistrationMarker());
+
+        [Fact]
+        public void MustWriteADeferredRegistrationWhenAddSqlServiceBrokerReturns()
+        {
+            var services = new ServiceCollection();
+            var deferred = NewDeferredDescriptor();
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                                               .DeferRegistration(s => s.Add(deferred)));
+
+            services.Count(d => d == deferred).Should().Be(1);
+        }
+
+        [Fact]
+        public void MustNotWriteADeferredRegistrationWhileTheOptionsDelegateRuns()
+        {
+            var services = new ServiceCollection();
+            var deferred = NewDeferredDescriptor();
+            var writtenDuringTheDelegate = true;
+
+            NewBareBuilder(services).AddSqlServiceBroker(o =>
+            {
+                o.AddSqlServiceBrokerOptions(_connectionString).DeferRegistration(s => s.Add(deferred));
+                writtenDuringTheDelegate = o.Services.Contains(deferred);
+            });
+
+            writtenDuringTheDelegate.Should().BeFalse();
+        }
+
+        [Theory]
+        [MemberData(nameof(BuildRefusals))]
+        public void MustWriteNoDeferredRegistrationWhenBuildRefusesTheOptions(string refusal)
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            var beforeTheRefusedCall = services.ToList();
+
+            Action register = () => builder.AddSqlServiceBroker(
+                o => ConfigureBuildRefusal(o.DeferRegistration(s => s.Add(NewDeferredDescriptor())), refusal));
+
+            register.Should().Throw<ArgumentNullException>();
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused call must not run its deferred registrations - the same descriptors must still sit in the same slots");
+        }
+
+        [Fact]
+        public void MustWriteNoDeferredRegistrationWhenADivergentCallIsRefused()
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            var beforeTheRefusedCall = services.ToList();
+
+            Action registerDivergent = () => builder.AddSqlServiceBroker(
+                o => o.AddSqlServiceBrokerOptions(_divergentConnectionString).DeferRegistration(s => s.Add(NewDeferredDescriptor())));
+
+            registerDivergent.Should().Throw<NotSupportedException>();
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused call must not run its deferred registrations - the same descriptors must still sit in the same slots");
+        }
+
+        [Fact]
+        public void MustWriteARegistrationDeferredAfterAQueueReceiverAfterThatReceiversDescriptors()
+        {
+            var services = new ServiceCollection();
+            var deferred = NewDeferredDescriptor();
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                                               .AddQueueReceiver<AlphaCommand>(_alphaQueue)
+                                                               .DeferRegistration(s => s.Add(deferred)));
+
+            services.Last().Should().BeSameAs(deferred);
+        }
+
+        [Fact]
+        public void MustRefuseANullDeferredRegistration()
+        {
+            var optionsBuilder = new SqlServiceBrokerOptionsBuilder(new ServiceCollection());
+
+            Action deferNull = () => optionsBuilder.DeferRegistration(null);
+
+            deferNull.Should().Throw<ArgumentNullException>().WithParameterName("registration");
         }
     }
 }

@@ -272,7 +272,9 @@ Configuration is fluent only; this package reads no `appsettings.json` section.
 | `tableName` | Table to watch, without its schema. Required. |
 | `optionsBuilder` | Optional `Action<SqlChangeFeedOptionsBuilder>` for everything else. |
 
-`AddSqlChangeFeed` throws `ArgumentNullException` for a blank connection string or table name. It throws `InvalidOperationException` when neither `databaseName` nor the connection string names a database, and `ChangeFeedObjectNameCollisionException` for colliding names (see [Object names](#object-names)).
+Both overloads throw the same exceptions. `AddSqlChangeFeed` throws `ArgumentNullException` for a blank connection string, table name or message body type, and `ArgumentException` for a connection string that cannot be parsed. It throws `InvalidOperationException` when neither `databaseName` nor the connection string names a database, `ChangeFeedObjectNameCollisionException` for colliding names (see [Object names](#object-names)), and `NotSupportedException` when the change feed's transport settings differ from those already registered (see [Known limitations](#known-limitations)). The non-generic overload also throws `ArgumentNullException` for a null `rowChangedDataType`, and `ArgumentException` for a type that does not meet the requirements of `TRowChangedData`.
+
+A refused call registers nothing. The one exception is a write your `optionsBuilder` makes directly through `SqlChangeFeedOptionsBuilder.Services`: it happens immediately and stays after the refusal.
 
 ### Options reference
 
@@ -289,7 +291,7 @@ All methods are on `SqlChangeFeedOptionsBuilder` (namespace `Chatter.SqlChangeFe
 | `WithChangeFeedDeadLetterServiceName` | `string` | `Chatter_DeadLetterService_<RowType>` | Dead-letter service the migration creates and the receiver deadletters to. |
 | `WithErrorQueueName` | `string` | — | Error Queue for messages that fail on every receive attempt. |
 | `WithTransactionMode` | `TransactionMode` | `FullAtomicityViaInfrastructure` | Transaction mode of the change feed's receiver. |
-| `WithMaxReceiveAttempts` | `int` | `10` | Has no effect; the receiver always uses `10`. See [Known limitations](#known-limitations). |
+| `WithMaxReceiveAttempts` | `int` | `10` | Receive attempts the change feed's receiver allows before it deadletters a message. |
 | `WithReceiverTimeoutInMilliseconds` | `int` | `-1` (wait indefinitely) | How long each Service Broker receive waits for a message before it is issued again. |
 | `WithMessageBodyType` | `string` | `application/json; charset=utf-16` | Content type the transport uses to read and write bodies. The Trigger writes UTF-16 JSON, so keep the default. |
 | `WithApplicationJsonUtf16CharsetMessageBodyType` | — | — | Resets the body type to `application/json; charset=utf-16`. |
@@ -340,7 +342,7 @@ await host.Services.UseChangeFeedSqlMigrationsAsync<OrderRow>();
 await host.Services.UseChangeFeedSqlMigrationsAsync<CustomerRow>();
 ```
 
-Give each row type a distinct class name; see [Object names](#object-names).
+Give each row type a distinct class name; see [Object names](#object-names). Both change feeds pass the same connection string and leave the transport settings at their defaults, because a host has one transport configuration; see [Known limitations](#known-limitations).
 
 ## Object names
 
@@ -399,10 +401,8 @@ A refused or failed run never replaces the installed uninstall Stored Procedure,
 
 ## Known limitations
 
-- **`WithMaxReceiveAttempts` has no effect.** The value is recorded but never reaches the receiver, which always allows `10` receive attempts before a message is deadlettered. Tracked in [#531](https://github.com/brenpike/Chatter/issues/531).
-- **The `WithTransactionMode` IntelliSense text names the wrong default.** Its XML documentation says `ReceiveOnly`; the actual default is `FullAtomicityViaInfrastructure`. Tracked in [#531](https://github.com/brenpike/Chatter/issues/531).
 - **Default names use the row type's class name only.** Two row types with the same class name in different namespaces derive the same seven object names. When both tables are in the same schema, the install fails on the duplicate Trigger name. The two overridable names cannot fix this, because the other five still collide, so give the row types distinct class names.
-- **Transport options are shared.** Each `AddSqlChangeFeed` call registers its own SQL Server Service Broker transport options, and the transport uses the last registration. When you register several change feeds, give them the same receiver timeout, body type, lifetime, encryption and compression settings. Tracked in [#531](https://github.com/brenpike/Chatter/issues/531).
+- **Transport settings are per host, not per change feed.** A host has one SQL Server Service Broker transport configuration: the connection string, body type, receiver timeout, conversation lifetime, encryption and compression settings. The queue, dead-letter service, Error Queue, transaction mode and maximum receive attempts stay per change feed. Several change feeds whose transport settings match register side by side. When a registration's transport settings differ from those an earlier change feed or `AddSqlServiceBroker` call registered, the later registration throws `NotSupportedException`, naming each setting that differs. An `AddSqlServiceBroker` call in the same host must match the change feed's settings too, including its conversation lifetime of `int.MaxValue`, where `AddSqlServiceBrokerOptions(connectionString, ...)` defaults to `0`. See the SQL Server Service Broker [Validation](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md#validation) notes. Per-feed transport settings are tracked in [#542](https://github.com/brenpike/Chatter/issues/542).
 - **No trace context.** Change feed messages carry no headers; see [Diagnostics](#diagnostics).
 - **Azure SQL Database is not supported.** It has no Service Broker; see [Install requirements](#install-requirements).
 

@@ -1,10 +1,11 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.SqlChangeFeed.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
-using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,6 +14,27 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
     public static class SqlChangeFeedExtensions
 
     {
+        private sealed class RowChangedDataPlaceholder : IMessage
+        {
+        }
+
+        // INVARIANT: the row-type overload dispatches to the generic AddSqlChangeFeed<TRowChangedData> and raises
+        // every refusal as itself, not wrapped in a TargetInvocationException. The generic definition is bound by
+        // the compiler through a method group over a placeholder row type, never looked up by name, and the call
+        // is made with BindingFlags.DoNotWrapExceptions. Oracles, in WhenAddingSqlChangeFeed: the "row type
+        // overload" rows of MustLeaveTheServiceCollectionAndDiscoveredReceiversExactlyAsTheyWereWhenAFeedIsRefused,
+        // MustRefuseANullRowTypeNamingTheRowTypeParameter and MustRefuseARowTypeThatIsNotAMessageAsAnInvalidArgument.
+        // Mutations, measured: invoking with BindingFlags.Default reddens exactly the seven "row type overload"
+        // rows; deleting the null guard reddens only the null-row-type fact. The not-a-message fact was already green
+        // before the definition was compiler-bound, because MakeGenericMethod raises that ArgumentException itself.
+        // NOT covered, and no test pins it: reverting to a name-based lookup of the first generic AddSqlChangeFeed
+        // keeps every test green (measured), so dispatch to a different generic overload added later goes unnoticed
+        // by the tests; only the compiler binding below prevents it.
+        private static readonly MethodInfo _addSqlChangeFeedDefinition =
+            new Func<IChatterBuilder, string, string, string, Action<SqlChangeFeedOptionsBuilder>, IChatterBuilder>(AddSqlChangeFeed<RowChangedDataPlaceholder>)
+                .Method
+                .GetGenericMethodDefinition();
+
         internal static SqlChangeFeedOptionsBuilder AddSqlChangeFeedOptionsBuilder(this IServiceCollection services, string connectionString, string tableName, string databaseName = null)
             => new SqlChangeFeedOptionsBuilder(services, connectionString, databaseName, tableName);
 
@@ -31,12 +53,15 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
                                                        string tableName,
                                                        Action<SqlChangeFeedOptionsBuilder> optionsBuilder = null)
         {
-            typeof(SqlChangeFeedExtensions).GetMethods()
-                             .Where(m => m.IsGenericMethod
-                                         && m.Name == nameof(AddSqlChangeFeed))
-                             .FirstOrDefault()
-                             .MakeGenericMethod(rowChangedDataType)
-                             .Invoke(null, new object[] { builder, connectionString, databaseName, tableName, optionsBuilder });
+            if (rowChangedDataType is null)
+            {
+                throw new ArgumentNullException(nameof(rowChangedDataType));
+            }
+
+            _addSqlChangeFeedDefinition.MakeGenericMethod(rowChangedDataType)
+                                       .Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null,
+                                               new object[] { builder, connectionString, databaseName, tableName, optionsBuilder },
+                                               culture: null);
 
             return builder;
         }
@@ -57,32 +82,64 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
                                                                           Action<SqlChangeFeedOptionsBuilder> optionsBuilder = null)
             where TRowChangedData : class, IMessage, new()
         {
+            // INVARIANT: this method makes no write of its own before its last refusal. The options are built and the
+            // object names derived first, then the one AddSqlServiceBroker call defers the queue receiver, the
+            // ISqlDependencyManager registration and the ChangeFeedReceiver Replace, in that order, so a refused
+            // AddSqlServiceBroker runs none of them and the Replace (RemoveAll then Add) runs after the receiver it
+            // replaces. Oracles, in WhenAddingSqlChangeFeed:
+            // MustLeaveTheServiceCollectionAndDiscoveredReceiversExactlyAsTheyWereWhenAFeedIsRefused and
+            // MustRegisterTheChangeFeedReceiverAsTheFeedsOnlyReceiverWhenRowChangeEventsAreEmitted. The Theory has one
+            // row per refusal for each overload, so each refusal named below is two rows. Mutations, measured on 484
+            // unit tests: writing the ISqlDependencyManager registration directly after Build(), before DeriveFrom,
+            // reddens the colliding object names, blank message body type and divergent transport rows of both
+            // overloads, six rows; writing the Replace directly before AddSqlServiceBroker reddens the blank message
+            // body type and divergent transport rows of both overloads and the only-receiver fact, five tests;
+            // deferring the Replace before the queue receiver reddens only the only-receiver fact. The blank connection
+            // string, blank table name, malformed connection string and no database rows of both overloads stay green
+            // under every one of these mutations: their refusal is raised by the options builder's constructor or
+            // Build(), before any write. The discovered-receiver assertion reddened under none of them, and no
+            // mutation reddens any other unit test in this test project.
+            // NOT covered, and no test pins it: a write made through the public SqlChangeFeedOptionsBuilder.Services
+            // property from inside the options delegate lands immediately, before any refusal.
             var changeFeedOptions = builder.Services.AddSqlChangeFeedOptionsBuilder(connectionString, tableName, databaseName);
             optionsBuilder?.Invoke(changeFeedOptions);
-            SqlChangeFeedOptions options = changeFeedOptions.Build();
+            var (options, objectNames) = BuildChangeFeed(typeof(TRowChangedData), changeFeedOptions.Build);
 
-            builder.Services.AddIfNotRegistered<ISqlDependencyManager<TRowChangedData>>(ServiceLifetime.Scoped, sp =>
-            {
-                return new SqlDependencyManager<TRowChangedData>(options);
-            });
+            builder.AddSqlServiceBroker(ssbBuilder => ConfigureChangeFeedTransport<TRowChangedData>(ssbBuilder, options, objectNames));
 
-            var objectNames = ChangeFeedObjectNames.DeriveFrom(typeof(TRowChangedData), options);
+            return builder;
+        }
 
-            builder.AddSqlServiceBroker(ssbBuilder =>
-            {
-                ssbBuilder.AddSqlServiceBrokerOptions(options.ServiceBrokerOptions)
-                          .AddQueueReceiver<ProcessChangeFeedCommand<TRowChangedData>>(objectNames.ConversationQueueName,
-                                                                                         errorQueuePath: options.ReceiverOptions.ErrorQueuePath,
-                                                                                         transactionMode: options.ReceiverOptions.TransactionMode,
-                                                                                         deadLetterServicePath: objectNames.ConversationDeadLetterServiceName);
-            });
+        private static (SqlChangeFeedOptions Options, ChangeFeedObjectNames ObjectNames) BuildChangeFeed(Type rowChangedDataType, Func<SqlChangeFeedOptions> buildOptions)
+        {
+            var options = buildOptions();
+            return (options, ChangeFeedObjectNames.DeriveFrom(rowChangedDataType, options));
+        }
+
+        private static void ConfigureChangeFeedTransport<TRowChangedData>(SqlServiceBrokerOptionsBuilder ssbBuilder, SqlChangeFeedOptions options, ChangeFeedObjectNames objectNames)
+            where TRowChangedData : class, IMessage, new()
+        {
+            void RegisterSqlDependencyManager(IServiceCollection services)
+                => services.AddIfNotRegistered<ISqlDependencyManager<TRowChangedData>>(ServiceLifetime.Scoped, sp => new SqlDependencyManager<TRowChangedData>(options));
+
+            void RegisterChangeFeedReceiver(IServiceCollection services)
+                => services.Replace<IBrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangedData>>, ChangeFeedReceiver<TRowChangedData>>(ServiceLifetime.Scoped);
+
+            // INVARIANT: the receive-attempt limit configured through WithMaxReceiveAttempts reaches the ReceiverOptions
+            // of the feed's queue receiver, for both AddSqlChangeFeed overloads. Pinned by the two configured-value facts
+            // in WhenAddingSqlChangeFeed; dropping the maxReceiveAttempts argument below reddens both (measured).
+            ssbBuilder.AddSqlServiceBrokerOptions(options.ServiceBrokerOptions)
+                      .AddQueueReceiver<ProcessChangeFeedCommand<TRowChangedData>>(objectNames.ConversationQueueName,
+                                                                                     errorQueuePath: options.ReceiverOptions.ErrorQueuePath,
+                                                                                     transactionMode: options.ReceiverOptions.TransactionMode,
+                                                                                     deadLetterServicePath: objectNames.ConversationDeadLetterServiceName,
+                                                                                     maxReceiveAttempts: options.ReceiverOptions.MaxReceiveAttempts)
+                      .DeferRegistration(RegisterSqlDependencyManager);
 
             if (options.ProcessChangeFeedCommandViaChatter)
             {
-                builder.Services.Replace<IBrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangedData>>, ChangeFeedReceiver<TRowChangedData>>(ServiceLifetime.Scoped);
+                ssbBuilder.DeferRegistration(RegisterChangeFeedReceiver);
             }
-
-            return builder;
         }
 
         /// <summary>

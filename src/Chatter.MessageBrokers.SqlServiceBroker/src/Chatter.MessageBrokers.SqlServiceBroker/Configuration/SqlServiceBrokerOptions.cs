@@ -9,25 +9,30 @@
         /// <summary>
         /// The content type of the message body. The default is application/json.
         /// </summary>
+        [SafeToPrint]
         public string MessageBodyType { get; set; } = "application/json; charset=utf-16";
         /// <summary>
         /// Specifies the amount of time, in milliseconds, for the statement to wait for a message. 
         /// This clause can only be used with the WAITFOR clause. If this clause is not specified, or the time-out is -1, the wait time is unlimited. 
         /// If the time-out expires, RECEIVE returns an empty result set.
         /// </summary>
+        [SafeToPrint]
         public int ReceiverTimeoutInMilliseconds { get; set; } = -1;
         /// <summary>
         /// The maximum amount of time a dialog will remain open.
         /// </summary>
+        [SafeToPrint]
         public int ConversationLifetimeInSeconds { get; set; } = 0;
         /// <summary>
         /// Specifies whether or not messages sent and received on this dialog must be encrypted when they
         /// are sent outside of an instance of Microsoft SQL Server.
         /// </summary>
+        [SafeToPrint]
         public bool ConversationEncryption { get; set; } = false;
         /// <summary>
         /// Specifies whether or not messages sent should be compressed (gzip). 
         /// </summary>
+        [SafeToPrint]
         public bool CompressMessageBody { get; set; } = true;
         /// <summary>
         /// Removes all messages and catalog view entries for one side of a conversation that cannot complete normally.
@@ -35,10 +40,12 @@
         /// endpoint, all messages for the conversation in the transmission queue, and all messages for the conversation
         /// in the service queue. Administrators can use this option to remove conversations which cannot complete normally
         /// </summary>
+        [SafeToPrint]
         public bool CleanupOnEndConversation { get; set; } = false;
         /// <summary>
         /// Turned on by default. When true, will END CONVERSATION after a message has been dispatched via <see cref="Sending.SqlServiceBrokerSender"/> which will add a message of type http://schemas.microsoft.com/SQL/ServiceBroker/EndDialog to the queue.}.
         /// </summary>
+        [SafeToPrint]
         public bool EndConversationAfterDispatch { get; set; } = true;
 
         public SqlServiceBrokerOptions(string connectionString,

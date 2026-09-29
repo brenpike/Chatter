@@ -22,6 +22,7 @@ This package connects the Chatter.MessageBrokers abstractions to SQL Server Serv
 - [Configuration](#configuration)
 - [Recovery](#recovery)
 - [Header propagation](#header-propagation)
+- [Known limitations](#known-limitations)
 - [Diagnostics](#diagnostics)
 - [Related packages](#related-packages)
 - [Learn more](#learn-more)
@@ -508,6 +509,21 @@ The `SqlServiceBrokerOptions` constructor takes the same parameters, except that
 
 `AddSqlServiceBroker` builds the options at registration and throws `ArgumentNullException` when no `AddSqlServiceBrokerOptions` overload was called, when the connection string is null or whitespace, or when the message body type is missing. The built `SqlServiceBrokerOptions` is registered as a singleton.
 
+A host has one SQL Server Service Broker transport configuration. Calling `AddSqlServiceBroker` again with options that match, setting by setting, the options an earlier call registered is accepted: the options stay registered once, and each call's receivers are registered. A call whose options differ throws `NotSupportedException` at registration, naming each setting that differs; connection string values appear as `(redacted)`. Receiver settings stay per receiver: pass the queue, error queue, transaction mode, dead-letter service and maximum receive attempts to each `AddQueueReceiver` call. See [Known limitations](#known-limitations).
+
+`AddSqlServiceBroker` registers nothing for a call it refuses with either exception. Receivers added with `AddQueueReceiver` are held until the options are built and checked, and are registered when `AddSqlServiceBroker` returns. To register your own services on the same terms from inside the delegate, pass them to `DeferRegistration(Action<IServiceCollection>)`. Deferred registrations and receivers run in the order you add them, and a refused call runs none of them:
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddSqlServiceBroker(ssb => ssb
+        .AddSqlServiceBrokerOptions(builder.Configuration.GetConnectionString("Orders"))
+        .AddQueueReceiver<PlaceOrder>("Orders_Queue", deadLetterServicePath: "Orders_DeadLetter_Service")
+        .DeferRegistration(services => services.AddSingleton<OrderAuditLog>()));
+```
+
+A write made directly through the builder's `Services` property is not deferred: it happens immediately and stays even when the call is then refused.
+
 ## Recovery
 
 Failed receives and handlers are retried by the Chatter.MessageBrokers retry and circuit breaker policies (see [Recovery](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#recovery)). This package tells those policies which SQL errors are transient: a `SqlException` whose `IsTransient` is `true`, or whose error number is on a list of known transient errors such as `1205` (deadlock victim), `40501` (service busy) and `40613` (database unavailable).
@@ -524,6 +540,10 @@ Only the Chatter envelope carries the Message Context across Service Broker. Two
 - **Deadletter.** The dead-letter message gets a fresh dictionary holding only the failure details.
 
 This applies to every header alike: correlation id, group id, your own headers and the W3C `traceparent` and `tracestate` trace-context headers. A distributed trace continues across this transport on the Chatter envelope path and starts a new trace on the `DEFAULT` path. See [Trace context propagation](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#trace-context-propagation).
+
+## Known limitations
+
+- **Transport options are per host, not per receiver.** Every Service Broker Receiver and the Service Broker Sender in a host use the same `SqlServiceBrokerOptions`, so two receivers cannot, for example, read from different databases or wait with different receive timeouts; see [Validation](#validation). Tracked in [#542](https://github.com/brenpike/Chatter/issues/542).
 
 ## Diagnostics
 
