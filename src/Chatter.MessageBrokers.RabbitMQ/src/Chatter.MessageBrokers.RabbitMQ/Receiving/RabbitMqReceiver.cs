@@ -464,9 +464,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                                              cancellationToken: cancellationToken);
             }
 
-            // Quorum queues: a plain requeue lets the broker increment the native x-delivery-count and redeliver.
+            // INVARIANT (ADR-0042): the quorum requeue verb is basic.reject, never basic.nack. On RabbitMQ >= 4.3
+            // basic.nack means "returned, not failed" and does not advance x-delivery-count, so the receive attempt
+            // never reaches MaxReceiveAttempts; basic.reject is the failed-delivery outcome that advances it.
+            // Before 4.3 both verbs run the same server path, so the choice is behavior-identical there. Pinned by
+            // RabbitMqDeliveryCountingOn43Tests
+            // (QuorumQueueDeadlettersOnMaxReceivesOn43, QuorumQueueReceiveAttemptsClimbAcrossRedeliveriesOn43) and
+            // WhenSettlingMessage.MustRejectWithRequeueOnNackForQuorum; reverting to BasicNackAsync reddens all three.
             return SettleOnReceiveChannelAsync(received, (channel) =>
-                channel.BasicNackAsync(received.DeliveryTag, multiple: false, requeue: true, cancellationToken), cancellationToken);
+                channel.BasicRejectAsync(received.DeliveryTag, requeue: true, cancellationToken), cancellationToken);
         }
 
         /// <summary>

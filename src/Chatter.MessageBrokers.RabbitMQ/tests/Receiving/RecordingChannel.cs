@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 {
     // A recording IChannel the in-memory connection source hands to RunOnReceiveChannelAsync and to publish
-    // rentals. It implements only the members RabbitMqReceiver/RabbitMqSender exercise — ack, nack, publish,
+    // rentals. It implements only the members RabbitMqReceiver/RabbitMqSender exercise — ack, nack, reject, publish,
     // consume-registration, QoS — and records each so tests assert off the recordings. Every other IChannel
     // member throws NotImplementedException: reaching one is a signal the production code took an untested
     // path, which a test should surface rather than silently accept. Reports IsOpen == false so a rental's
@@ -41,6 +41,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
         public List<AckRecord> Acks { get; } = new List<AckRecord>();
         public List<NackRecord> Nacks { get; } = new List<NackRecord>();
+        public List<RejectRecord> Rejects { get; } = new List<RejectRecord>();
         public List<PublishRecord> Publishes { get; } = new List<PublishRecord>();
         public IAsyncBasicConsumer RegisteredConsumer { get; private set; }
         public ushort? LastQosPrefetchCount { get; private set; }
@@ -67,6 +68,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public ValueTask BasicNackAsync(ulong deliveryTag, bool multiple, bool requeue, CancellationToken cancellationToken = default)
         {
             Nacks.Add(new NackRecord(deliveryTag, multiple, requeue, _sequencer.Next()));
+            return default;
+        }
+
+        public ValueTask BasicRejectAsync(ulong deliveryTag, bool requeue, CancellationToken cancellationToken = default)
+        {
+            Rejects.Add(new RejectRecord(deliveryTag, requeue, _sequencer.Next()));
             return default;
         }
 
@@ -162,7 +169,6 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             return Task.CompletedTask;
         }
         public Task<BasicGetResult> BasicGetAsync(string queue, bool autoAck, CancellationToken cancellationToken = default) => throw new NotImplementedException();
-        public ValueTask BasicRejectAsync(ulong deliveryTag, bool requeue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task CloseAsync(ushort replyCode, string replyText, bool abort, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task CloseAsync(ShutdownEventArgs reason, bool abort) => throw new NotImplementedException();
         public Task CloseAsync(ShutdownEventArgs reason, bool abort, CancellationToken cancellationToken) => throw new NotImplementedException();
@@ -222,6 +228,21 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public bool Multiple { get; }
         public bool Requeue { get; }
         // The shared-sequencer tick at which this nack was recorded, so a test can assert settlement ordering.
+        public long Seq { get; }
+    }
+
+    internal readonly struct RejectRecord
+    {
+        public RejectRecord(ulong deliveryTag, bool requeue, long seq)
+        {
+            DeliveryTag = deliveryTag;
+            Requeue = requeue;
+            Seq = seq;
+        }
+
+        public ulong DeliveryTag { get; }
+        public bool Requeue { get; }
+        // The shared-sequencer tick at which this reject was recorded, so a test can assert settlement ordering.
         public long Seq { get; }
     }
 
