@@ -88,15 +88,17 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
             // AddSqlServiceBroker runs none of them and the Replace (RemoveAll then Add) runs after the receiver it
             // replaces. Oracles, in WhenAddingSqlChangeFeed:
             // MustLeaveTheServiceCollectionAndDiscoveredReceiversExactlyAsTheyWereWhenAFeedIsRefused and
-            // MustRegisterTheChangeFeedReceiverAsTheFeedsOnlyReceiverWhenRowChangeEventsAreEmitted. Mutations,
-            // measured: writing the ISqlDependencyManager registration between Build() and DeriveFrom reddens the
-            // colliding object names, blank message body type and divergent transport rows; writing the Replace
-            // directly before AddSqlServiceBroker reddens the blank message body type and divergent transport rows and
-            // the only-receiver fact; deferring the Replace before the queue receiver reddens only the only-receiver
-            // fact. The blank connection string, blank table name, malformed connection string and no database rows
-            // stay green under every one of these mutations: their refusal is raised by the options builder's
-            // constructor or Build(), before any write. The discovered-receiver assertion reddened under none of them,
-            // and no mutation reddens any other unit test in this test project.
+            // MustRegisterTheChangeFeedReceiverAsTheFeedsOnlyReceiverWhenRowChangeEventsAreEmitted. The Theory has one
+            // row per refusal for each overload, so each refusal named below is two rows. Mutations, measured on 484
+            // unit tests: writing the ISqlDependencyManager registration directly after Build(), before DeriveFrom,
+            // reddens the colliding object names, blank message body type and divergent transport rows of both
+            // overloads, six rows; writing the Replace directly before AddSqlServiceBroker reddens the blank message
+            // body type and divergent transport rows of both overloads and the only-receiver fact, five tests;
+            // deferring the Replace before the queue receiver reddens only the only-receiver fact. The blank connection
+            // string, blank table name, malformed connection string and no database rows of both overloads stay green
+            // under every one of these mutations: their refusal is raised by the options builder's constructor or
+            // Build(), before any write. The discovered-receiver assertion reddened under none of them, and no
+            // mutation reddens any other unit test in this test project.
             // NOT covered, and no test pins it: a write made through the public SqlChangeFeedOptionsBuilder.Services
             // property from inside the options delegate lands immediately, before any refusal.
             var changeFeedOptions = builder.Services.AddSqlChangeFeedOptionsBuilder(connectionString, tableName, databaseName);

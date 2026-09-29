@@ -10,13 +10,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
+- **`SqlServiceBrokerOptionsBuilder.DeferRegistration(Action<IServiceCollection>)`** defers a registration to the end of
+  the `AddSqlServiceBroker` call that configures the builder. The registration runs against the host's service
+  collection after the options are built and checked, in the order it was deferred alongside the receivers added with
+  `AddQueueReceiver`, and a refused call runs none of its deferred registrations. It throws `ArgumentNullException` for
+  a null registration and returns the builder. Writes made directly through the builder's `Services` property still
+  happen immediately. (#531)
+
 ### Changed
 
 - **A second `AddSqlServiceBroker` call with different options is now refused with `NotSupportedException`.** A host
-  has one SQL Server Service Broker transport configuration. A later call whose `SqlServiceBrokerOptions` match the
-  registered options setting by setting is accepted and registers its receivers; a call whose options differ throws at
-  registration, naming each differing setting with connection string values shown as `(redacted)`, and registers
-  nothing. Previously the last registration's options silently applied to every receiver and sender. **This is a
+  has one SQL Server Service Broker transport configuration. A later call whose `SqlServiceBrokerOptions` match, setting
+  by setting, the options the first call registered, as they were when it registered them, is accepted and registers
+  its receivers; a call whose options differ throws at registration, naming each differing setting, and registers
+  nothing. The message shows the registered and new value of each differing setting except the connection string,
+  whose values are never shown. Previously the last registration's options silently applied to every receiver and sender. **This is a
   breaking change** for a host that calls `AddSqlServiceBroker` more than once with different options. To migrate, use
   one transport configuration and pass receiver settings (queue, error queue, transaction mode, dead-letter service,
   maximum receive attempts) to each `AddQueueReceiver` call. Per-receiver transport options are tracked in

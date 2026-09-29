@@ -272,7 +272,9 @@ Configuration is fluent only; this package reads no `appsettings.json` section.
 | `tableName` | Table to watch, without its schema. Required. |
 | `optionsBuilder` | Optional `Action<SqlChangeFeedOptionsBuilder>` for everything else. |
 
-`AddSqlChangeFeed` throws `ArgumentNullException` for a blank connection string or table name. It throws `InvalidOperationException` when neither `databaseName` nor the connection string names a database, and `ChangeFeedObjectNameCollisionException` for colliding names (see [Object names](#object-names)).
+Both overloads throw the same exceptions. `AddSqlChangeFeed` throws `ArgumentNullException` for a blank connection string, table name or message body type, and `ArgumentException` for a connection string that cannot be parsed. It throws `InvalidOperationException` when neither `databaseName` nor the connection string names a database, `ChangeFeedObjectNameCollisionException` for colliding names (see [Object names](#object-names)), and `NotSupportedException` when the change feed's transport settings differ from those already registered (see [Known limitations](#known-limitations)). The non-generic overload also throws `ArgumentNullException` for a null `rowChangedDataType`, and `ArgumentException` for a type that does not meet the requirements of `TRowChangedData`.
+
+A refused call registers nothing. The one exception is a write your `optionsBuilder` makes directly through `SqlChangeFeedOptionsBuilder.Services`: it happens immediately and stays after the refusal.
 
 ### Options reference
 

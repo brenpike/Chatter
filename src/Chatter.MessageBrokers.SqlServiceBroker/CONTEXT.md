@@ -17,6 +17,8 @@ _Avoid_: setup script (this package provisions nothing).
 
 **Service Broker Options**: Configuration for the SQL connection, conversation lifetime/encryption, and body compression. Scoped per host: one set of transport settings is shared by every Service Broker Receiver and the Service Broker Sender, and `AddSqlServiceBroker` refuses a second, different set. Receiver settings (queue, error queue, transaction mode, dead-letter service, maximum receive attempts) are per receiver, passed to `AddQueueReceiver`.
 
+**Deferred Registration**: A service registration handed to `SqlServiceBrokerOptionsBuilder.DeferRegistration` inside the `AddSqlServiceBroker` delegate. It runs against the host's service collection only after `AddSqlServiceBroker` has accepted the Service Broker Options, in the order it was deferred; a refused call runs none. Receivers added with `AddQueueReceiver` are Deferred Registrations, and the SQL Change Feed context registers every change feed through them.
+
 ## Relationships
 
 - Implements the receiver/sender interfaces defined in the Message Brokers context.

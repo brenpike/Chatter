@@ -511,7 +511,18 @@ The `SqlServiceBrokerOptions` constructor takes the same parameters, except that
 
 A host has one SQL Server Service Broker transport configuration. Calling `AddSqlServiceBroker` again with options that match, setting by setting, the options an earlier call registered is accepted: the options stay registered once, and each call's receivers are registered. A call whose options differ throws `NotSupportedException` at registration, naming each setting that differs; connection string values appear as `(redacted)`. Receiver settings stay per receiver: pass the queue, error queue, transaction mode, dead-letter service and maximum receive attempts to each `AddQueueReceiver` call. See [Known limitations](#known-limitations).
 
-`AddSqlServiceBroker` registers nothing for a call it refuses with either exception. Receivers added with `AddQueueReceiver` are held until the options are built and checked, and are registered when `AddSqlServiceBroker` returns.
+`AddSqlServiceBroker` registers nothing for a call it refuses with either exception. Receivers added with `AddQueueReceiver` are held until the options are built and checked, and are registered when `AddSqlServiceBroker` returns. To register your own services on the same terms from inside the delegate, pass them to `DeferRegistration(Action<IServiceCollection>)`. Deferred registrations and receivers run in the order you add them, and a refused call runs none of them:
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddSqlServiceBroker(ssb => ssb
+        .AddSqlServiceBrokerOptions(builder.Configuration.GetConnectionString("Orders"))
+        .AddQueueReceiver<PlaceOrder>("Orders_Queue", deadLetterServicePath: "Orders_DeadLetter_Service")
+        .DeferRegistration(services => services.AddSingleton<OrderAuditLog>()));
+```
+
+A write made directly through the builder's `Services` property is not deferred: it happens immediately and stays even when the call is then refused.
 
 ## Recovery
 
