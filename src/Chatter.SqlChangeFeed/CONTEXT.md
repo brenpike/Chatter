@@ -13,7 +13,7 @@ _Avoid_: change stream.
 
 **Stored Procedure**: Installed SQL procedure that the change-feed plumbing invokes to read/forward changes.
 
-**Change Feed Options**: Configuration naming the watched table, database, connection, change types to watch, and feed behavior.
+**Change Feed Options**: Configuration naming the watched table, database, connection, change types to watch, and feed behavior. Receiver settings (queue, dead-letter service, error queue, transaction mode, maximum receive attempts) are per change feed. Transport settings (connection string, body type, receiver timeout, conversation lifetime, encryption, compression) are the Service Broker Options of the SQL Service Broker context, scoped per host: change feeds in one host share one set, and a registration whose set differs is refused.
 
 **Row Changed Event**: The default strongly-typed notifications fanned out per change — `RowInsertedEvent<T>`, `RowUpdatedEvent<T>`, `RowDeletedEvent<T>` — handled via `IMessageHandler<T>`.
 
