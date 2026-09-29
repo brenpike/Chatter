@@ -441,7 +441,7 @@ public class PlaceOrderHandler : IMessageHandler<PlaceOrder>
 
 ## Configuration
 
-Options are built from the `AddSqlServiceBroker(ssb => ...)` delegate only; nothing is bound from `appsettings.json`. Read values from `IConfiguration` yourself and pass them in. Call an `AddSqlServiceBrokerOptions` overload first, because the `With...` and `Use...` methods change the options it creates.
+Options are built from the `AddSqlServiceBroker(ssb => ...)` delegate only; nothing is bound from `appsettings.json`. Read values from `IConfiguration` yourself and pass them in. The `With...` and `Use...` methods configure the options on their own; calling an `AddSqlServiceBrokerOptions` overload replaces everything configured before it.
 
 ```csharp
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
@@ -492,10 +492,11 @@ As an environment variable, the key is `ConnectionStrings__Orders`. `TrustServer
 | `WithConversationLifetime(int)` | Sets `ConversationLifetimeInSeconds`. |
 | `UseConversationEncryption()` | Sets `ConversationEncryption` to `true`. |
 | `WithMessageBodyCompression()` | Sets `CompressMessageBody` to `true`. |
+| `WithMessageBodyCompression(bool)` | Sets `CompressMessageBody`. |
 | `WithConversationCleanup()` | Sets `CleanupOnEndConversation` to `true`. |
 | `EndConversationAfterDispatch(bool)` | Sets `EndConversationAfterDispatch`. |
 
-The connection-string overload takes optional parameters named after the options: `messageBodyType`, `receiverTimeoutInMilliseconds`, `conversationLifetimeInSeconds`, `compressMessageBody`, `cleanupOnEndConversation` and `endConversationAfterDispatch`. Its encryption parameter is spelled `coversationEncryption`; call `UseConversationEncryption()` instead of passing it by name. To turn compression off, pass `compressMessageBody: false`:
+The connection-string overload takes optional parameters named after the options: `messageBodyType`, `receiverTimeoutInMilliseconds`, `conversationLifetimeInSeconds`, `compressMessageBody`, `cleanupOnEndConversation` and `endConversationAfterDispatch`. Its encryption parameter is spelled `coversationEncryption`; call `UseConversationEncryption()` instead of passing it by name. To turn compression off, pass `compressMessageBody: false`, or call `WithMessageBodyCompression(false)`:
 
 ```csharp
 ssb.AddSqlServiceBrokerOptions(builder.Configuration.GetConnectionString("Orders"),
@@ -507,7 +508,7 @@ The `SqlServiceBrokerOptions` constructor takes the same parameters, except that
 
 ### Validation
 
-`AddSqlServiceBroker` builds the options at registration and throws `ArgumentNullException` when no `AddSqlServiceBrokerOptions` overload was called, when the connection string is null or whitespace, or when the message body type is missing. The built `SqlServiceBrokerOptions` is registered as a singleton.
+`AddSqlServiceBroker` builds the options at registration and throws `ArgumentNullException` when no connection string was supplied or it is null or whitespace, or when the message body type is missing. The built `SqlServiceBrokerOptions` is registered as a singleton.
 
 A host has one SQL Server Service Broker transport configuration. Calling `AddSqlServiceBroker` again with options that match, setting by setting, the options an earlier call registered is accepted: the options stay registered once, and each call's receivers are registered. A call whose options differ throws `NotSupportedException` at registration, naming each setting that differs; connection string values appear as `(redacted)`. Receiver settings stay per receiver: pass the queue, error queue, transaction mode, dead-letter service and maximum receive attempts to each `AddQueueReceiver` call. See [Known limitations](#known-limitations).
 

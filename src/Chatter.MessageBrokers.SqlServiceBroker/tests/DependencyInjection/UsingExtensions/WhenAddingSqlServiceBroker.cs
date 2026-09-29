@@ -46,9 +46,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
             => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>()).Build();
 
         // Runs the real AddSqlServiceBroker against a bare ChatterBuilder (no AddChatterCqrs / AddMessageBrokers,
-        // so no AssemblySourceFilter.Apply() AppDomain scan) and returns the resulting service collection. The
-        // AddSqlServiceBrokerOptions(connectionString) overload is used because WithConnectionString alone
-        // assumes a previously-constructed options object — the string overload constructs it.
+        // so no AssemblySourceFilter.Apply() AppDomain scan) and returns the resulting service collection.
         private static IServiceCollection BuildRegistration()
         {
             var services = new ServiceCollection();
@@ -261,6 +259,19 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
                 .Should().Equal(_alphaQueue, _betaQueue);
             services.Should().Contain(d => d.ServiceType == typeof(IBrokeredMessageReceiver<AlphaCommand>));
             services.Should().Contain(d => d.ServiceType == typeof(IBrokeredMessageReceiver<BetaCommand>));
+        }
+
+        [Fact]
+        public void MustAcceptASecondCallConfiguredWithWithConnectionStringAloneAfterACallUsingTheConnectionStringOverload()
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            Action registerWithConnectionStringAlone =
+                () => builder.AddSqlServiceBroker(o => o.WithConnectionString(new string(_connectionString.AsSpan())));
+
+            registerWithConnectionStringAlone.Should().NotThrow();
         }
 
         [Fact]

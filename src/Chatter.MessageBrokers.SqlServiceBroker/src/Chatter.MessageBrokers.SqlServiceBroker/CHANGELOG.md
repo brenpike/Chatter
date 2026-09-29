@@ -6,6 +6,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-29
+
+### Added
+
+- **`SqlServiceBrokerOptionsBuilder.WithMessageBodyCompression(bool)`** lets the fluent builder turn message-body
+  compression off. The existing parameterless `WithMessageBodyCompression()` is unchanged and still turns it on. (#532)
+
+### Fixed
+
+- **`With*`/`Use*` builder methods called before any `AddSqlServiceBrokerOptions` call no longer throw
+  `NullReferenceException`.** Calling a setter first now builds its options with the same defaults as
+  `AddSqlServiceBrokerOptions(connectionString)`. (#532)
+
 ## [0.17.0] - 2026-09-29
 
 ### Added

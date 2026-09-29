@@ -49,12 +49,39 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         }
 
         /// <summary>
+        /// Returns the options the fluent setters configure, first creating them through
+        /// <see cref="AddSqlServiceBrokerOptions(string, string, int, int, bool, bool, bool, bool)"/> without a
+        /// connection string when no <c>AddSqlServiceBrokerOptions</c> overload has supplied them.
+        /// </summary>
+        private SqlServiceBrokerOptions EnsureOptions()
+        {
+            // INVARIANT: options created here hold the connection-string overload's defaults, so WithConnectionString
+            // alone and that overload with the same connection string configure no diverging transport setting.
+            // Pinned by WhenBuilding.MustConfigureTheSameTransportSettingsWithWithConnectionStringAsWithTheConnectionStringOverload,
+            // WhenBuilding.MustDefaultConversationLifetimeToZeroWhenOnlyWithConnectionStringIsCalled and
+            // WhenAddingSqlServiceBroker.MustAcceptASecondCallConfiguredWithWithConnectionStringAloneAfterACallUsingTheConnectionStringOverload;
+            // measured: creating them with the SqlServiceBrokerOptions ctor's own defaults (conversation lifetime
+            // int.MaxValue) reddens exactly those three.
+            // INVARIANT: every With*/Use*/EndConversationAfterDispatch setter reaches the options through this method.
+            // Pinned per setter by WhenBuilding.MustRefuseToBuildWithoutAConnectionStringWhenOnlyAnotherSetterIsCalled
+            // (one row each) and, for WithConnectionString, WhenBuilding.MustSetTheConnectionStringWhenWithConnectionStringIsTheFirstCall;
+            // measured: one setter dereferencing the field directly reddens that setter's row (UseConversationEncryption:
+            // 1 red) or, for WithConnectionString, that fact plus the three above (4 red).
+            if (_sqlServiceBrokerOptions is null)
+            {
+                AddSqlServiceBrokerOptions(connectionString: null);
+            }
+
+            return _sqlServiceBrokerOptions;
+        }
+
+        /// <summary>
         /// Sets the connection string to use for all SQL Service Broker communication
         /// </summary>
         /// <param name="connectionString">The SQL Server connection string</param>
         public SqlServiceBrokerOptionsBuilder WithConnectionString(string connectionString)
         {
-            _sqlServiceBrokerOptions.ConnectionString = connectionString;
+            EnsureOptions().ConnectionString = connectionString;
             return this;
         }
 
@@ -66,7 +93,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// <param name="messageBodyType">The message body type to be used for encoding the SQL Service Broker message body</param>
         public SqlServiceBrokerOptionsBuilder WithMessageBodyType(string messageBodyType)
         {
-            _sqlServiceBrokerOptions.MessageBodyType = messageBodyType;
+            EnsureOptions().MessageBodyType = messageBodyType;
             return this;
         }
 
@@ -77,7 +104,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// </summary>
         public SqlServiceBrokerOptionsBuilder WithJsonBodyType()
         {
-            _sqlServiceBrokerOptions.MessageBodyType = _defaultMessageBodyType;
+            EnsureOptions().MessageBodyType = _defaultMessageBodyType;
             return this;
         }
 
@@ -89,7 +116,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// <param name="receiverTimeoutInMilliseconds">The amount of time in seconds the receiver will wait for a message.</param>
         public SqlServiceBrokerOptionsBuilder WithReceiverTimeout(int receiverTimeoutInMilliseconds)
         {
-            _sqlServiceBrokerOptions.ReceiverTimeoutInMilliseconds = receiverTimeoutInMilliseconds;
+            EnsureOptions().ReceiverTimeoutInMilliseconds = receiverTimeoutInMilliseconds;
             return this;
         }
 
@@ -99,7 +126,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// <param name="conversationLifetimeInSeconds">The amount of time in milliseconds conversations will remain open.</param>
         public SqlServiceBrokerOptionsBuilder WithConversationLifetime(int conversationLifetimeInSeconds)
         {
-            _sqlServiceBrokerOptions.ConversationLifetimeInSeconds = conversationLifetimeInSeconds;
+            EnsureOptions().ConversationLifetimeInSeconds = conversationLifetimeInSeconds;
             return this;
         }
 
@@ -109,16 +136,23 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// </summary>
         public SqlServiceBrokerOptionsBuilder UseConversationEncryption()
         {
-            _sqlServiceBrokerOptions.ConversationEncryption = true;
+            EnsureOptions().ConversationEncryption = true;
             return this;
         }
 
         /// <summary>
-        /// Specifies whether or not messages sent should be compressed (gzip). 
+        /// Specifies whether or not messages sent should be compressed (gzip).
         /// </summary>
         public SqlServiceBrokerOptionsBuilder WithMessageBodyCompression()
+            => WithMessageBodyCompression(true);
+
+        /// <summary>
+        /// Specifies whether or not messages sent should be compressed (gzip).
+        /// </summary>
+        /// <param name="compressMessageBody">Whether the message body should be compressed.</param>
+        public SqlServiceBrokerOptionsBuilder WithMessageBodyCompression(bool compressMessageBody)
         {
-            _sqlServiceBrokerOptions.CompressMessageBody = true;
+            EnsureOptions().CompressMessageBody = compressMessageBody;
             return this;
         }
 
@@ -130,7 +164,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// </summary>
         public SqlServiceBrokerOptionsBuilder WithConversationCleanup()
         {
-            _sqlServiceBrokerOptions.CleanupOnEndConversation = true;
+            EnsureOptions().CleanupOnEndConversation = true;
             return this;
         }
 
@@ -139,7 +173,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// </summary>
         public SqlServiceBrokerOptionsBuilder EndConversationAfterDispatch(bool endConvo)
         {
-            _sqlServiceBrokerOptions.EndConversationAfterDispatch = endConvo;
+            EnsureOptions().EndConversationAfterDispatch = endConvo;
             return this;
         }
 

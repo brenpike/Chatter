@@ -6,9 +6,9 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Configuration.UsingSqlServiceBrokerOptionsBuilder
 {
-    // Behavior-pinning tests: characterize SqlServiceBrokerOptionsBuilder and SqlServiceBrokerOptions
-    // AS-IS, including latent quirks (NRE on a fluent setter before AddSqlServiceBrokerOptions, and the
-    // divergent conversationLifetime default between the parameterized ctor and the builder overload).
+    // Behavior-pinning tests: characterize SqlServiceBrokerOptionsBuilder and SqlServiceBrokerOptions,
+    // including the fluent setters working as the first call, and the divergent conversationLifetime
+    // default between the parameterized ctor and the builder overload.
     // INVARIANT: the const default message body type is "application/json; charset=utf-16" and matches
     // both the property initializer and what WithJsonBodyType() / the string overload assign.
     public class WhenBuilding : Testing.Core.Context
@@ -34,27 +34,102 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Configuration.UsingSqlSe
             new SqlServiceBrokerOptionsBuilder(services).Services.Should().BeSameAs(services);
         }
 
-        // --- candidate finding: fluent setter before AddSqlServiceBrokerOptions dereferences null options ---
+        // --- fluent setters as the first call, without an AddSqlServiceBrokerOptions overload ---
 
         [Fact]
-        public void MustThrowNullReferenceExceptionWhenWithConnectionStringCalledBeforeAddOptions()
+        public void MustSetTheConnectionStringWhenWithConnectionStringIsTheFirstCall()
         {
-            Action act = () => NewBuilder().WithConnectionString("Server=.;");
-            act.Should().Throw<NullReferenceException>();
+            NewBuilder().WithConnectionString("Server=.;").Build()
+                .ConnectionString.Should().Be("Server=.;");
         }
 
         [Fact]
-        public void MustThrowNullReferenceExceptionWhenWithMessageBodyTypeCalledBeforeAddOptions()
+        public void MustSetTheMessageBodyTypeWhenWithMessageBodyTypeIsTheFirstCall()
         {
-            Action act = () => NewBuilder().WithMessageBodyType("text/plain");
-            act.Should().Throw<NullReferenceException>();
+            NewBuilder().WithMessageBodyType("text/plain").WithConnectionString("Server=.;").Build()
+                .MessageBodyType.Should().Be("text/plain");
         }
 
         [Fact]
-        public void MustThrowNullReferenceExceptionWhenWithJsonBodyTypeCalledBeforeAddOptions()
+        public void MustSetTheJsonBodyTypeWhenWithJsonBodyTypeIsTheFirstCall()
         {
-            Action act = () => NewBuilder().WithJsonBodyType();
-            act.Should().Throw<NullReferenceException>();
+            NewBuilder().WithJsonBodyType().WithConnectionString("Server=.;").Build()
+                .MessageBodyType.Should().Be(DefaultMessageBodyType);
+        }
+
+        [Fact]
+        public void MustConfigureTheSameTransportSettingsWithWithConnectionStringAsWithTheConnectionStringOverload()
+        {
+            var configuredByWithConnectionString = NewBuilder().WithConnectionString("Server=.;").Build();
+            var configuredByOverload = NewBuilder().AddSqlServiceBrokerOptions("Server=.;").Build();
+
+            SqlServiceBrokerTransportSettings.FindDivergences(
+                SqlServiceBrokerTransportSettings.SnapshotOf(configuredByWithConnectionString),
+                SqlServiceBrokerTransportSettings.SnapshotOf(configuredByOverload))
+                .Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustDefaultConversationLifetimeToZeroWhenOnlyWithConnectionStringIsCalled()
+        {
+            NewBuilder().WithConnectionString("Server=.;").Build()
+                .ConversationLifetimeInSeconds.Should().Be(0);
+        }
+
+        public static TheoryData<string> SettersOtherThanWithConnectionString() => new TheoryData<string>
+        {
+            nameof(SqlServiceBrokerOptionsBuilder.WithMessageBodyType),
+            nameof(SqlServiceBrokerOptionsBuilder.WithJsonBodyType),
+            nameof(SqlServiceBrokerOptionsBuilder.WithReceiverTimeout),
+            nameof(SqlServiceBrokerOptionsBuilder.WithConversationLifetime),
+            nameof(SqlServiceBrokerOptionsBuilder.UseConversationEncryption),
+            nameof(SqlServiceBrokerOptionsBuilder.WithMessageBodyCompression),
+            nameof(SqlServiceBrokerOptionsBuilder.WithConversationCleanup),
+            nameof(SqlServiceBrokerOptionsBuilder.EndConversationAfterDispatch),
+        };
+
+        private static SqlServiceBrokerOptionsBuilder CallSetter(SqlServiceBrokerOptionsBuilder builder, string setter)
+        {
+            switch (setter)
+            {
+                case nameof(SqlServiceBrokerOptionsBuilder.WithMessageBodyType):
+                    return builder.WithMessageBodyType("text/plain");
+                case nameof(SqlServiceBrokerOptionsBuilder.WithJsonBodyType):
+                    return builder.WithJsonBodyType();
+                case nameof(SqlServiceBrokerOptionsBuilder.WithReceiverTimeout):
+                    return builder.WithReceiverTimeout(1234);
+                case nameof(SqlServiceBrokerOptionsBuilder.WithConversationLifetime):
+                    return builder.WithConversationLifetime(99);
+                case nameof(SqlServiceBrokerOptionsBuilder.UseConversationEncryption):
+                    return builder.UseConversationEncryption();
+                case nameof(SqlServiceBrokerOptionsBuilder.WithMessageBodyCompression):
+                    return builder.WithMessageBodyCompression();
+                case nameof(SqlServiceBrokerOptionsBuilder.WithConversationCleanup):
+                    return builder.WithConversationCleanup();
+                case nameof(SqlServiceBrokerOptionsBuilder.EndConversationAfterDispatch):
+                    return builder.EndConversationAfterDispatch(false);
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(setter), setter, "Unknown builder setter.");
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(SettersOtherThanWithConnectionString))]
+        public void MustRefuseToBuildWithoutAConnectionStringWhenOnlyAnotherSetterIsCalled(string setter)
+        {
+            var builder = CallSetter(NewBuilder(), setter);
+
+            Action build = () => builder.Build();
+
+            build.Should().Throw<ArgumentNullException>()
+                 .WithParameterName(nameof(SqlServiceBrokerOptions.ConnectionString));
+        }
+
+        [Fact]
+        public void MustReplaceAnEarlierSetterValueWhenAddSqlServiceBrokerOptionsIsCalledAfterIt()
+        {
+            NewBuilder().WithMessageBodyType("text/plain").AddSqlServiceBrokerOptions("Server=.;").Build()
+                .MessageBodyType.Should().Be(DefaultMessageBodyType);
         }
 
         // --- Build() guards ---
@@ -197,6 +272,29 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Configuration.UsingSqlSe
             var builder = NewBuilder().AddSqlServiceBrokerOptions("Server=.;", compressMessageBody: false);
             builder.WithMessageBodyCompression().Should().BeSameAs(builder);
             builder.Build().CompressMessageBody.Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustApplyWithMessageBodyCompressionBoolTrueAndReturnBuilder()
+        {
+            var builder = NewBuilder().AddSqlServiceBrokerOptions("Server=.;", compressMessageBody: false);
+            builder.WithMessageBodyCompression(true).Should().BeSameAs(builder);
+            builder.Build().CompressMessageBody.Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustApplyWithMessageBodyCompressionBoolFalseAndReturnBuilder()
+        {
+            var builder = NewBuilder().AddSqlServiceBrokerOptions("Server=.;");
+            builder.WithMessageBodyCompression(false).Should().BeSameAs(builder);
+            builder.Build().CompressMessageBody.Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustDisableCompressionWhenWithMessageBodyCompressionFalseIsTheFirstCall()
+        {
+            NewBuilder().WithMessageBodyCompression(false).WithConnectionString("Server=.;").Build()
+                .CompressMessageBody.Should().BeFalse();
         }
 
         [Fact]
