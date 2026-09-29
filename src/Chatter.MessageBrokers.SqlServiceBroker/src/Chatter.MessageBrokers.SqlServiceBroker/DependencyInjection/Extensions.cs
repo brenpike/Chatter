@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.SqlServiceBroker;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.DependencyInjection;
 using Chatter.MessageBrokers.SqlServiceBroker.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker.Receiving.CircuitBreaker;
 using Chatter.MessageBrokers.SqlServiceBroker.Receiving.Retry;
@@ -41,9 +42,9 @@ namespace Microsoft.Extensions.DependencyInjection
             var optBuilder = builder.Services.AddSqlServiceBrokerOptions();
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
-            var registeredOptions = EffectiveRegistration(builder.Services, typeof(SqlServiceBrokerOptions))?
-                .ImplementationInstance as SqlServiceBrokerOptions;
-            RefuseDivergentOptions(registeredOptions, options);
+            var candidateTransport = SqlServiceBrokerTransportSettings.SnapshotOf(options);
+            var registeredTransport = SqlServiceBrokerTransportRegistration.Find(builder.Services);
+            RefuseDivergentOptions(registeredTransport, candidateTransport);
 
             builder.Services.AddIfNotRegistered<ISqlConnectionSource, SqlClientConnectionSource>(ServiceLifetime.Scoped);
 
@@ -77,9 +78,10 @@ namespace Microsoft.Extensions.DependencyInjection
             });
 
             builder.Services.AddSingleton<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
-            if (registeredOptions is null)
+            if (registeredTransport is null)
             {
                 builder.Services.AddSingleton(options);
+                SqlServiceBrokerTransportRegistration.Record(builder.Services, candidateTransport);
             }
 
             optBuilder.RegisterPendingReceivers();
@@ -87,25 +89,35 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
-        // INVARIANT: after any sequence of successful AddSqlServiceBroker calls whose options are registered as an
-        // instance, the collection holds exactly one SqlServiceBrokerOptions descriptor: a later call either matches
-        // the registered options setting by setting and adds none, or is refused. Oracles, in WhenAddingSqlServiceBroker:
-        // MustRegisterOneSqlServiceBrokerOptionsWhenASecondCallConfiguresEquivalentOptions (equivalent call adds none),
+        // INVARIANT: after any sequence of successful AddSqlServiceBroker calls on one collection, this method has
+        // written exactly one SqlServiceBrokerOptions descriptor and one SqlServiceBrokerTransportRegistration, both
+        // on the first call: a later call either matches the recorded transport setting by setting and writes
+        // neither, or is refused. Oracles, in WhenAddingSqlServiceBroker:
+        // MustRegisterOneSqlServiceBrokerOptionsWhenASecondCallConfiguresEquivalentOptions and
+        // MustAddNoOptionsDescriptorForAnEquivalentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance (options
+        // written once), MustRecordTheTransportOnceWhenASecondCallConfiguresEquivalentOptions (record written once),
         // MustRefuseASecondCallWhoseConnectionStringDiverges and MustNameEveryDivergingSettingWhenASecondCallIsRefused
-        // (divergent call refused). Mutations, measured: registering options unconditionally reddens only the first
-        // fact; deleting the RefuseDivergentOptions call reddens the two refusal facts plus the two divergent-call
-        // no-mutation facts, and nothing else in this test project. A SqlServiceBrokerOptions descriptor registered
-        // by type or factory has no instance to compare, so it reads as absent and this call appends its own, and no
-        // test pins that case.
-        private static void RefuseDivergentOptions(SqlServiceBrokerOptions registeredOptions, SqlServiceBrokerOptions candidateOptions)
+        // (divergent call refused). Mutations, measured: registering the options unconditionally reddens the first
+        // fact and both Theory rows; recording the transport unconditionally reddens only the record fact; deleting
+        // the RefuseDivergentOptions call reddens nine: the two refusal facts, the two divergent-call no-mutation
+        // facts, both rows of MustRefuseADivergentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance,
+        // MustRefuseALaterCallWithTheChangedValuesAfterTheCallerChangesItsOptionsInstance,
+        // MustRefuseADivergentCallOnACollectionTheRegisteredDescriptorsWereCopiedInto and
+        // MustCompareWithTheLastRegisteredTransportWhenDescriptorsOfAnotherRegistrationWereCopiedIn. Each mutation
+        // reddens nothing else in this test project.
+        // NOT covered, and no test pins it: a SqlServiceBrokerOptions descriptor registered outside this method after
+        // its first call, by instance, type or factory, is the one Microsoft DI resolves, while later calls still
+        // compare with the record; nothing inspects registrations made outside this method. A record copied into
+        // another collection without the options descriptor that came with it makes an equivalent call there register
+        // no options.
+        private static void RefuseDivergentOptions(SqlServiceBrokerTransportRegistration registeredTransport, SqlServiceBrokerTransportSettings candidateTransport)
         {
-            if (registeredOptions is null)
+            if (registeredTransport is null)
             {
                 return;
             }
 
-            var divergences = SqlServiceBrokerTransportSettings.FindDivergences(SqlServiceBrokerTransportSettings.SnapshotOf(registeredOptions),
-                                                                                SqlServiceBrokerTransportSettings.SnapshotOf(candidateOptions));
+            var divergences = SqlServiceBrokerTransportSettings.FindDivergences(registeredTransport.TransportSettings, candidateTransport);
             if (divergences.Count == 0)
             {
                 return;
@@ -117,11 +129,6 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static string DescribeDivergence(SqlServiceBrokerTransportSettings.Divergence divergence)
             => $"{divergence.SettingName} (registered: {divergence.RegisteredValue}, this call: {divergence.CandidateValue})";
-
-        // The descriptor a single-service request resolves to: Microsoft DI resolves it from the LAST descriptor
-        // registered for the service type, so the guard compares against the options the container would hand out.
-        private static ServiceDescriptor EffectiveRegistration(IServiceCollection services, Type serviceType)
-            => services.LastOrDefault(descriptor => descriptor.ServiceType == serviceType);
 
         public static SqlServiceBrokerOptionsBuilder AddQueueReceiver<TMessage>(this SqlServiceBrokerOptionsBuilder builder,
                                                                                 string queueName,

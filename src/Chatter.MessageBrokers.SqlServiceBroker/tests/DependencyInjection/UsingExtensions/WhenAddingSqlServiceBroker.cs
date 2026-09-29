@@ -2,6 +2,7 @@ using Chatter.CQRS.Commands;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.DependencyInjection;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -239,6 +240,16 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
         }
 
         [Fact]
+        public void MustRecordTheTransportOnceWhenASecondCallConfiguresEquivalentOptions()
+        {
+            var services = new ServiceCollection();
+
+            RegisterBetaAfterAlpha(services, new string(_connectionString.AsSpan()))();
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerTransportRegistration)).Should().Be(1);
+        }
+
+        [Fact]
         public void MustRegisterTheReceiversOfEveryCallWhenASecondCallConfiguresEquivalentOptions()
         {
             var services = new ServiceCollection();
@@ -320,6 +331,133 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
             registerBeta.Should().Throw<NotSupportedException>();
 
             EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers.Should().Equal(discoveredBeforeTheRefusedCall);
+        }
+
+        private const string _messageBodyType = "application/json; charset=utf-16";
+
+        [Fact]
+        public void MustAcceptAFirstCallWhenSqlServiceBrokerOptionsWereRegisteredWithoutIt()
+        {
+            var services = new ServiceCollection();
+            services.AddSingleton(new SqlServiceBrokerOptions(_divergentConnectionString, _messageBodyType));
+
+            Action register = () => NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            register.Should().NotThrow();
+        }
+
+        public static TheoryData<string> OptionsRegisteredWithoutAnInstance() => new TheoryData<string>
+        {
+            "by type",
+            "by factory",
+        };
+
+        private static void RegisterOptionsWithoutAnInstance(IServiceCollection services, string registration)
+        {
+            switch (registration)
+            {
+                case "by type":
+                    services.AddSingleton<SqlServiceBrokerOptions>();
+                    return;
+                case "by factory":
+                    services.AddSingleton(_ => new SqlServiceBrokerOptions(_divergentConnectionString, _messageBodyType));
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(registration), registration, "Unknown options registration.");
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(OptionsRegisteredWithoutAnInstance))]
+        public void MustRefuseADivergentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance(string registration)
+        {
+            var services = new ServiceCollection();
+            var registerBeta = RegisterBetaAfterAlpha(services, _divergentConnectionString);
+            RegisterOptionsWithoutAnInstance(services, registration);
+
+            registerBeta.Should().Throw<NotSupportedException>();
+        }
+
+        [Theory]
+        [MemberData(nameof(OptionsRegisteredWithoutAnInstance))]
+        public void MustAddNoOptionsDescriptorForAnEquivalentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance(string registration)
+        {
+            var services = new ServiceCollection();
+            var registerBeta = RegisterBetaAfterAlpha(services, new string(_connectionString.AsSpan()));
+            RegisterOptionsWithoutAnInstance(services, registration);
+
+            registerBeta();
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerOptions)).Should().Be(2);
+        }
+
+        // Registers the caller's own options instance, then changes that instance's receiver timeout to 5000.
+        private static IChatterBuilder RegisterOptionsThenChangeThem(IServiceCollection services)
+        {
+            var builder = NewBareBuilder(services);
+            var callersOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(callersOptions));
+            callersOptions.ReceiverTimeoutInMilliseconds = 5000;
+            return builder;
+        }
+
+        [Fact]
+        public void MustAcceptALaterCallWithTheRegisteredValuesAfterTheCallerChangesItsOptionsInstance()
+        {
+            var builder = RegisterOptionsThenChangeThem(new ServiceCollection());
+
+            Action registerOriginal = () => builder.AddSqlServiceBroker(
+                o => o.AddSqlServiceBrokerOptions(new SqlServiceBrokerOptions(_connectionString, _messageBodyType)));
+
+            registerOriginal.Should().NotThrow();
+        }
+
+        [Fact]
+        public void MustRefuseALaterCallWithTheChangedValuesAfterTheCallerChangesItsOptionsInstance()
+        {
+            var builder = RegisterOptionsThenChangeThem(new ServiceCollection());
+
+            Action registerChanged = () => builder.AddSqlServiceBroker(
+                o => o.AddSqlServiceBrokerOptions(new SqlServiceBrokerOptions(_connectionString, _messageBodyType, receiverTimeoutInMilliseconds: 5000)));
+
+            registerChanged.Should().Throw<NotSupportedException>()
+                           .Which.Message.Should().Contain(nameof(SqlServiceBrokerOptions.ReceiverTimeoutInMilliseconds));
+        }
+
+        private static void CopyDescriptors(IServiceCollection source, IServiceCollection destination)
+        {
+            foreach (var descriptor in source)
+            {
+                destination.Add(descriptor);
+            }
+        }
+
+        [Fact]
+        public void MustRefuseADivergentCallOnACollectionTheRegisteredDescriptorsWereCopiedInto()
+        {
+            IServiceCollection original = new ServiceCollection();
+            NewBareBuilder(original).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            IServiceCollection copy = new ServiceCollection();
+            CopyDescriptors(original, copy);
+
+            Action registerDivergent = () => NewBareBuilder(copy).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_divergentConnectionString));
+
+            registerDivergent.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustCompareWithTheLastRegisteredTransportWhenDescriptorsOfAnotherRegistrationWereCopiedIn()
+        {
+            IServiceCollection copiedFrom = new ServiceCollection();
+            NewBareBuilder(copiedFrom).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_divergentConnectionString));
+            IServiceCollection services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            CopyDescriptors(copiedFrom, services);
+
+            Action registerFirstTransportAgain = () => builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            registerFirstTransportAgain.Should().Throw<NotSupportedException>();
         }
 
         public static TheoryData<string> BuildRefusals() => new TheoryData<string>
