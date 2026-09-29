@@ -522,5 +522,93 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
             addDecoratedReceiver.Should().Throw<InvalidOperationException>()
                                 .WithMessage($"*{nameof(DecoratedCommand)}*{nameof(BrokeredMessageAttribute)}*");
         }
+
+        public sealed class DeferredRegistrationMarker { }
+
+        private static ServiceDescriptor NewDeferredDescriptor()
+            => ServiceDescriptor.Singleton(new DeferredRegistrationMarker());
+
+        [Fact]
+        public void MustWriteADeferredRegistrationWhenAddSqlServiceBrokerReturns()
+        {
+            var services = new ServiceCollection();
+            var deferred = NewDeferredDescriptor();
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                                               .DeferRegistration(s => s.Add(deferred)));
+
+            services.Count(d => d == deferred).Should().Be(1);
+        }
+
+        [Fact]
+        public void MustNotWriteADeferredRegistrationWhileTheOptionsDelegateRuns()
+        {
+            var services = new ServiceCollection();
+            var deferred = NewDeferredDescriptor();
+            var writtenDuringTheDelegate = true;
+
+            NewBareBuilder(services).AddSqlServiceBroker(o =>
+            {
+                o.AddSqlServiceBrokerOptions(_connectionString).DeferRegistration(s => s.Add(deferred));
+                writtenDuringTheDelegate = o.Services.Contains(deferred);
+            });
+
+            writtenDuringTheDelegate.Should().BeFalse();
+        }
+
+        [Theory]
+        [MemberData(nameof(BuildRefusals))]
+        public void MustWriteNoDeferredRegistrationWhenBuildRefusesTheOptions(string refusal)
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            var beforeTheRefusedCall = services.ToList();
+
+            Action register = () => builder.AddSqlServiceBroker(
+                o => ConfigureBuildRefusal(o.DeferRegistration(s => s.Add(NewDeferredDescriptor())), refusal));
+
+            register.Should().Throw<ArgumentNullException>();
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused call must not run its deferred registrations - the same descriptors must still sit in the same slots");
+        }
+
+        [Fact]
+        public void MustWriteNoDeferredRegistrationWhenADivergentCallIsRefused()
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            var beforeTheRefusedCall = services.ToList();
+
+            Action registerDivergent = () => builder.AddSqlServiceBroker(
+                o => o.AddSqlServiceBrokerOptions(_divergentConnectionString).DeferRegistration(s => s.Add(NewDeferredDescriptor())));
+
+            registerDivergent.Should().Throw<NotSupportedException>();
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused call must not run its deferred registrations - the same descriptors must still sit in the same slots");
+        }
+
+        [Fact]
+        public void MustWriteARegistrationDeferredAfterAQueueReceiverAfterThatReceiversDescriptors()
+        {
+            var services = new ServiceCollection();
+            var deferred = NewDeferredDescriptor();
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString)
+                                                               .AddQueueReceiver<AlphaCommand>(_alphaQueue)
+                                                               .DeferRegistration(s => s.Add(deferred)));
+
+            services.Last().Should().BeSameAs(deferred);
+        }
+
+        [Fact]
+        public void MustRefuseANullDeferredRegistration()
+        {
+            var optionsBuilder = new SqlServiceBrokerOptionsBuilder(new ServiceCollection());
+
+            Action deferNull = () => optionsBuilder.DeferRegistration(null);
+
+            deferNull.Should().Throw<ArgumentNullException>().WithParameterName("registration");
+        }
     }
 }

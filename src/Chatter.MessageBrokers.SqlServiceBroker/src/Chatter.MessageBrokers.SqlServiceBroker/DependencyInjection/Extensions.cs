@@ -30,13 +30,23 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IChatterBuilder AddSqlServiceBroker(this IChatterBuilder builder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder = null)
         {
-            // INVARIANT: every refusal this method raises lands before its first write to builder.Services: the
-            // options delegate enqueues receivers rather than registering them, Build() and the divergence guard run
-            // next, and the writes follow. Oracles: MustLeaveTheServiceCollectionExactlyAsItWasWhenBuildRefusesTheOptions
-            // (three Build() refusals, each after an AddQueueReceiver), MustLeaveTheServiceCollectionExactlyAsItWasWhenADivergentCallIsRefused
-            // and MustLeaveTheDiscoveredReceiversUnchangedWhenADivergentCallIsRefused, in WhenAddingSqlServiceBroker.
-            // Mutation: AddQueueReceiver calling services.AddReceiver immediately instead of enqueuing. Measured: all
-            // three Theory rows and both divergent-call facts go red, and nothing else in this test project.
+            // INVARIANT: every refusal this method raises lands before its first write to builder.Services, so a
+            // refused call runs none of its deferred registrations: the options delegate defers its receivers and
+            // registrations through DeferRegistration, Build() and the divergence guard run next, the writes follow,
+            // and RegisterPendingRegistrations runs last, in the order the registrations were deferred. Oracles, in
+            // WhenAddingSqlServiceBroker: MustLeaveTheServiceCollectionExactlyAsItWasWhenBuildRefusesTheOptions and
+            // MustWriteNoDeferredRegistrationWhenBuildRefusesTheOptions (three Build() refusals each, each after an
+            // AddQueueReceiver), MustLeaveTheServiceCollectionExactlyAsItWasWhenADivergentCallIsRefused,
+            // MustLeaveTheDiscoveredReceiversUnchangedWhenADivergentCallIsRefused and
+            // MustWriteNoDeferredRegistrationWhenADivergentCallIsRefused (divergent refusals),
+            // MustNotWriteADeferredRegistrationWhileTheOptionsDelegateRuns and
+            // MustWriteARegistrationDeferredAfterAQueueReceiverAfterThatReceiversDescriptors (deferral and order).
+            // Mutations, measured: AddQueueReceiver calling services.AddReceiver immediately reddens the six Build()
+            // refusal rows and the first two divergent facts; DeferRegistration running the registration immediately
+            // reddens those eight, the third divergent fact, the deferral fact and the order fact; running
+            // RegisterPendingRegistrations before the divergence guard reddens the three divergent facts and the
+            // order fact; running it directly after the guard, or iterating it in reverse, reddens only the order
+            // fact. Each mutation reddens nothing else in this test project.
             // NOT covered: an extension that writes through the public SqlServiceBrokerOptionsBuilder.Services
             // property from inside the delegate mutates the collection immediately, and no test pins that case.
             var optBuilder = builder.Services.AddSqlServiceBrokerOptions();
@@ -84,7 +94,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 SqlServiceBrokerTransportRegistration.Record(builder.Services, candidateTransport);
             }
 
-            optBuilder.RegisterPendingReceivers();
+            optBuilder.RegisterPendingRegistrations();
 
             return builder;
         }
@@ -143,12 +153,11 @@ namespace Microsoft.Extensions.DependencyInjection
                 => services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType, deadLetterServicePath, maxReceiveAttempts);
 
             // INVARIANT: AddReceiver's refusals are raised here, at call time, by running the same registration against
-            // a throwaway collection, so the enqueued copy repeats a registration that has already succeeded once with
+            // a throwaway collection, so the deferred copy repeats a registration that has already succeeded once with
             // the same arguments. Oracle: MustRefuseAQueueReceiverForABrokeredMessageDecoratedTypeWhenItIsAdded in
             // WhenAddingSqlServiceBroker. Mutation: deleting the throwaway-collection call. Measured: that fact alone goes red.
             RegisterReceiver(new ServiceCollection());
-            builder.EnqueueReceiverRegistration(RegisterReceiver);
-            return builder;
+            return builder.DeferRegistration(RegisterReceiver);
         }
     }
 }

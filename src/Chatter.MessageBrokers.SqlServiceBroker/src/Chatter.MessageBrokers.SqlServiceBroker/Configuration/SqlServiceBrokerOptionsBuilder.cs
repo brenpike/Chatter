@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
     {
         public IServiceCollection Services { get; }
         private SqlServiceBrokerOptions _sqlServiceBrokerOptions;
-        private readonly List<Action<IServiceCollection>> _pendingReceiverRegistrations = new List<Action<IServiceCollection>>();
+        private readonly List<Action<IServiceCollection>> _pendingRegistrations = new List<Action<IServiceCollection>>();
         private const string _defaultMessageBodyType = "application/json; charset=utf-16";
 
         public SqlServiceBrokerOptionsBuilder(IServiceCollection services)
@@ -165,20 +165,29 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         }
 
         /// <summary>
-        /// Holds a receiver registration until <see cref="RegisterPendingReceivers"/> writes it to <see cref="Services"/>.
+        /// Defers a registration to the end of the <c>AddSqlServiceBroker</c> call that configures this builder. The
+        /// registration runs against the host's service collection when <c>AddSqlServiceBroker</c> returns, and only if
+        /// <c>AddSqlServiceBroker</c> accepts the configuration: a refused call runs none of its deferred registrations.
+        /// Deferred registrations and the receivers added with <c>AddQueueReceiver</c> run in the order they were added
+        /// to this builder. Writes made directly through <see cref="Services"/> happen immediately and are not deferred.
         /// </summary>
-        /// <param name="registerReceiver">The registration to perform against the service collection.</param>
-        internal void EnqueueReceiverRegistration(Action<IServiceCollection> registerReceiver)
-            => _pendingReceiverRegistrations.Add(registerReceiver);
+        /// <param name="registration">The registration to run against the host's service collection.</param>
+        /// <returns>This builder, for chaining.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="registration"/> is null.</exception>
+        public SqlServiceBrokerOptionsBuilder DeferRegistration(Action<IServiceCollection> registration)
+        {
+            _pendingRegistrations.Add(registration ?? throw new ArgumentNullException(nameof(registration)));
+            return this;
+        }
 
         /// <summary>
-        /// Writes every enqueued receiver registration to <see cref="Services"/>, in the order they were enqueued.
+        /// Runs every deferred registration against <see cref="Services"/>, in the order they were deferred.
         /// </summary>
-        internal void RegisterPendingReceivers()
+        internal void RegisterPendingRegistrations()
         {
-            foreach (var registerReceiver in _pendingReceiverRegistrations)
+            foreach (var registration in _pendingRegistrations)
             {
-                registerReceiver(Services);
+                registration(Services);
             }
         }
     }
