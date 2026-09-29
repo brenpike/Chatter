@@ -6,9 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-29
+
 ### Changed
 
 - **A change feed whose transport settings differ from those already registered is now refused with `NotSupportedException`.** A host has one SQL Server Service Broker transport configuration: the connection string, body type, receiver timeout, conversation lifetime, encryption and compression settings. When a change feed's transport settings differ from those an earlier change feed or `AddSqlServiceBroker` call registered, the later registration throws at registration, naming each differing setting with connection string values shown as `(redacted)`. Previously the last registration's transport settings silently applied to every change feed. **This is a breaking change** for a host that registers change feeds with different transport settings. To migrate, use one transport configuration per host; the queue, dead-letter service, Error Queue, transaction mode and maximum receive attempts stay per change feed. Per-feed transport settings are tracked in [#542](https://github.com/brenpike/Chatter/issues/542). (#531)
+- Bundled dependency uplift to Chatter.MessageBrokers.SqlServiceBroker 0.17.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
 
 ### Fixed
 
