@@ -104,7 +104,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 return;
             }
 
-            var divergences = SqlServiceBrokerOptionsEquivalence.FindDivergences(registeredOptions, candidateOptions);
+            var divergences = SqlServiceBrokerTransportSettings.FindDivergences(SqlServiceBrokerTransportSettings.SnapshotOf(registeredOptions),
+                                                                                SqlServiceBrokerTransportSettings.SnapshotOf(candidateOptions));
             if (divergences.Count == 0)
             {
                 return;
@@ -114,8 +115,8 @@ namespace Microsoft.Extensions.DependencyInjection
             throw new NotSupportedException(string.Format(CultureInfo.InvariantCulture, DivergentOptionsMessage, describedDivergences));
         }
 
-        private static string DescribeDivergence(SqlServiceBrokerOptionsEquivalence.Divergence divergence)
-            => $"{divergence.PropertyName} (registered: {divergence.RegisteredValue}, this call: {divergence.CandidateValue})";
+        private static string DescribeDivergence(SqlServiceBrokerTransportSettings.Divergence divergence)
+            => $"{divergence.SettingName} (registered: {divergence.RegisteredValue}, this call: {divergence.CandidateValue})";
 
         // The descriptor a single-service request resolves to: Microsoft DI resolves it from the LAST descriptor
         // registered for the service type, so the guard compares against the options the container would hand out.
