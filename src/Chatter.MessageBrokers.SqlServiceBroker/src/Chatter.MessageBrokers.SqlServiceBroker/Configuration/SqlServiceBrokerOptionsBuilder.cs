@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
 {
@@ -7,6 +8,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
     {
         public IServiceCollection Services { get; }
         private SqlServiceBrokerOptions _sqlServiceBrokerOptions;
+        private readonly List<Action<IServiceCollection>> _pendingReceiverRegistrations = new List<Action<IServiceCollection>>();
         private const string _defaultMessageBodyType = "application/json; charset=utf-16";
 
         public SqlServiceBrokerOptionsBuilder(IServiceCollection services)
@@ -160,6 +162,24 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
             }
 
             return _sqlServiceBrokerOptions;
+        }
+
+        /// <summary>
+        /// Holds a receiver registration until <see cref="RegisterPendingReceivers"/> writes it to <see cref="Services"/>.
+        /// </summary>
+        /// <param name="registerReceiver">The registration to perform against the service collection.</param>
+        internal void EnqueueReceiverRegistration(Action<IServiceCollection> registerReceiver)
+            => _pendingReceiverRegistrations.Add(registerReceiver);
+
+        /// <summary>
+        /// Writes every enqueued receiver registration to <see cref="Services"/>, in the order they were enqueued.
+        /// </summary>
+        internal void RegisterPendingReceivers()
+        {
+            foreach (var registerReceiver in _pendingReceiverRegistrations)
+            {
+                registerReceiver(Services);
+            }
         }
     }
 }
