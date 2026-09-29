@@ -15,7 +15,8 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlChangeFeedExtensions
     /// Pins that the receive-attempt limit configured on a change feed reaches the receiver options of the
     /// feed's queue receiver, through both the generic and the row-type overloads of AddSqlChangeFeed, and that
     /// change feeds share the one SQL Server Service Broker transport configuration a host supports while each
-    /// feed keeps its own receiver settings.
+    /// feed keeps its own receiver settings. Also pins that a refused feed registers nothing, and which receiver a
+    /// feed registers.
     /// </summary>
     public class WhenAddingSqlChangeFeed : Testing.Core.Context
     {
@@ -127,6 +128,107 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlChangeFeedExtensions
 
             addFeed.Should().Throw<NotSupportedException>()
                    .Which.Message.Should().Contain(nameof(SqlServiceBrokerOptions.ReceiverTimeoutInMilliseconds));
+        }
+
+        public static TheoryData<string, Type> FeedRefusals() => new TheoryData<string, Type>
+        {
+            { "blank connection string", typeof(ArgumentNullException) },
+            { "blank table name", typeof(ArgumentNullException) },
+            { "malformed connection string", typeof(ArgumentException) },
+            { "no database", typeof(InvalidOperationException) },
+            { "colliding object names", typeof(ChangeFeedObjectNameCollisionException) },
+            { "blank message body type", typeof(ArgumentNullException) },
+            { "divergent transport", typeof(NotSupportedException) },
+        };
+
+        private static void AddRefusedFeed(IChatterBuilder builder, string refusal)
+        {
+            switch (refusal)
+            {
+                case "blank connection string":
+                    builder.AddSqlChangeFeed<FakeRowData>(" ", _databaseName, _tableName);
+                    return;
+                case "blank table name":
+                    builder.AddSqlChangeFeed<FakeRowData>(_connectionString, _databaseName, " ");
+                    return;
+                case "malformed connection string":
+                    builder.AddSqlChangeFeed<FakeRowData>("not a connection string", _databaseName, _tableName);
+                    return;
+                case "no database":
+                    builder.AddSqlChangeFeed<FakeRowData>("Server=test;Trusted_Connection=True;", null, _tableName);
+                    return;
+                case "colliding object names":
+                    builder.AddSqlChangeFeed<FakeRowData>(_connectionString, _databaseName, _tableName,
+                                                          o => o.WithChangeFeedDeadLetterServiceName("Chatter_Service_FakeRowData"));
+                    return;
+                case "blank message body type":
+                    builder.AddSqlChangeFeed<FakeRowData>(_connectionString, _databaseName, _tableName,
+                                                          o => o.WithMessageBodyType(" "));
+                    return;
+                case "divergent transport":
+                    builder.AddSqlChangeFeed<FakeRowData>(_otherConnectionString, _databaseName, _tableName);
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(refusal), refusal, "Unknown change feed refusal.");
+            }
+        }
+
+        private static IDiscoveredReceiverRegistry EffectiveDiscoveredReceiverRegistry(IServiceCollection services)
+            => services.LastOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
+                       .ImplementationInstance as IDiscoveredReceiverRegistry;
+
+        [Theory]
+        [MemberData(nameof(FeedRefusals))]
+        public void MustLeaveTheServiceCollectionAndDiscoveredReceiversExactlyAsTheyWereWhenAFeedIsRefused(string refusal, Type expectedRefusal)
+        {
+            var services = new ServiceCollection();
+            var builder = NewBareBuilder(services);
+            builder.AddSqlChangeFeed<SecondFakeRowData>(_connectionString, _databaseName, _secondTableName);
+            var beforeTheRefusedCall = services.ToList();
+            var discoveredBeforeTheRefusedCall = EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers.ToList();
+
+            Action addRefusedFeed = () => AddRefusedFeed(builder, refusal);
+
+            addRefusedFeed.Should().Throw<Exception>().Which.Should().BeOfType(expectedRefusal);
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "a refused feed must not register anything - the same descriptors must still sit in the same slots");
+            EffectiveDiscoveredReceiverRegistry(services).DiscoveredReceivers.Should().Equal(discoveredBeforeTheRefusedCall);
+        }
+
+        [Fact]
+        public void MustRegisterASqlDependencyManagerForTheFeedsOptions()
+        {
+            var services = new ServiceCollection();
+
+            NewBareBuilder(services).AddSqlChangeFeed<FakeRowData>(_connectionString, _databaseName, _tableName);
+
+            var registration = services.Should().ContainSingle(d => d.ServiceType == typeof(ISqlDependencyManager<FakeRowData>)).Which;
+            registration.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            registration.ImplementationFactory(null).Should().BeOfType<SqlDependencyManager<FakeRowData>>()
+                        .Which.Options.TableName.Should().Be(_tableName);
+        }
+
+        [Fact]
+        public void MustRegisterTheChangeFeedReceiverAsTheFeedsOnlyReceiverWhenRowChangeEventsAreEmitted()
+        {
+            var services = new ServiceCollection();
+
+            NewBareBuilder(services).AddSqlChangeFeed<FakeRowData>(_connectionString, _databaseName, _tableName);
+
+            services.Should().ContainSingle(d => d.ServiceType == typeof(IBrokeredMessageReceiver<ProcessChangeFeedCommand<FakeRowData>>))
+                    .Which.ImplementationType.Should().Be(typeof(ChangeFeedReceiver<FakeRowData>));
+        }
+
+        [Fact]
+        public void MustKeepTheBrokeredMessageReceiverWhenTableChangesAreProcessedManually()
+        {
+            var services = new ServiceCollection();
+
+            NewBareBuilder(services).AddSqlChangeFeed<FakeRowData>(_connectionString, _databaseName, _tableName,
+                                                                   o => o.ProcessTableChangesManually());
+
+            services.Should().ContainSingle(d => d.ServiceType == typeof(IBrokeredMessageReceiver<ProcessChangeFeedCommand<FakeRowData>>))
+                    .Which.ImplementationType.Should().Be(typeof(BrokeredMessageReceiver<ProcessChangeFeedCommand<FakeRowData>>));
         }
     }
 }
