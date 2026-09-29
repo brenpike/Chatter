@@ -460,6 +460,21 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
             registerFirstTransportAgain.Should().Throw<NotSupportedException>();
         }
 
+        [Fact]
+        public void MustRegisterTheOptionsWhenOnlyTheTransportRecordWasCopiedIn()
+        {
+            IServiceCollection original = new ServiceCollection();
+            NewBareBuilder(original).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+            IServiceCollection services = new ServiceCollection();
+            services.Add(original.First(d => d.ServiceType == typeof(SqlServiceBrokerTransportRegistration)));
+
+            NewBareBuilder(services).AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            services.Count(d => d.ServiceType == typeof(SqlServiceBrokerOptions)).Should().Be(1);
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<SqlServiceBrokerOptions>().ConnectionString.Should().Be(_connectionString);
+        }
+
         public static TheoryData<string> BuildRefusals() => new TheoryData<string>
         {
             "no options",

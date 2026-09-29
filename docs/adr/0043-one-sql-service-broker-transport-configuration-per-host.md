@@ -88,7 +88,10 @@ internal `SqlServiceBrokerTransportRegistration` registered as a singleton insta
 with the last record the collection carries:
 
 - **No record.** The call registers its options instance and the record.
-- **Equivalent.** The call registers neither. Its receivers are still registered, so every call's `AddQueueReceiver`
+- **Equivalent.** The call registers neither, unless the collection carries no `SqlServiceBrokerOptions` descriptor at
+  all — a record copied in without the options descriptor beside it reads as configured — in which case the call
+  registers its options instance and no second record, so the collection can still resolve the options the receiver,
+  sender and connection source require. Its receivers are still registered, so every call's `AddQueueReceiver`
   receivers run against the one shared configuration.
 - **Divergent.** The call throws `NotSupportedException`. The message names each diverging setting with its registered
   value and this call's value, states that receiver settings stay per receiver, and links #542. A value is shown only
@@ -241,10 +244,12 @@ find no record. Bounded impact: service registration runs on one thread during h
 `IServiceCollection` itself makes no concurrency promise. Rejected remediation: a lock needs an object every caller
 shares, and the collection offers none that a host-supplied implementation is bound to honor.
 
-**Unpinned.** Two further edges are pinned by no test. Overload-selection drift
-in the row-type `AddSqlChangeFeed` is prevented only by the compiler binding: reverting to a name lookup of the first
-generic `AddSqlChangeFeed` keeps every test green. A record descriptor copied into another collection without the
-options descriptor that came with it makes an equivalent call there register no options.
+**Unpinned.** One further edge is pinned by no test: overload-selection drift
+in the row-type `AddSqlChangeFeed` is prevented only by the compiler binding, so reverting to a name lookup of the first
+generic `AddSqlChangeFeed` keeps every test green. The second edge recorded here before release — a record descriptor
+copied into another collection without the options descriptor that came with it making an equivalent call there
+register no options — is fixed and pinned: an accepted call now registers its options instance whenever the collection
+carries no `SqlServiceBrokerOptions` descriptor, as the **Equivalent** case above states.
 
 ## Closed-by-Construction Acceptance Test
 
@@ -270,8 +275,11 @@ calls.** The target is bound by the compiler, not found by name, and the call do
 added to the generic overload later reaches the row-type caller as itself.
 
 **Not closed.** A direct write added to either door ahead of its last refusal would reintroduce the observable refusal.
-Nothing structural stops that edit; the refusal tests in both packages catch it for the refusals they enumerate. The
-residuals R1 to R5 and the two unpinned edges above stay open as recorded.
+Nothing structural stops that edit; the refusal tests in both packages catch it for the refusals they enumerate.
+`AddQueueReceiver`'s dry run is a faithful refusal oracle only while `AddReceiver`'s refusals are a function of the
+arguments alone, as its single refusal on `typeof(TMessage)` is today: a refusal added to `AddReceiver` later that
+depends on the destination collection's own state would pass the dry run against the throwaway collection and throw
+during the drain, after the writes. The residuals R1 to R5 and the remaining unpinned edge above stay open as recorded.
 
 ## Amendment: what the review changed
 

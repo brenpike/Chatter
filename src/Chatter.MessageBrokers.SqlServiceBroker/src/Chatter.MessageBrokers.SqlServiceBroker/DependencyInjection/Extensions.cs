@@ -93,6 +93,16 @@ namespace Microsoft.Extensions.DependencyInjection
                 builder.Services.AddSingleton(options);
                 SqlServiceBrokerTransportRegistration.Record(builder.Services, candidateTransport);
             }
+            else if (!builder.Services.Any(descriptor => descriptor.ServiceType == typeof(SqlServiceBrokerOptions)))
+            {
+                // A record can reach a collection without the options descriptor that came with it - a ServiceDescriptor
+                // is freely copyable - and that collection reads as already configured. The options this call built match
+                // the record setting by setting, because RefuseDivergentOptions just compared them, so registering them
+                // here leaves the collection able to resolve the SqlServiceBrokerOptions the receiver, sender and
+                // connection source require. TryAddSingleton is unreachable by name from this file: see the collision
+                // recorded in Chatter.MessageBrokers.Reliability.EntityFramework.Extensions.RemoveReliabilityRetention.
+                builder.Services.AddSingleton(options);
+            }
 
             optBuilder.RegisterPendingRegistrations();
 
@@ -100,15 +110,22 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         // INVARIANT: after any sequence of successful AddSqlServiceBroker calls on one collection, this method has
-        // written exactly one SqlServiceBrokerOptions descriptor and one SqlServiceBrokerTransportRegistration, both
-        // on the first call: a later call either matches the recorded transport setting by setting and writes
-        // neither, or is refused. Oracles, in WhenAddingSqlServiceBroker:
-        // MustRegisterOneSqlServiceBrokerOptionsWhenASecondCallConfiguresEquivalentOptions and
-        // MustAddNoOptionsDescriptorForAnEquivalentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance (options
-        // written once), MustRecordTheTransportOnceWhenASecondCallConfiguresEquivalentOptions (record written once),
+        // written exactly one SqlServiceBrokerOptions descriptor and one SqlServiceBrokerTransportRegistration. The
+        // record is written by the first call that finds none, and the options with it; a later call either matches
+        // the recorded transport setting by setting or is refused, and an accepted later call writes the options only
+        // when the collection carries no SqlServiceBrokerOptions descriptor at all, which is how a collection that
+        // received a copied record without its paired options descriptor still resolves its options. Oracles, in
+        // WhenAddingSqlServiceBroker: MustRegisterOneSqlServiceBrokerOptionsWhenASecondCallConfiguresEquivalentOptions
+        // and MustAddNoOptionsDescriptorForAnEquivalentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance
+        // (options written once), MustRecordTheTransportOnceWhenASecondCallConfiguresEquivalentOptions (record written
+        // once), MustRegisterTheOptionsWhenOnlyTheTransportRecordWasCopiedIn (a call that finds a record but no
+        // options descriptor writes the options and no second record),
         // MustRefuseASecondCallWhoseConnectionStringDiverges and MustNameEveryDivergingSettingWhenASecondCallIsRefused
-        // (divergent call refused). Mutations, measured: registering the options unconditionally reddens the first
-        // fact and both Theory rows; recording the transport unconditionally reddens only the record fact; deleting
+        // (divergent call refused). Mutations, measured: registering the options unconditionally - equivalently,
+        // dropping the else branch's descriptor check so it runs whatever the collection carries - reddens the first
+        // fact and both Theory rows; deleting that else branch reddens only
+        // MustRegisterTheOptionsWhenOnlyTheTransportRecordWasCopiedIn; recording the transport unconditionally reddens
+        // only the record fact; deleting
         // the RefuseDivergentOptions call reddens nine: the two refusal facts, the two divergent-call no-mutation
         // facts, both rows of MustRefuseADivergentSecondCallWhenOptionsWereAlsoRegisteredWithoutAnInstance,
         // MustRefuseALaterCallWithTheChangedValuesAfterTheCallerChangesItsOptionsInstance,
@@ -117,9 +134,7 @@ namespace Microsoft.Extensions.DependencyInjection
         // reddens nothing else in this test project.
         // NOT covered, and no test pins it: a SqlServiceBrokerOptions descriptor registered outside this method after
         // its first call, by instance, type or factory, is the one Microsoft DI resolves, while later calls still
-        // compare with the record; nothing inspects registrations made outside this method. A record copied into
-        // another collection without the options descriptor that came with it makes an equivalent call there register
-        // no options.
+        // compare with the record; nothing inspects registrations made outside this method.
         private static void RefuseDivergentOptions(SqlServiceBrokerTransportRegistration registeredTransport, SqlServiceBrokerTransportSettings candidateTransport)
         {
             if (registeredTransport is null)
