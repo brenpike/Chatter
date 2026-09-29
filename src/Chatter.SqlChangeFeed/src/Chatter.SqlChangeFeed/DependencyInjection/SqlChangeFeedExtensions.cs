@@ -68,13 +68,17 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
 
             var objectNames = ChangeFeedObjectNames.DeriveFrom(typeof(TRowChangedData), options);
 
+            // INVARIANT: the receive-attempt limit configured through WithMaxReceiveAttempts reaches the ReceiverOptions
+            // of the feed's queue receiver, for both AddSqlChangeFeed overloads. Pinned by the two configured-value facts
+            // in WhenAddingSqlChangeFeed; dropping the maxReceiveAttempts argument below reddens both (measured).
             builder.AddSqlServiceBroker(ssbBuilder =>
             {
                 ssbBuilder.AddSqlServiceBrokerOptions(options.ServiceBrokerOptions)
                           .AddQueueReceiver<ProcessChangeFeedCommand<TRowChangedData>>(objectNames.ConversationQueueName,
                                                                                          errorQueuePath: options.ReceiverOptions.ErrorQueuePath,
                                                                                          transactionMode: options.ReceiverOptions.TransactionMode,
-                                                                                         deadLetterServicePath: objectNames.ConversationDeadLetterServiceName);
+                                                                                         deadLetterServicePath: objectNames.ConversationDeadLetterServiceName,
+                                                                                         maxReceiveAttempts: options.ReceiverOptions.MaxReceiveAttempts);
             });
 
             if (options.ProcessChangeFeedCommandViaChatter)

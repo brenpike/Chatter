@@ -10,7 +10,27 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
+- **A second `AddSqlServiceBroker` call with different options is now refused with `NotSupportedException`.** A host
+  has one SQL Server Service Broker transport configuration. A later call whose `SqlServiceBrokerOptions` match the
+  registered options setting by setting is accepted and registers its receivers; a call whose options differ throws at
+  registration, naming each differing setting with connection string values shown as `(redacted)`, and registers
+  nothing. Previously the last registration's options silently applied to every receiver and sender. **This is a
+  breaking change** for a host that calls `AddSqlServiceBroker` more than once with different options. To migrate, use
+  one transport configuration and pass receiver settings (queue, error queue, transaction mode, dead-letter service,
+  maximum receive attempts) to each `AddQueueReceiver` call. Per-receiver transport options are tracked in
+  [#542](https://github.com/brenpike/Chatter/issues/542). (#531)
+- **Receivers added with `AddQueueReceiver` are registered when `AddSqlServiceBroker` returns**, after the options are
+  built and checked, instead of at the `AddQueueReceiver` call. `AddQueueReceiver` still throws
+  `InvalidOperationException` at the call for a `[BrokeredMessage]` type. A builder from
+  `services.AddSqlServiceBrokerOptions()` used with `AddQueueReceiver` outside `AddSqlServiceBroker` now registers no
+  receiver. (#531)
+
 ### Fixed
+
+- **A refused `AddSqlServiceBroker` call no longer leaves receivers partly registered.** When `Build()` refuses the
+  options with `ArgumentNullException` (no options, or a null or whitespace connection string or message body type),
+  the call now registers nothing, including receivers already added with `AddQueueReceiver`. A second call with
+  equivalent options no longer adds a duplicate `SqlServiceBrokerOptions` singleton. (#531)
 
 ## [0.16.1] - 2026-09-24
 

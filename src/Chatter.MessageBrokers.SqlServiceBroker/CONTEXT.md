@@ -15,7 +15,7 @@ SQL Server Service Broker implementation of the Chatter.MessageBrokers interface
 **Dialog Command**: A runtime SQL DML command this package issues to drive a conversation — `BeginDialogConversationCommand`, `SendOnConversationCommand`, `ReceiveMessageFromQueueCommand`, `EndDialogConversationCommand`. These do NOT create infrastructure.
 _Avoid_: setup script (this package provisions nothing).
 
-**Service Broker Options**: Configuration for the SQL connection, queue, recovery policies, conversation lifetime/encryption, and body compression.
+**Service Broker Options**: Configuration for the SQL connection, conversation lifetime/encryption, and body compression. Scoped per host: one set of transport settings is shared by every Service Broker Receiver and the Service Broker Sender, and `AddSqlServiceBroker` refuses a second, different set. Receiver settings (queue, error queue, transaction mode, dead-letter service, maximum receive attempts) are per receiver, passed to `AddQueueReceiver`.
 
 ## Relationships
 
