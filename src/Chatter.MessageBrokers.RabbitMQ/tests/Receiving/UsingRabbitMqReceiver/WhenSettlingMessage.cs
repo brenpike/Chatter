@@ -223,6 +223,72 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                     "the confirmed deadletter republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
+        // --- native quorum counters are broker-owned: consumed at receive, never carried onto a republished copy ---
+
+        // x-delivery-count and x-acquired-count are the broker's own counters for the delivery it just made. The
+        // Receiver reads the attempt count off them at the receive boundary and carries neither onward, so the copy
+        // it republishes to the dead-letter queue is a new message that carries no stale broker count.
+        [Fact]
+        public async Task MustNotRepublishNativeQuorumCountersOnTheDeadletterHop()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, deadLetterQueuePath: ReceiverHarness.DeadLetterPath);
+            await harness.PushAsync(deliveryTag: 11, headers: DeliveryHeadersCarryingNativeQuorumCounters());
+            var context = await harness.ReceiveAsync();
+
+            await harness.Receiver.DeadletterMessageAsync(context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Headers.Should().NotContainKeys(new[] { ReceiverHarness.NativeDeliveryCountHeader, ReceiverHarness.NativeAcquiredCountHeader },
+                "the native quorum counters are consumed at the receive boundary and never ride onto the dead-letter copy");
+            republish.Headers.Should().ContainKey("app-header", "only the broker-owned counters are withheld; application headers are carried");
+        }
+
+        [Fact]
+        public async Task MustNotRepublishNativeQuorumCountersOnTheErrorQueueHop()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
+            await harness.PushAsync(deliveryTag: 12, headers: DeliveryHeadersCarryingNativeQuorumCounters());
+            var context = await harness.ReceiveAsync();
+
+            await harness.Receiver.DeadletterMessageAsync(context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Headers.Should().NotContainKeys(new[] { ReceiverHarness.NativeDeliveryCountHeader, ReceiverHarness.NativeAcquiredCountHeader },
+                "the native quorum counters are consumed at the receive boundary and never ride onto the error-queue copy");
+        }
+
+        // The classic redelivery hop re-stamps the adapter-owned x-chatter-delivery-count and must still withhold any
+        // native counter the delivery arrived with, so the delivery and its redelivered copy count only by the
+        // adapter's own header.
+        [Fact]
+        public async Task MustNotRepublishNativeQuorumCountersOnTheClassicRedeliveryHop()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            var headers = DeliveryHeadersCarryingNativeQuorumCounters();
+            headers[RabbitMqMessageContext.DeliveryCountHeader] = 1L;
+            await harness.PushAsync(deliveryTag: 9, headers: headers);
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(2,
+                "a classic queue counts attempts from x-chatter-delivery-count (1 prior + 1) and never from a native counter");
+
+            await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
+
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Headers.Should().NotContainKeys(new[] { ReceiverHarness.NativeDeliveryCountHeader, ReceiverHarness.NativeAcquiredCountHeader },
+                "the native quorum counters are consumed at the receive boundary and never ride onto the redelivered copy");
+            republish.Headers[RabbitMqMessageContext.DeliveryCountHeader].Should().Be(2L,
+                "the adapter-owned counter is carried and re-stamped on its own republish");
+        }
+
+        private static Dictionary<string, object> DeliveryHeadersCarryingNativeQuorumCounters()
+            => new Dictionary<string, object>
+            {
+                [ReceiverHarness.NativeDeliveryCountHeader] = 2L,
+                [ReceiverHarness.NativeAcquiredCountHeader] = 7L,
+                ["app-header"] = "kept"
+            };
+
         // OWNERSHIP (r3408649034): the dead-letter queue is the ADAPTER's responsibility; the ERROR queue is the
         // CORE's. On max-receives the core runs deadletter FIRST and, ONLY when the deadletter SETTLED and the
         // infrastructure does NOT write to the error queue itself, ALSO runs its error-recovery action

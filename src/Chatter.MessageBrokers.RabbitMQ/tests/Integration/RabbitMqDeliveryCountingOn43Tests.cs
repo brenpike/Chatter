@@ -28,8 +28,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
     //   - a classic-queue message whose handler always throws still dead-letters, since the classic strategy counts
     //     with the Receiver's own x-chatter-delivery-count header and does not depend on the broker's counter.
     //
-    // Each fact writes the delivery-count headers the broker actually delivered to the test output, so a failure
-    // shows whether x-delivery-count and x-acquired-count were present and what they held.
+    // Each fact writes the ReceiveAttempts the Receiver resolved and the broker's redelivered flag for the first few
+    // deliveries to the test output, so a failure shows whether the attempt count advanced across redeliveries. The
+    // broker's native counters themselves are consumed at the receive boundary and are not observable here.
     //
     // ANTI-INFINITE-LOOP: every fact clears ThrowOnHandle in its finally block so a message still looping on the
     // work queue is acked on its next delivery before DisposeAsync drains the pump.
@@ -41,12 +42,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // quorum dead-letter needs the count to advance at least twice rather than tripping on the first delivery.
         private const int MaxReceiveAttempts = 3;
 
-        // How many delivered header snapshots each fact writes to the test output. A looping message can be
-        // delivered thousands of times inside the wait, so the output is capped.
-        private const int HeaderSnapshotLimit = 5;
-
-        private const string NativeDeliveryCountHeader = "x-delivery-count";
-        private const string AcquiredCountHeader = "x-acquired-count";
+        // How many delivery snapshots each fact writes to the test output. A looping message can be delivered
+        // thousands of times inside the wait, so the output is capped.
+        private const int DeliverySnapshotLimit = 5;
 
         private static readonly TimeSpan DeadLetterWait = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan RedeliveryWait = TimeSpan.FromSeconds(20);
@@ -114,7 +112,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 harness.GetSignal<QuorumRedeliveryOn43Command>().ThrowOnHandle = null;
 
                 var records = harness.GetSignal<QuorumRedeliveryOn43Command>().Records.ToList();
-                WriteDeliveredHeaders(records.Select(record => record.Context));
+                WriteDeliveredAttempts(records.Select(record => record.Context));
 
                 observedCount.Should().BeGreaterThanOrEqualTo(2,
                     "the throwing handler must cause at least one redelivery of the nacked quorum message");
@@ -188,18 +186,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 // Written here rather than before the assertions because DeadLetterQueueReader can throw
                 // TaskCanceledException at its deadline instead of returning null.
                 _output.WriteLine($"{queueType} queue: handler invoked {signal.InvocationCount} time(s).");
-                WriteDeliveredHeaders(signal.Records.Select(record => record.Context));
+                WriteDeliveredAttempts(signal.Records.Select(record => record.Context));
 
                 await harness.DisposeAsync();
             }
         }
 
-        // Writes the delivery-count headers the broker delivered on the first few deliveries, read from the raw
-        // ReceivedMessage the Receiver includes in the broker context container.
-        private void WriteDeliveredHeaders(IEnumerable<IMessageBrokerContext> contexts)
+        // Writes the ReceiveAttempts the Receiver resolved and the broker's redelivered flag for the first few
+        // deliveries. Diagnostic only: no assertion depends on it.
+        private void WriteDeliveredAttempts(IEnumerable<IMessageBrokerContext> contexts)
         {
             var deliveryNumber = 0;
-            foreach (var context in contexts.Take(HeaderSnapshotLimit))
+            foreach (var context in contexts.Take(DeliverySnapshotLimit))
             {
                 deliveryNumber++;
                 if (context is null || !context.Container.TryGet<ReceivedMessage>(out var received))
@@ -208,23 +206,21 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                     continue;
                 }
 
-                var brokerHeaderKeys = string.Join(",", received.Headers.Keys.Where(key => key.StartsWith("x-", StringComparison.Ordinal)));
                 _output.WriteLine(
                     $"delivery {deliveryNumber}: redelivered={received.Redelivered} " +
-                    $"{NativeDeliveryCountHeader}={DescribeHeader(received.Headers, NativeDeliveryCountHeader)} " +
-                    $"{AcquiredCountHeader}={DescribeHeader(received.Headers, AcquiredCountHeader)} " +
-                    $"x-headers=[{brokerHeaderKeys}]");
+                    $"{MessageContext.ReceiveAttempts}={DescribeReceiveAttempts(context)}");
             }
         }
 
-        private static string DescribeHeader(IReadOnlyDictionary<string, object> headers, string key)
+        private static string DescribeReceiveAttempts(IMessageBrokerContext context)
         {
-            if (!headers.TryGetValue(key, out var value))
+            var messageContext = context.BrokeredMessage?.MessageContext;
+            if (messageContext is null || !messageContext.TryGetValue(MessageContext.ReceiveAttempts, out var value))
             {
                 return "absent";
             }
 
-            return value is null ? "null" : $"{value} ({value.GetType().Name})";
+            return value is null ? "null" : $"{value}";
         }
     }
 }

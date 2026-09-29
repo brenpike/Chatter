@@ -56,7 +56,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // (basic.reject or a lost consumer), not per basic.nack return; before 4.3 it advances per redelivery.
         private const string _nativeDeliveryCountHeader = "x-delivery-count";
 
-        // The native quorum-queue assignment counter RabbitMQ 4.3+ stamps on each redelivery. Stripped, never read.
+        // The native quorum-queue assignment counter RabbitMQ 4.3+ stamps on each redelivery. Withheld at the capture
+        // point (BufferDeliveryAsync); not an attempt source (ADR-0042).
         private const string _nativeAcquiredCountHeader = "x-acquired-count";
 
         // The settlement contract requires every unsettled outcome to explain itself; these are the two
@@ -66,12 +67,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         private const string _noCarriedDeliveryReason =
             "the context carries no " + nameof(ReceivedMessage) + ", so the delivery to settle could not be located";
 
+        /// <summary>
+        /// One buffered delivery: the <see cref="ReceivedMessage"/> the Receiver carries onward, and the number of
+        /// prior deliveries read at the capture point from the header the queue type counts attempts with.
+        /// </summary>
+        private readonly record struct BufferedDelivery(ReceivedMessage Message, int PriorDeliveries);
+
         private readonly IRabbitMqConnectionSource _connectionSource;
         private readonly RabbitMqOptions _rabbitOptions;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly ILogger<RabbitMqReceiver> _logger;
 
-        private Channel<ReceivedMessage> _buffer;
+        private Channel<BufferedDelivery> _buffer;
         private ReceiverOptions _options;
         private int _prefetch;
         // TransactionMode.None is at-most-once: the broker must drop the delivery as it is pushed (no crash-window
@@ -158,7 +165,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // prefetch (removing all backpressure), and other large values would silently under-prefetch. Saturate
             // at ushort.MaxValue instead so a misconfiguration degrades to the maximum supported prefetch, never to 0.
             _prefetch = ClampPrefetch(Math.Max(Math.Max(1, _rabbitOptions.Prefetch), options.MaxConcurrentCalls));
-            _buffer = System.Threading.Channels.Channel.CreateBounded<ReceivedMessage>(
+            _buffer = System.Threading.Channels.Channel.CreateBounded<BufferedDelivery>(
                 new BoundedChannelOptions(_prefetch)
                 {
                     SingleReader = false,
@@ -269,17 +276,53 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // re-applied through the translator on a republish hop. Without this capture the republish rebuilt
         // BasicProperties from scratch and dropped every delivered native property (e.g. a classic-queue per-message
         // TTL lost on the first redelivery).
+        // COUNTER OWNERSHIP: a counter header is carried onward only by the party that stamps it. The adapter stamps
+        // x-chatter-delivery-count, so ReceivedMessage.Headers carries it and the classic redelivery hop re-stamps it
+        // (BuildClassicRedeliveryHeaders). The broker stamps x-delivery-count and x-acquired-count about the delivery
+        // it has just made, so they are read-only to the Receiver and are consumed HERE, at the receive boundary:
+        // read once for the attempt count, then withheld from the ReceivedMessage every later step works from.
+        // INVARIANT: the broker-owned counters do not exist downstream of this capture point, so neither the emitted
+        // core context nor any republish hop (dead-letter, Error Queue, classic redelivery) can carry them. Pinned by
+        // WhenReceivingMessage.MustStripNativeDeliveryCountHeaderWhilePreservingOtherHeaders,
+        // .MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders and
+        // .MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCountersArePresent, and by
+        // WhenSettlingMessage.MustNotRepublishNativeQuorumCountersOnTheDeadletterHop, .OnTheErrorQueueHop and
+        // .OnTheClassicRedeliveryHop. Mutation: carry the natives through (delete the two carriedHeaders.Remove
+        // calls below). Measured: reddens exactly those six of the module's 366 unit facts.
+        // INVARIANT: the attempt count is derived ONCE, here, from the key the queue type selects (ReadPriorDeliveries:
+        // x-delivery-count on a quorum queue, x-chatter-delivery-count on a classic queue) and reaches
+        // ReceiveMessageAsync only as BufferedDelivery.PriorDeliveries. Pinned on the quorum arm by
+        // WhenReceivingMessage.MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCountersArePresent
+        // (x-delivery-count 2 beside x-acquired-count 9 resolves ReceiveAttempts 3), and on the classic arm by
+        // WhenSettlingMessage.MustNotRepublishNativeQuorumCountersOnTheClassicRedeliveryHop (x-chatter-delivery-count 1
+        // beside x-delivery-count 2 and x-acquired-count 7 resolves ReceiveAttempts 2). Mutations, each measured on
+        // the module's 366 unit facts: selecting x-acquired-count as the quorum key reddens 11 (the both-counters fact
+        // and every fact that reads a quorum count); reading x-acquired-count as a max beside the selected key on
+        // every arm reddens 3 (the both-counters fact, the classic redelivery-hop fact and
+        // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders); reading it as a max on the classic arm only
+        // reddens the classic redelivery-hop fact alone; selecting x-delivery-count on the classic arm reddens 5 (the
+        // classic redelivery-hop fact and four classic count-reading facts).
+        // NOTE: why x-acquired-count is not an attempt source (ADR-0042) — it counts assignments to a consumer, not
+        // failed deliveries, so a consumer timeout or an intra-cluster partition advances it with no handler failing,
+        // and reading it would spend a healthy message's retry budget — is broker behavior no test pins. The
+        // RabbitMqDeliveryCountingOn43Tests facts cannot tell the two counters apart, because both climb under
+        // basic.reject.
         private async Task BufferDeliveryAsync(BasicDeliverEventArgs delivery, long epoch)
         {
             var properties = delivery.BasicProperties;
             var facts = RabbitMqMessageTranslator.CaptureFacts(properties);
 
+            var carriedHeaders = properties?.Headers is { } deliveredHeaders
+                ? new Dictionary<string, object>(deliveredHeaders)
+                : new Dictionary<string, object>();
+            var priorDeliveries = ReadPriorDeliveries(carriedHeaders);
+            carriedHeaders.Remove(_nativeDeliveryCountHeader);
+            carriedHeaders.Remove(_nativeAcquiredCountHeader);
+
             var received = new ReceivedMessage(body: delivery.Body.ToArray(),
                                                deliveryTag: delivery.DeliveryTag,
                                                channelEpoch: epoch,
-                                               headers: properties?.Headers is { } headers
-                                                   ? new Dictionary<string, object>(headers)
-                                                   : new Dictionary<string, object>(),
+                                               headers: carriedHeaders,
                                                exchange: delivery.Exchange,
                                                routingKey: delivery.RoutingKey,
                                                redelivered: delivery.Redelivered,
@@ -293,16 +336,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                                                contentType: facts.ContentType,
                                                correlationId: facts.CorrelationId);
 
-            await _buffer.Writer.WriteAsync(received, delivery.CancellationToken).ConfigureAwait(false);
+            await _buffer.Writer.WriteAsync(new BufferedDelivery(received, priorDeliveries), delivery.CancellationToken).ConfigureAwait(false);
         }
 
         public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             // Blocking pull: async-park when the buffer is empty (no poll, no spin) until the push consumer
             // enqueues a delivery or the loop token cancels.
-            var received = await _buffer.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var buffered = await _buffer.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var received = buffered.Message;
 
-            var receiveAttempts = ResolveReceiveAttempts(received);
+            var receiveAttempts = ResolveReceiveAttempts(buffered.PriorDeliveries);
 
             // Seed the context through the SINGLE translation contract: the delivered header table is decoded
             // (string-typed header keys byte[]->string so the core's type-tested string reads see the header's real
@@ -325,40 +369,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             headers.Remove(RabbitMqMessageContext.TargetExchange);
             headers.Remove(RabbitMqMessageContext.RoutingKey);
 
-            // INVARIANT: the counter headers — x-chatter-delivery-count (classic), x-delivery-count (quorum) and
-            // x-acquired-count (quorum, RabbitMQ 4.3+) — are adapter-owned receive state, NEVER outbound payload.
-            // The core seeds a receive-then-send follow-up's options from THIS inbound context, and RabbitMqSender
-            // republishes the full context as headers, so a counter header surviving here would ride onto the next
-            // send. After a classic-queue retry x-chatter-delivery-count is present on the delivery (likewise the
-            // native counters on a quorum redelivery); left in place it would be re-stamped onto an outbound message
-            // and read back by ResolveReceiveAttempts on the next queue's first delivery as a stale redelivery —
-            // inflating ReceiveAttempts and deadlettering a fresh message with too few attempts. Strip ALL THREE
-            // counter keys here (alongside the routing-override strip above) so receive state never leaks out of the
-            // receive boundary; ResolveReceiveAttempts above already read the attempt count off received.Headers.
-            // Pinned by WhenReceivingMessage.MustStripClassicDeliveryCountHeaderWhilePreservingOtherHeaders,
-            // MustStripNativeDeliveryCountHeaderWhilePreservingOtherHeaders and
-            // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders; deleting any one Remove call reddens its test.
-            // INVARIANT (ADR-0042): x-acquired-count is deliberately NOT an attempt source. x-delivery-count stays
-            // the only quorum attempt source, and ResolveReceiveAttempts reads x-acquired-count on NO delivery
-            // shape. Pinned by WhenReceivingMessage.MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCounters-
-            // ArePresent, which delivers both counters at divergent values (x-delivery-count 2, x-acquired-count 9)
-            // and asserts ReceiveAttempts 3. Its mutation: make ResolveReceiveAttempts consult
-            // _nativeAcquiredCountHeader when _nativeDeliveryCountHeader is present (a fallback/max/override read on
-            // the normal 4.3 redelivery shape, where the broker stamps BOTH). Measured: that mutation reddens this
-            // one fact and no other in the module's 363 unit facts, which is the exclusivity ADR-0027 Rule 1 asks a
-            // named mutation for.
-            // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders covers the OTHER shape — an
-            // x-acquired-count-only delivery must resolve ReceiveAttempts 1 — but it cannot pin the claim alone:
-            // with x-delivery-count absent, the conditional read above never fires and that fact stays green. The
-            // two facts together cover both shapes a 4.3 delivery can take.
-            // NOTE: the RATIONALE for the decision — x-acquired-count counts assignments to a consumer, not failed
-            // deliveries, so a consumer timeout or an intra-cluster partition advances it with no handler failing,
-            // and reading it would spend a healthy message's retry budget — is broker behavior that NO TEST PINS.
-            // The RabbitMqDeliveryCountingOn43Tests facts cannot tell the two counters apart either, because both
-            // climb under basic.reject.
+            // INVARIANT: the adapter-owned x-chatter-delivery-count is receive state, never outbound payload.
+            // ReceivedMessage carries it so the classic redelivery hop can re-stamp it, but the core seeds a
+            // receive-then-send follow-up's options from THIS context and RabbitMqSender publishes the full context
+            // as headers, so a copy left here would ride onto the next send and be read on the next queue's first
+            // delivery as a stale redelivery count. Pinned by
+            // WhenReceivingMessage.MustStripClassicDeliveryCountHeaderWhilePreservingOtherHeaders. Mutation: delete
+            // the Remove below. Measured: reddens that fact alone of the module's 366 unit facts.
+            // The broker-owned counters need no strip here: they were consumed at the capture point (see the
+            // counter-ownership INVARIANTs on BufferDeliveryAsync).
             headers.Remove(RabbitMqMessageContext.DeliveryCountHeader);
-            headers.Remove(_nativeDeliveryCountHeader);
-            headers.Remove(_nativeAcquiredCountHeader);
 
             headers[RabbitMqMessageContext.DeliveryTag] = received.DeliveryTag;
             headers[RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch;
@@ -402,15 +422,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // cast straight to int, stamp a negative or wrapped ReceiveAttempts that the core compares to
         // MaxReceiveAttempts — letting a poison message dodge deadlettering or get a bogus retry budget. Saturate
         // the raw long into a non-negative int before stamping.
-        private int ResolveReceiveAttempts(ReceivedMessage received)
+        private int ReadPriorDeliveries(IReadOnlyDictionary<string, object> deliveredHeaders)
         {
             var headerKey = _rabbitOptions.QueueType == QueueType.Quorum
                 ? _nativeDeliveryCountHeader
                 : RabbitMqMessageContext.DeliveryCountHeader;
 
-            var priorDeliveries = SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, headerKey, 0L));
-            return priorDeliveries == int.MaxValue ? int.MaxValue : priorDeliveries + 1;
+            return SaturateToNonNegativeInt(ReadHeaderAsLong(deliveredHeaders, headerKey, 0L));
         }
+
+        private static int ResolveReceiveAttempts(int priorDeliveries)
+            => priorDeliveries == int.MaxValue ? int.MaxValue : priorDeliveries + 1;
 
         // Clamp the resolved prefetch into the AMQP-wire ushort range [1, ushort.MaxValue] so the (ushort) cast at
         // the BasicQosAsync call site cannot wrap. A configured value above 65,535 saturates at ushort.MaxValue
