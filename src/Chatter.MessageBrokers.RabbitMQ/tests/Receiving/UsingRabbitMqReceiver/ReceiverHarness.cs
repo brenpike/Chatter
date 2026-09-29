@@ -24,6 +24,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         // Native quorum-queue redelivery counter the broker increments per redelivery.
         public const string NativeDeliveryCountHeader = "x-delivery-count";
 
+        // Native quorum-queue assignment counter RabbitMQ 4.3+ stamps on each redelivery.
+        public const string NativeAcquiredCountHeader = "x-acquired-count";
+
         public InMemoryRabbitMqConnectionSource ConnectionSource { get; } = new InMemoryRabbitMqConnectionSource();
         public RabbitMqReceiver Receiver { get; }
 

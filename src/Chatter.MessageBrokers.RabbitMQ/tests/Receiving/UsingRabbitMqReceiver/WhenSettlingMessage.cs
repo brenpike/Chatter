@@ -14,8 +14,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 {
     // Pins RabbitMqReceiver settlement against the three-valued settlement contract of
     // IMessagingInfrastructureReceiver (ADR-0010 D7: every in-repo implementation is contract-tested against all
-    // three outcomes): ack on a matching epoch acks the carried delivery tag and reports Settled; nack requeues
-    // (Quorum) or republishes-with-incremented-count-then-acks (Classic) and reports Settled; deadletter
+    // three outcomes): ack on a matching epoch acks the carried delivery tag and reports Settled; nack requeues via
+    // basic.reject (Quorum) or republishes-with-incremented-count-then-acks (Classic) and reports Settled; deadletter
     // republishes-confirmed to the attribute-declared deadletter/error path then acks and reports Settled on BOTH
     // paths. A settlement with nothing to settle (TransactionMode.None at-most-once) reports NotRequired; a
     // settlement that was attempted and did not happen (no carried delivery, or a stale channel epoch) reports
@@ -87,6 +87,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             nacked.Outcome.Should().Be(SettlementOutcome.Failed, "a negative acknowledgement that could not locate its delivery was attempted and did not happen");
             harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("no carried delivery means nothing to nack");
+            harness.ConnectionSource.ReceiveChannel.Rejects.Should().BeEmpty("no carried delivery means nothing to reject");
             harness.ConnectionSource.PublishChannels.Should().BeEmpty("no carried delivery means nothing to republish");
         }
 
@@ -107,10 +108,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no carried delivery means nothing to ack");
         }
 
-        // --- nack: Quorum requeues natively ---
+        // --- nack: Quorum requeues natively via basic.reject ---
 
+        // The quorum requeue verb is basic.reject, never basic.nack: on RabbitMQ 4.3+ only reject records a failed
+        // delivery attempt (advancing x-delivery-count toward the queue's delivery-limit); nack means "returned".
         [Fact]
-        public async Task MustRequeueOnNackForQuorum()
+        public async Task MustRejectWithRequeueOnNackForQuorum()
         {
             var harness = ReceiverHarness.Create(QueueType.Quorum);
             await harness.PushAsync(deliveryTag: 5);
@@ -119,14 +122,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             var nacked = await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
 
             nacked.Outcome.Should().Be(SettlementOutcome.Settled);
-            var nack = harness.ConnectionSource.ReceiveChannel.Nacks.Single();
-            nack.DeliveryTag.Should().Be(5UL);
-            nack.Requeue.Should().BeTrue();
+            var reject = harness.ConnectionSource.ReceiveChannel.Rejects.Single();
+            reject.DeliveryTag.Should().Be(5UL);
+            reject.Requeue.Should().BeTrue();
+            harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("on RabbitMQ 4.3+ basic.nack does not count as a failed delivery attempt");
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("a quorum nack requeues; it does not ack");
         }
 
         [Fact]
-        public async Task MustNotRequeueOnNackForQuorumWhenEpochStale()
+        public async Task MustNotRejectOnNackForQuorumWhenEpochStale()
         {
             var harness = ReceiverHarness.Create(QueueType.Quorum);
             await harness.PushAsync(deliveryTag: 5);
@@ -137,6 +141,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             var nacked = await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
 
             nacked.Outcome.Should().Be(SettlementOutcome.Failed);
+            harness.ConnectionSource.ReceiveChannel.Rejects.Should().BeEmpty();
             harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty();
         }
 
@@ -218,6 +223,72 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                     "the confirmed deadletter republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
+        // --- native quorum counters are broker-owned: consumed at receive, never carried onto a republished copy ---
+
+        // x-delivery-count and x-acquired-count are the broker's own counters for the delivery it just made. The
+        // Receiver reads the attempt count off them at the receive boundary and carries neither onward, so the copy
+        // it republishes to the dead-letter queue is a new message that carries no stale broker count.
+        [Fact]
+        public async Task MustNotRepublishNativeQuorumCountersOnTheDeadletterHop()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, deadLetterQueuePath: ReceiverHarness.DeadLetterPath);
+            await harness.PushAsync(deliveryTag: 11, headers: DeliveryHeadersCarryingNativeQuorumCounters());
+            var context = await harness.ReceiveAsync();
+
+            await harness.Receiver.DeadletterMessageAsync(context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Headers.Should().NotContainKeys(new[] { ReceiverHarness.NativeDeliveryCountHeader, ReceiverHarness.NativeAcquiredCountHeader },
+                "the native quorum counters are consumed at the receive boundary and never ride onto the dead-letter copy");
+            republish.Headers.Should().ContainKey("app-header", "only the broker-owned counters are withheld; application headers are carried");
+        }
+
+        [Fact]
+        public async Task MustNotRepublishNativeQuorumCountersOnTheErrorQueueHop()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
+            await harness.PushAsync(deliveryTag: 12, headers: DeliveryHeadersCarryingNativeQuorumCounters());
+            var context = await harness.ReceiveAsync();
+
+            await harness.Receiver.DeadletterMessageAsync(context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Headers.Should().NotContainKeys(new[] { ReceiverHarness.NativeDeliveryCountHeader, ReceiverHarness.NativeAcquiredCountHeader },
+                "the native quorum counters are consumed at the receive boundary and never ride onto the error-queue copy");
+        }
+
+        // The classic redelivery hop re-stamps the adapter-owned x-chatter-delivery-count and must still withhold any
+        // native counter the delivery arrived with, so the delivery and its redelivered copy count only by the
+        // adapter's own header.
+        [Fact]
+        public async Task MustNotRepublishNativeQuorumCountersOnTheClassicRedeliveryHop()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            var headers = DeliveryHeadersCarryingNativeQuorumCounters();
+            headers[RabbitMqMessageContext.DeliveryCountHeader] = 1L;
+            await harness.PushAsync(deliveryTag: 9, headers: headers);
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(2,
+                "a classic queue counts attempts from x-chatter-delivery-count (1 prior + 1) and never from a native counter");
+
+            await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
+
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Headers.Should().NotContainKeys(new[] { ReceiverHarness.NativeDeliveryCountHeader, ReceiverHarness.NativeAcquiredCountHeader },
+                "the native quorum counters are consumed at the receive boundary and never ride onto the redelivered copy");
+            republish.Headers[RabbitMqMessageContext.DeliveryCountHeader].Should().Be(2L,
+                "the adapter-owned counter is carried and re-stamped on its own republish");
+        }
+
+        private static Dictionary<string, object> DeliveryHeadersCarryingNativeQuorumCounters()
+            => new Dictionary<string, object>
+            {
+                [ReceiverHarness.NativeDeliveryCountHeader] = 2L,
+                [ReceiverHarness.NativeAcquiredCountHeader] = 7L,
+                ["app-header"] = "kept"
+            };
+
         // OWNERSHIP (r3408649034): the dead-letter queue is the ADAPTER's responsibility; the ERROR queue is the
         // CORE's. On max-receives the core runs deadletter FIRST and, ONLY when the deadletter SETTLED and the
         // infrastructure does NOT write to the error queue itself, ALSO runs its error-recovery action
@@ -244,6 +315,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             // republish (NOT a requeue/republish-back), so it is not redelivered.
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(12UL);
             harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("the error-only deadletter acks; it does not requeue");
+            harness.ConnectionSource.ReceiveChannel.Rejects.Should().BeEmpty("the error-only deadletter acks; it does not requeue");
             // (c) The outcome is TRUTHFUL: the delivery WAS settled. Suppressing the core's error action is a
             // separate control signal (WritesToErrorQueue), never a misreported settlement outcome.
             deadlettered.Outcome.Should().Be(SettlementOutcome.Settled,
@@ -439,6 +511,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             nacked.Outcome.Should().Be(SettlementOutcome.NotRequired, "under None the broker already removed the delivery at receive (autoAck); there is nothing to settle");
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no manual delivery tag exists to ack under autoAck");
             harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("at-most-once must not requeue on failure");
+            harness.ConnectionSource.ReceiveChannel.Rejects.Should().BeEmpty("at-most-once must not requeue on failure");
         }
 
         // Under None a classic-queue nack likewise is a no-op: no manual ack and no republish-with-incremented-count

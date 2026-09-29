@@ -20,7 +20,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // The RabbitMQ image is passed explicitly to RabbitMqBuilder's image ctor (the parameterless ctor is
         // obsolete and pins an old tag), mirroring how the SQL Service Broker fixture pins its image. A 3.13
         // image supports BOTH quorum queues (native x-delivery-count, introduced in 3.8) and classic queues,
-        // which the deadletter scenario proves on both per ADR-0001.
+        // which the deadletter scenario proves on both per ADR-0001. This fixture stays pinned to 3.13 as the
+        // broad-surface broker for the rest of this collection's scenarios; on 3.13, reject and nack advance
+        // x-delivery-count identically (docs/adr/0042), so it cannot pin 4.3's divergent delivery-count
+        // semantics — RabbitMq43Fixture and RabbitMqDeliveryCountingOn43Tests cover those separately.
         private const string RabbitMqImage = "rabbitmq:3.13-management";
 
         // The container-internal management API port. Testcontainers maps this to a RANDOM host port (NOT 15672),

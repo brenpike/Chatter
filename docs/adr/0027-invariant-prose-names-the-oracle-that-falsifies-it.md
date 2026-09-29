@@ -323,6 +323,19 @@ is that audit, not a lint.
 
 A tracker entry is now open at #524.
 
+**Amended 2026-09-28: further instances of the trigger shape, after promotion.** A local pre-PR review of the #533
+`Chatter.MessageBrokers.RabbitMQ` branch returned a cluster of findings against the `INVARIANT:` comments on
+`RabbitMqReceiver` that described the native quorum counters. The comments asserted a universal negative — that the
+Receiver reads `x-acquired-count` on no delivery shape — and named facts that pinned particular delivery shapes; no
+finite set of facts pins the negative over all of them. Each pass tightened one clause and the next pass found another
+the named oracles did not reach. Each false clause lived on one surface, the code comment itself, so these are the trigger's shape and are not
+excluded as restatement drift. A `grep` lint would have passed every one of them, because each named a real, passing,
+relevant `[Fact]`. They change nothing recorded above: the trigger is already tripped and #524's scope stands as filed.
+The response was again a re-keying, not a check. Consumption of the broker's counters moved to the one point where a
+delivery is captured, so the comments now make one claim each about that one site, each naming an oracle and a measured
+mutation; the universal negative is no longer claimed, because downstream of that site the counters do not exist.
+ADR-0042 records the mechanism, under *Amendment: the native counters are consumed at the receive boundary*.
+
 ## Consequences
 
 - An `INVARIANT:` comment is now a claim with an obligation attached, and `NOTE:` is the unobligated form. A

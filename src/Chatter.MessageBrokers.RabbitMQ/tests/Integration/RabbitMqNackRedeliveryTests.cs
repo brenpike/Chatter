@@ -13,12 +13,15 @@ using Xunit;
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
 {
     // Nack→redelivery integration proof for the RabbitMQ integration harness. The SYSTEM UNDER TEST is
-    // Chatter's nack path on a Quorum queue: when RecordingMessageHandler<T> throws and ReceiveAttempts has NOT
-    // reached MaxReceiveAttempts, BrokeredMessageReceiver routes to RabbitMqReceiver.NackMessageAsync, which on
-    // a quorum queue issues BasicNack(requeue: true) so the broker increments the native x-delivery-count and
-    // redelivers. The test asserts (a) the handler is invoked at least twice (proving redelivery happened), and
-    // (b) the ReceiveAttempts stamp climbs across deliveries (proving attempts = native x-delivery-count + 1
-    // advances on each redelivery). Mirrors the SQL Service Broker SsbNackRedeliveryTests.
+    // Chatter's failed-delivery path on a Quorum queue: when RecordingMessageHandler<T> throws and ReceiveAttempts
+    // has NOT reached MaxReceiveAttempts, BrokeredMessageReceiver routes to RabbitMqReceiver.NackMessageAsync,
+    // which on a quorum queue issues BasicReject(requeue: true) so the broker increments the native
+    // x-delivery-count and redelivers. The test asserts (a) the handler is invoked at least twice (proving
+    // redelivery happened), and (b) the ReceiveAttempts stamp climbs across deliveries (proving attempts = native
+    // x-delivery-count + 1 advances on each redelivery). Runs against RabbitMqFixture's pinned 3.13 broker, where
+    // reject behaves exactly as nack did before 4.3 (docs/adr/0042), so this proves the pre-4.3 half of the
+    // reject/nack compatibility claim; RabbitMqDeliveryCountingOn43Tests proves the 4.3 half. Mirrors the SQL
+    // Service Broker SsbNackRedeliveryTests.
     //
     // ANTI-INFINITE-LOOP: ThrowOnHandle is flipped to null as soon as >= 2 invocations are observed so the
     // message finally acks before DisposeAsync drains the pump. MaxReceiveAttempts is left at the default (10),
@@ -50,9 +53,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             public string Marker { get; set; }
         }
 
-        // Nack→redelivery: when the handler throws, NackMessageAsync issues BasicNack(requeue:true) on the
-        // quorum queue so the broker redelivers and increments x-delivery-count. Assert invocation count >= 2
-        // (at least one redelivery) and that ReceiveAttempts climbs across successive deliveries.
+        // Nack→redelivery: when the handler throws, NackMessageAsync issues BasicReject(requeue:true) on the
+        // quorum queue so the broker redelivers and increments x-delivery-count. On this fixture's pinned 3.13
+        // broker, reject behaves exactly as nack did before 4.3, so this pins the pre-4.3 half of the
+        // reject/nack compatibility claim (docs/adr/0042). Assert invocation count >= 2 (at least one
+        // redelivery) and that ReceiveAttempts climbs across successive deliveries.
         [RequiresDockerFact]
         public async Task ThrowingHandlerCausesRedeliveryAndClimbingReceiveAttempts()
         {
