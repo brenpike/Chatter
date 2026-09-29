@@ -289,9 +289,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // WhenSettlingMessage.MustNotRepublishNativeQuorumCountersOnTheDeadletterHop, .OnTheErrorQueueHop and
         // .OnTheClassicRedeliveryHop. Mutation: carry the natives through (delete the two carriedHeaders.Remove
         // calls below). Measured: reddens exactly those six of the module's 366 unit facts.
-        // INVARIANT: the attempt count is derived ONCE, here, from the key the queue type selects (ReadPriorDeliveries:
-        // x-delivery-count on a quorum queue, x-chatter-delivery-count on a classic queue) and reaches
-        // ReceiveMessageAsync only as BufferedDelivery.PriorDeliveries. Pinned on the quorum arm by
+        // INVARIANT: the RECEIVE attempt count is derived once, at this capture point, from the key the queue type
+        // selects (ReadPriorDeliveries: x-delivery-count on a quorum queue, x-chatter-delivery-count on a classic
+        // queue), and reaches ReceiveMessageAsync as BufferedDelivery.PriorDeliveries. The classic republish stamp is
+        // computed separately at settlement, in BuildClassicRedeliveryHeaders, from the same adapter-owned
+        // x-chatter-delivery-count with the same normalization. Pinned on the quorum arm by
         // WhenReceivingMessage.MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCountersArePresent
         // (x-delivery-count 2 beside x-acquired-count 9 resolves ReceiveAttempts 3), and on the classic arm by
         // WhenSettlingMessage.MustNotRepublishNativeQuorumCountersOnTheClassicRedeliveryHop (x-chatter-delivery-count 1
