@@ -5,7 +5,7 @@ using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.SqlChangeFeed.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
-using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,6 +14,27 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
     public static class SqlChangeFeedExtensions
 
     {
+        private sealed class RowChangedDataPlaceholder : IMessage
+        {
+        }
+
+        // INVARIANT: the row-type overload dispatches to the generic AddSqlChangeFeed<TRowChangedData> and raises
+        // every refusal as itself, not wrapped in a TargetInvocationException. The generic definition is bound by
+        // the compiler through a method group over a placeholder row type, never looked up by name, and the call
+        // is made with BindingFlags.DoNotWrapExceptions. Oracles, in WhenAddingSqlChangeFeed: the "row type
+        // overload" rows of MustLeaveTheServiceCollectionAndDiscoveredReceiversExactlyAsTheyWereWhenAFeedIsRefused,
+        // MustRefuseANullRowTypeNamingTheRowTypeParameter and MustRefuseARowTypeThatIsNotAMessageAsAnInvalidArgument.
+        // Mutations, measured: invoking with BindingFlags.Default reddens exactly the seven "row type overload"
+        // rows; deleting the null guard reddens only the null-row-type fact. The not-a-message fact was already green
+        // before the definition was compiler-bound, because MakeGenericMethod raises that ArgumentException itself.
+        // NOT covered, and no test pins it: reverting to a name-based lookup of the first generic AddSqlChangeFeed
+        // keeps every test green (measured), so dispatch to a different generic overload added later goes unnoticed
+        // by the tests; only the compiler binding below prevents it.
+        private static readonly MethodInfo _addSqlChangeFeedDefinition =
+            new Func<IChatterBuilder, string, string, string, Action<SqlChangeFeedOptionsBuilder>, IChatterBuilder>(AddSqlChangeFeed<RowChangedDataPlaceholder>)
+                .Method
+                .GetGenericMethodDefinition();
+
         internal static SqlChangeFeedOptionsBuilder AddSqlChangeFeedOptionsBuilder(this IServiceCollection services, string connectionString, string tableName, string databaseName = null)
             => new SqlChangeFeedOptionsBuilder(services, connectionString, databaseName, tableName);
 
@@ -32,12 +53,15 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
                                                        string tableName,
                                                        Action<SqlChangeFeedOptionsBuilder> optionsBuilder = null)
         {
-            typeof(SqlChangeFeedExtensions).GetMethods()
-                             .Where(m => m.IsGenericMethod
-                                         && m.Name == nameof(AddSqlChangeFeed))
-                             .FirstOrDefault()
-                             .MakeGenericMethod(rowChangedDataType)
-                             .Invoke(null, new object[] { builder, connectionString, databaseName, tableName, optionsBuilder });
+            if (rowChangedDataType is null)
+            {
+                throw new ArgumentNullException(nameof(rowChangedDataType));
+            }
+
+            _addSqlChangeFeedDefinition.MakeGenericMethod(rowChangedDataType)
+                                       .Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null,
+                                               new object[] { builder, connectionString, databaseName, tableName, optionsBuilder },
+                                               culture: null);
 
             return builder;
         }
