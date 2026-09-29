@@ -265,6 +265,36 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-789");
         }
 
+        // REGRESSION: the ORACLE for "x-acquired-count is never an attempt source". The acquired-count-ONLY fact
+        // above cannot pin that claim on its own: with x-delivery-count absent, a resolver that consulted
+        // x-acquired-count only WHEN x-delivery-count is present — the normal RabbitMQ 4.3 redelivery shape, where
+        // the broker stamps BOTH — still resolves 1 and stays green. This fact delivers both counters at
+        // DELIBERATELY DIVERGENT values, so ReceiveAttempts can only come out at 3 if the resolver read
+        // x-delivery-count alone; any read of x-acquired-count (as the source, as a max, or as a fallback) lands on
+        // 10 instead. Together with the acquired-count-only fact it covers both shapes a 4.3 delivery can take.
+        [Fact]
+        public async Task MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCountersArePresent()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object>
+            {
+                [ReceiverHarness.NativeDeliveryCountHeader] = 2L,
+                [ReceiverHarness.NativeAcquiredCountHeader] = 9L,
+                ["x-correlation-id"] = "corr-both"
+            };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(3,
+                "attempts derive solely from x-delivery-count (2 prior + 1); reading x-acquired-count would give 10");
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(ReceiverHarness.NativeDeliveryCountHeader,
+                "the native delivery counter must not ride the inbound context onto an outbound republish");
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(ReceiverHarness.NativeAcquiredCountHeader,
+                "the native assignment counter must not ride the inbound context onto an outbound republish");
+            context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-both");
+        }
+
         // P1 REPRODUCTION: a real broker delivers the string CorrelationId application header as an AMQP longstr
         // (byte[]). The core's InboundBrokeredMessage reads MessageContext.CorrelationId as a string by kind test at
         // construction (which MessageBrokerContext does inside ReceiveMessageAsync), so an undecoded byte[] reads as

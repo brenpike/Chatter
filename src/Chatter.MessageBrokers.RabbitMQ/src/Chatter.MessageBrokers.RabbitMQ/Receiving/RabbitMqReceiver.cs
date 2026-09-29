@@ -338,14 +338,24 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // Pinned by WhenReceivingMessage.MustStripClassicDeliveryCountHeaderWhilePreservingOtherHeaders,
             // MustStripNativeDeliveryCountHeaderWhilePreservingOtherHeaders and
             // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders; deleting any one Remove call reddens its test.
-            // INVARIANT (ADR-0042): x-acquired-count is deliberately NOT an attempt source. It counts assignments to a
-            // consumer, not failed deliveries: on RabbitMQ 4.3 a consumer timeout or an intra-cluster partition
-            // increments it without any handler failing, so reading it would spend a healthy message's retry budget.
-            // x-delivery-count stays the only quorum attempt source. That the Receiver does not read it is pinned by
-            // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders (an x-acquired-count-only delivery must
-            // resolve ReceiveAttempts 1); the timeout/partition rationale itself is broker behavior no test pins,
-            // and the RabbitMqDeliveryCountingOn43Tests facts cannot tell the two counters apart because both climb
-            // under basic.reject.
+            // INVARIANT (ADR-0042): x-acquired-count is deliberately NOT an attempt source. x-delivery-count stays
+            // the only quorum attempt source, and ResolveReceiveAttempts reads x-acquired-count on NO delivery
+            // shape. Pinned by WhenReceivingMessage.MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCounters-
+            // ArePresent, which delivers both counters at divergent values (x-delivery-count 2, x-acquired-count 9)
+            // and asserts ReceiveAttempts 3. Its mutation: make ResolveReceiveAttempts consult
+            // _nativeAcquiredCountHeader when _nativeDeliveryCountHeader is present (a fallback/max/override read on
+            // the normal 4.3 redelivery shape, where the broker stamps BOTH). Measured: that mutation reddens this
+            // one fact and no other in the module's 363 unit facts, which is the exclusivity ADR-0027 Rule 1 asks a
+            // named mutation for.
+            // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders covers the OTHER shape — an
+            // x-acquired-count-only delivery must resolve ReceiveAttempts 1 — but it cannot pin the claim alone:
+            // with x-delivery-count absent, the conditional read above never fires and that fact stays green. The
+            // two facts together cover both shapes a 4.3 delivery can take.
+            // NOTE: the RATIONALE for the decision — x-acquired-count counts assignments to a consumer, not failed
+            // deliveries, so a consumer timeout or an intra-cluster partition advances it with no handler failing,
+            // and reading it would spend a healthy message's retry budget — is broker behavior that NO TEST PINS.
+            // The RabbitMqDeliveryCountingOn43Tests facts cannot tell the two counters apart either, because both
+            // climb under basic.reject.
             headers.Remove(RabbitMqMessageContext.DeliveryCountHeader);
             headers.Remove(_nativeDeliveryCountHeader);
             headers.Remove(_nativeAcquiredCountHeader);
@@ -484,10 +494,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // INVARIANT (ADR-0042): the quorum requeue verb is basic.reject, never basic.nack. On RabbitMQ >= 4.3
             // basic.nack means "returned, not failed" and does not advance x-delivery-count, so the receive attempt
             // never reaches MaxReceiveAttempts; basic.reject is the failed-delivery outcome that advances it.
-            // Before 4.3 both verbs run the same server path, so the choice is behavior-identical there. Pinned by
-            // RabbitMqDeliveryCountingOn43Tests
-            // (QuorumQueueDeadlettersOnMaxReceivesOn43, QuorumQueueReceiveAttemptsClimbAcrossRedeliveriesOn43) and
-            // WhenSettlingMessage.MustRejectWithRequeueOnNackForQuorum; reverting to BasicNackAsync reddens all three.
+            // Pinned by WhenSettlingMessage.MustRejectWithRequeueOnNackForQuorum (the verb itself) and, on a live
+            // 4.3 broker, RabbitMqDeliveryCountingOn43Tests.QuorumQueueDeadlettersOnMaxReceivesOn43 and
+            // .QuorumQueueReceiveAttemptsClimbAcrossRedeliveriesOn43 (the counting consequence); reverting this call
+            // to BasicNackAsync reddens all three. That reject still redelivers and still advances the count BEFORE
+            // 4.3 is pinned by RabbitMqNackRedeliveryTests.ThrowingHandlerCausesRedeliveryAndClimbingReceiveAttempts
+            // on the 3.13 fixture, which the same revert leaves GREEN — so that fact proves reject is safe pre-4.3,
+            // not that the verb choice matters there.
+            // NOTE: that the two verbs run the SAME server path before 4.3, and are therefore behavior-identical on
+            // those versions, is broker-internal behavior NO TEST PINS — no fact issues basic.nack against a 3.13
+            // broker, so nothing in this repository compares the two verbs on one version.
             return SettleOnReceiveChannelAsync(received, (channel) =>
                 channel.BasicRejectAsync(received.DeliveryTag, requeue: true, cancellationToken), cancellationToken);
         }
