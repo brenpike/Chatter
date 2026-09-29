@@ -190,7 +190,7 @@ namespace Chatter.SqlChangeFeed.Configuration
         }
 
         /// <summary>
-        /// Sets the atomicity of the receiver responsible for receving messages from the change feed. <see cref="TransactionMode.ReceiveOnly"/> is the default.
+        /// Sets the atomicity of the receiver responsible for receving messages from the change feed. <see cref="TransactionMode.FullAtomicityViaInfrastructure"/> is the default.
         /// </summary>
         /// <param name="transactionMode">The <see cref="TransactionMode"/> to use</param>
         /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
@@ -200,6 +200,11 @@ namespace Chatter.SqlChangeFeed.Configuration
             return this;
         }
 
+        /// <summary>
+        /// Sets the number of times a change feed message will be received before it is dead-lettered. Default is 10.
+        /// </summary>
+        /// <param name="maxReceiveAttempts">The maximum number of receive attempts</param>
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
         public SqlChangeFeedOptionsBuilder WithMaxReceiveAttempts(int maxReceiveAttempts)
         {
             _maxReceiveAttempts = maxReceiveAttempts;
