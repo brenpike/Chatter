@@ -513,19 +513,25 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                                              cancellationToken: cancellationToken);
             }
 
-            // INVARIANT (ADR-0042): the quorum requeue verb is basic.reject, never basic.nack. On RabbitMQ >= 4.3
-            // basic.nack means "returned, not failed" and does not advance x-delivery-count, so the receive attempt
-            // never reaches MaxReceiveAttempts; basic.reject is the failed-delivery outcome that advances it.
-            // Pinned by WhenSettlingMessage.MustRejectWithRequeueOnNackForQuorum (the verb itself) and, on a live
-            // 4.3 broker, RabbitMqDeliveryCountingOn43Tests.QuorumQueueDeadlettersOnMaxReceivesOn43 and
-            // .QuorumQueueReceiveAttemptsClimbAcrossRedeliveriesOn43 (the counting consequence); reverting this call
-            // to BasicNackAsync reddens all three. That reject still redelivers and still advances the count BEFORE
-            // 4.3 is pinned by RabbitMqNackRedeliveryTests.ThrowingHandlerCausesRedeliveryAndClimbingReceiveAttempts
-            // on the 3.13 fixture, which the same revert leaves GREEN — so that fact proves reject is safe pre-4.3,
-            // not that the verb choice matters there.
-            // NOTE: that the two verbs run the SAME server path before 4.3, and are therefore behavior-identical on
-            // those versions, is broker-internal behavior NO TEST PINS — no fact issues basic.nack against a 3.13
-            // broker, so nothing in this repository compares the two verbs on one version.
+            // INVARIANT: the quorum requeue verb is basic.reject(requeue: true). Pinned by
+            // WhenSettlingMessage.MustRejectWithRequeueOnNackForQuorum and, on the 4.3 fixture, by
+            // RabbitMqDeliveryCountingOn43Tests.QuorumQueueDeadlettersOnMaxReceivesOn43 and
+            // .QuorumQueueReceiveAttemptsClimbAcrossRedeliveriesOn43. Mutation: revert this call to
+            // BasicNackAsync(multiple: false, requeue: true). Measured: reddens exactly those three — 1 of the
+            // module's 366 unit facts and 2 of its 23 integration facts.
+            // INVARIANT: reject still redelivers and advances the receive attempt count before 4.3. Pinned by
+            // RabbitMqNackRedeliveryTests.ThrowingHandlerCausesRedeliveryAndClimbingReceiveAttempts on the 3.13
+            // fixture. Mutation: requeue: true -> requeue: false. Measured: reddens that fact and, beyond it,
+            // RabbitMqTransactionModeTests.ReceiveOnlyTransactionModeRedeliversOnThrow (3.13, quorum), the two 4.3
+            // facts above and MustRejectWithRequeueOnNackForQuorum — 1 of 366 unit facts and 4 of 23 integration
+            // facts. Of these, only the two 3.13 facts stay green under the BasicNackAsync revert.
+            // NOTE (ADR-0042): the broker counter semantics behind the verb — on RabbitMQ >= 4.3 basic.nack is a
+            // "returned" outcome that does not advance x-delivery-count, basic.reject is the "failed" outcome that
+            // does — are broker behavior; the 4.3 facts pin their consequence, not the counter table itself.
+            // NOTE: that the two verbs share one server path before 4.3, and are therefore behavior-identical there,
+            // is broker-internal behavior NO TEST PINS. No shipped fact issues basic.nack against a 3.13 broker; the
+            // measured BasicNackAsync revert leaving the 3.13 fact green is consistent with the shared path, not
+            // proof of it.
             return SettleOnReceiveChannelAsync(received, (channel) =>
                 channel.BasicRejectAsync(received.DeliveryTag, requeue: true, cancellationToken), cancellationToken);
         }
