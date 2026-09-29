@@ -55,6 +55,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // The native quorum-queue redelivery counter the broker increments per redelivery.
         private const string _nativeDeliveryCountHeader = "x-delivery-count";
 
+        // The native quorum-queue assignment counter RabbitMQ 4.3+ stamps on each redelivery. Stripped, never read.
+        private const string _nativeAcquiredCountHeader = "x-acquired-count";
+
         // The settlement contract requires every unsettled outcome to explain itself; these are the two
         // delivery-independent explanations this receiver reports.
         private const string _atMostOnceNothingToSettleReason =
@@ -321,17 +324,30 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             headers.Remove(RabbitMqMessageContext.TargetExchange);
             headers.Remove(RabbitMqMessageContext.RoutingKey);
 
-            // INVARIANT: the delivery-count headers are adapter-owned receive-attempt state, NEVER outbound payload.
+            // INVARIANT: the counter headers — x-chatter-delivery-count (classic), x-delivery-count (quorum) and
+            // x-acquired-count (quorum, RabbitMQ 4.3+) — are adapter-owned receive state, NEVER outbound payload.
             // The core seeds a receive-then-send follow-up's options from THIS inbound context, and RabbitMqSender
-            // republishes the full context as headers, so a delivery-count header surviving here would ride onto the
-            // next send. After a classic-queue retry x-chatter-delivery-count is present on the delivery (likewise the
-            // native x-delivery-count on a quorum delivery); left in place it would be re-stamped onto an outbound
-            // message and read back by ResolveReceiveAttempts on the next classic queue's first delivery as a stale
-            // redelivery — inflating ReceiveAttempts and deadlettering a fresh message with too few attempts. Strip
-            // BOTH counter keys here (alongside the routing-override strip above) so receive-attempt state never leaks
-            // out of the receive boundary; ResolveReceiveAttempts above already read the value off received.Headers.
+            // republishes the full context as headers, so a counter header surviving here would ride onto the next
+            // send. After a classic-queue retry x-chatter-delivery-count is present on the delivery (likewise the
+            // native counters on a quorum redelivery); left in place it would be re-stamped onto an outbound message
+            // and read back by ResolveReceiveAttempts on the next queue's first delivery as a stale redelivery —
+            // inflating ReceiveAttempts and deadlettering a fresh message with too few attempts. Strip ALL THREE
+            // counter keys here (alongside the routing-override strip above) so receive state never leaks out of the
+            // receive boundary; ResolveReceiveAttempts above already read the attempt count off received.Headers.
+            // Pinned by WhenReceivingMessage.MustStripClassicDeliveryCountHeaderWhilePreservingOtherHeaders,
+            // MustStripNativeDeliveryCountHeaderWhilePreservingOtherHeaders and
+            // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders; deleting any one Remove call reddens its test.
+            // INVARIANT (ADR-0042): x-acquired-count is deliberately NOT an attempt source. It counts assignments to a
+            // consumer, not failed deliveries: on RabbitMQ 4.3 a consumer timeout or an intra-cluster partition
+            // increments it without any handler failing, so reading it would spend a healthy message's retry budget.
+            // x-delivery-count stays the only quorum attempt source. That the Receiver does not read it is pinned by
+            // MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders (an x-acquired-count-only delivery must
+            // resolve ReceiveAttempts 1); the timeout/partition rationale itself is broker behavior no test pins,
+            // and the RabbitMqDeliveryCountingOn43Tests facts cannot tell the two counters apart because both climb
+            // under basic.reject.
             headers.Remove(RabbitMqMessageContext.DeliveryCountHeader);
             headers.Remove(_nativeDeliveryCountHeader);
+            headers.Remove(_nativeAcquiredCountHeader);
 
             headers[RabbitMqMessageContext.DeliveryTag] = received.DeliveryTag;
             headers[RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch;

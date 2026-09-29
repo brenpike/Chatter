@@ -242,6 +242,29 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-456");
         }
 
+        // REGRESSION: the RabbitMQ 4.3+ quorum assignment counter (x-acquired-count) is the same kind of receive
+        // state, so it must likewise NOT survive onto the emitted context. It is also not an attempt source: with no
+        // x-delivery-count on the delivery, ReceiveAttempts stays at the first-delivery floor of 1.
+        [Fact]
+        public async Task MustStripNativeAcquiredCountHeaderWhilePreservingOtherHeaders()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object>
+            {
+                [ReceiverHarness.NativeAcquiredCountHeader] = 4L,
+                ["x-correlation-id"] = "corr-789"
+            };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(ReceiverHarness.NativeAcquiredCountHeader,
+                "the native assignment counter must not ride the inbound context onto an outbound republish");
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(1,
+                "x-acquired-count counts assignments, not failed deliveries, so it is never read as the attempt count");
+            context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-789");
+        }
+
         // P1 REPRODUCTION: a real broker delivers the string CorrelationId application header as an AMQP longstr
         // (byte[]). The core's InboundBrokeredMessage reads MessageContext.CorrelationId as a string by kind test at
         // construction (which MessageBrokerContext does inside ReceiveMessageAsync), so an undecoded byte[] reads as

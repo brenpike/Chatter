@@ -7,10 +7,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// A single AMQP delivery buffered by <see cref="RabbitMqReceiver"/> between the push consumer and the
     /// blocking pull of <c>ReceiveMessageAsync</c>. Carries the raw body, the broker-assigned delivery tag,
     /// the epoch of the receive channel that delivered it (used to detect a stale-channel ack), the delivery
-    /// headers (including the native <c>x-delivery-count</c> for quorum queues and the adapter's
-    /// <c>x-chatter-delivery-count</c> for classic queues), the source exchange / routing key, the
+    /// headers, the source exchange / routing key, the
     /// broker's redelivered flag, and the curated set of delivered native AMQP properties that must be
     /// re-applied when the receiver republishes the message on a nack-redelivery or deadletter hop.
+    /// The delivery headers carry whichever counter headers the delivery arrived with: on a quorum queue, the
+    /// broker's native <c>x-delivery-count</c> once the broker has counted a failed delivery of the message, and
+    /// on RabbitMQ 4.3 and later the native <c>x-acquired-count</c> on each redelivery; on a classic queue, the
+    /// adapter's <c>x-chatter-delivery-count</c> once the Receiver has republished the message for another
+    /// attempt. The Receiver counts attempts from <c>x-delivery-count</c> on a quorum queue and from
+    /// <c>x-chatter-delivery-count</c> on a classic queue; it never reads <c>x-acquired-count</c>.
     /// </summary>
     public sealed class ReceivedMessage
     {
