@@ -94,8 +94,26 @@ redelivery and the Receiver's attempt count climbs. Before 4.3 the broker runs t
 `basic.nack`, so nothing changes there and no version detection is needed.
 
 **`x-delivery-count` remains the only attempt source on a quorum queue.** The ADR-0001 quorum strategy is unchanged.
-`x-acquired-count` is adapter-owned receive state like `x-delivery-count`: it is stripped from outbound headers so it
-never leaks onto a message the application sends on, and it is deliberately not read as an attempt count (Option B).
+`x-acquired-count` is deliberately not read as an attempt count (Option B).
+
+**A counter header is carried onward only by the party that stamps it.** The adapter stamps `x-chatter-delivery-count`,
+so that counter is adapter-owned: `ReceivedMessage.Headers` carries it, the classic redelivery hop re-stamps it on the
+Receiver's own republish, and the Receiver removes it from the `MessageContext` it emits, so it does not ride onto a
+message the application sends while handling. The broker stamps `x-delivery-count` and `x-acquired-count` about the
+delivery it has just made, so those counters are broker-owned and read-only to the Receiver. They are consumed at the
+receive boundary: `RabbitMqReceiver.BufferDeliveryAsync`, the single point where a delivery is captured, reads the
+prior-delivery count once from the key the queue type selects (`x-delivery-count` on a quorum queue,
+`x-chatter-delivery-count` on a classic queue), carries it onward as an `int`, and removes both native counters from the
+headers it carries. Neither native counter exists downstream of that point: not in `ReceivedMessage.Headers`, not in
+the emitted `MessageContext`, not on a message sent while handling, and not on any republished copy (Dead-letter Queue,
+Error Queue or classic redelivery).
+
+**Amended 2026-09-28: the native counters are consumed, not stripped.** As first accepted, the paragraph above called
+`x-acquired-count` "adapter-owned receive state like `x-delivery-count`" and said it was "stripped from outbound
+headers". Both halves were wrong. The strip ran where the Receiver emits the core `MessageContext`, but every republish
+hop built its headers from the carried `ReceivedMessage.Headers`, which still held both native counters, so they rode
+onto the Dead-letter Queue, Error Queue and classic-redelivery copies. Consuming them at the capture point closes that
+leak for every hop at once. See *Amendment: the native counters are consumed at the receive boundary* below.
 
 **The classic strategy and `TransactionMode.None` are untouched.** A classic queue still republishes with
 `x-chatter-delivery-count` and acks the original. Under `TransactionMode.None` the consumer auto-acks, so there is no
@@ -116,6 +134,59 @@ This ADR refines ADR-0001 by naming the settlement verb its quorum strategy depe
   same exposure already existed on RabbitMQ 4.0 to 4.2, where `basic.nack` still advanced the delivery count.
 - **CI pins both halves.** A focused `rabbitmq:4.3-management` collection (`RabbitMq43Collection`) pins the 4.3
   semantics. `rabbitmq:3.13-management` remains the broad-surface fixture (`RabbitMqFixture`) and pins the pre-4.3 half.
+- **`ReceivedMessage.Headers` narrows.** It no longer holds `x-delivery-count` or `x-acquired-count`. No public API
+  signature or configuration changes; `MessageContext.ReceiveAttempts` is unaffected.
+
+## Amendment: the native counters are consumed at the receive boundary
+
+**Amended 2026-09-28**, from a local pre-PR review of this branch.
+
+**What the review found.** The first implementation strip-listed the native counters where the Receiver emits the core
+`MessageContext`, and the `INVARIANT:` comments that described it asserted a universal negative: that the Receiver reads
+`x-acquired-count` on no delivery shape. No oracle could pin a claim of that shape, and each review pass that tightened
+one clause found another that the named oracles did not reach. One of those findings was not only a prose defect: the
+republish hops built their headers from `ReceivedMessage.Headers`, which the emit-time strip never touched, so
+`x-delivery-count` rode onto the Dead-letter Queue, Error Queue and classic-redelivery copies.
+
+**What changed.** Consumption moved to the one capture point, as stated under *Decision*. The attempt count is read there
+once and carried as an `int` on a private buffered-delivery record, and both native counters are removed from the headers
+before `ReceivedMessage` is built. The emit-time strip of the natives was deleted, because there is nothing left for it to
+strip; the emit-time strip of the adapter-owned `x-chatter-delivery-count` stays, because that counter is carried on
+purpose. The `INVARIANT:` comments on `BufferDeliveryAsync` now make one claim each about that one site, each naming its
+oracle and a measured mutation.
+
+**Rejected narrower variant: discard only `x-acquired-count` at the capture point.** It would have answered the
+finding as filed, which named `x-acquired-count`, and left `x-delivery-count` carried in `ReceivedMessage.Headers`,
+where the republish hops would still forward it. Under the Same-Framing Test the next finding is the same shape with a
+different header name, so the variant was rejected in favour of consuming every broker-owned counter at the boundary.
+
+## Closed-by-Construction Acceptance Test
+
+> What class of future finding does this make impossible, and why?
+
+**Eliminated: any read, re-emission or republish of a native broker counter downstream of the capture point.** Every
+step after `BufferDeliveryAsync` works from the `ReceivedMessage` and the carried `int`: `ReceiveMessageAsync`, the
+translator's `ToCore`, the settlement paths and `ToRepublishAmqp`. None of them has a native counter to read, forward or
+strip, so a hop added later inherits the absence instead of needing a strip of its own. What holds the property is two
+`Remove` calls at one site rather than one strip per hop. The claim is pinned by the counter-ownership `INVARIANT:` on
+`BufferDeliveryAsync`: deleting those two calls reddens exactly six unit facts, the three receive-side facts in
+`WhenReceivingMessage` and the three republish-hop facts in `WhenSettlingMessage`
+(`MustNotRepublishNativeQuorumCountersOnTheDeadletterHop`, `...OnTheErrorQueueHop` and
+`...OnTheClassicRedeliveryHop`). The boundary covers code that runs after the capture point; code added inside the
+consumer callback, ahead of it, still sees the raw delivery.
+
+**Honest residue: the capture point can still select the wrong key.** Which header the attempt count is read from is
+decided at that one site by the queue type, and nothing structural stops it choosing wrongly. It is pinned on the quorum
+arm by `MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCountersArePresent` (`x-delivery-count` 2 beside
+`x-acquired-count` 9 resolves attempt 3) and on the classic arm by
+`MustNotRepublishNativeQuorumCountersOnTheClassicRedeliveryHop` (`x-chatter-delivery-count` 1 beside both natives
+resolves attempt 2). The measured mutations are recorded in the
+attempt-count `INVARIANT:` on `BufferDeliveryAsync`.
+
+**Not closed: load-bearing claims in hand-maintained `INVARIANT:` prose.** The re-keying replaced a universal negative
+with claims about one site that an oracle can pin, but nothing stops the next comment claiming more than its oracle
+pins. That meta-class is ADR-0027's, recorded there as further instances of its promotion-trigger shape, and is tracked
+by #524.
 
 ## References
 
@@ -129,9 +200,15 @@ This ADR refines ADR-0001 by naming the settlement verb its quorum strategy depe
   on `v3.13.x`, `v4.0.x` and `v4.2.x`.
 - `rabbitmq-server` `deps/rabbit/src/rabbit_fifo_client.erl` — `add_delivery_count_header` on `main`.
 - `src/Chatter.MessageBrokers.RabbitMQ/src/Chatter.MessageBrokers.RabbitMQ/Receiving/RabbitMqReceiver.cs` —
-  `NackMessageAsync`, the settlement this ADR changes.
+  `NackMessageAsync`, the settlement this ADR changes, and `BufferDeliveryAsync`, the capture point where the native
+  counters are consumed, with its counter-ownership and attempt-count `INVARIANT:` comments.
 - `src/Chatter.MessageBrokers.RabbitMQ/tests/Receiving/UsingRabbitMqReceiver/WhenSettlingMessage.cs` — the settlement
-  unit oracles.
+  unit oracles, and the three `MustNotRepublishNativeQuorumCounters...` republish-hop facts.
+- `src/Chatter.MessageBrokers.RabbitMQ/tests/Receiving/UsingRabbitMqReceiver/WhenReceivingMessage.cs` — the
+  receive-side counter facts, including `MustResolveReceiveAttemptsFromDeliveryCountWhenBothQuorumCountersArePresent`.
+- ADR-0027 — *An `INVARIANT:` comment names the oracle that falsifies it*. The rule the amended `INVARIANT:` comments
+  follow, and the meta-class this ADR leaves open.
+- Issue #524 — the `INVARIANT:` audit ADR-0027's promotion trigger filed.
 - `src/Chatter.MessageBrokers.RabbitMQ/tests/Integration/RabbitMqDeliveryCountingOn43Tests.cs` — the RabbitMQ 4.3
   reproduction and its facts.
 - `src/Chatter.MessageBrokers.RabbitMQ/tests/Integration/RabbitMqNackRedeliveryTests.cs` — quorum and classic

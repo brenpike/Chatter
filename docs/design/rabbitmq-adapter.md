@@ -110,8 +110,9 @@ model:
 
 - An `AsyncEventingBasicConsumer` (or equivalent async consumer) is registered on the single
   serialized receive channel during `InitializeAsync`. Its delivery callback **does not handle**
-  the message; it wraps each delivery (body + headers + delivery tag + owning channel-epoch) and
-  **writes it into a bounded `Channel<T>` buffer**.
+  the message; it wraps each delivery (body + headers + delivery tag + owning channel-epoch + the
+  prior-delivery count read from the delivery's counter header) and **writes it into a bounded
+  `Channel<T>` buffer**. The broker's native counter headers are consumed here and not buffered (§6).
 - `ReceiveMessageAsync` **reads** from that `Channel<T>` with `await reader.ReadAsync(ct)`. When the
   buffer is empty the read **asynchronously parks** the loop — no CPU, no polling — until the push
   consumer enqueues the next delivery or cancellation fires. This satisfies the blocking-pull
@@ -284,7 +285,11 @@ A `QueueType` option selects the strategy (default **Quorum**, recommended):
   stamps `ReceiveAttempts`. Redelivery on failure is a plain `BasicReject(requeue: true)`, which
   RabbitMQ counts as a failed delivery attempt; from RabbitMQ 4.3 `BasicNack(requeue: true)` does not
   advance `x-delivery-count` (ADR 0042). The 4.3+ `x-acquired-count` header counts assignments to a
-  consumer, not failures, so the adapter strips it and never reads it as the attempt count.
+  consumer, not failures, so the adapter never reads it as the attempt count. Both native counters are
+  broker-owned and consumed at the receive boundary: the push consumer reads the prior-delivery count
+  once, from the key the queue type selects, and removes `x-delivery-count` and `x-acquired-count`
+  from the headers it buffers, so neither reaches `ReceivedMessage.Headers`, the emitted
+  `MessageContext`, a send made while handling, or any republished copy (ADR 0042).
 - **Classic strategy** — classic queues expose no native counter, so the adapter uses a
   **header-stamped republish counter**: on retry it republishes the message to its own queue with a
   custom `x-chatter-delivery-count` header incremented by 1 (publisher-confirmed), then acks the
