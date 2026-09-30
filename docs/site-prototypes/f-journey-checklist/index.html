@@ -511,36 +511,40 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <circle class="stg-dot-fail stg-mv stg-rdot" cx="0" cy="0" r="7"/>
 </g></g>
 <g class="stg-sc stg-b10"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="26" text-anchor="middle">SQL change feed</text>
-<rect class="stg-box" x="40" y="40" width="720" height="112" rx="14"/>
-<text class="stg-lbl" x="60" y="68">SQL Server &#183; Orders table</text>
-<rect class="stg-pill" x="60" y="80" width="110" height="32" rx="16"/>
-<text class="stg-nm" x="115" y="102" text-anchor="middle">Trigger</text>
-<rect class="stg-ring stg-x-trg" x="60" y="80" width="110" height="32" rx="16"/>
-<text class="stg-code" x="190" y="102">INSERT INTO dbo.Orders (...)</text>
-<text class="stg-nm" x="416" y="192">SQL Server Service Broker</text>
-<text class="stg-lbl" x="740" y="246" text-anchor="end">Event</text>
-<text class="stg-code" x="400" y="476" text-anchor="middle">IMessageHandler&lt;RowInsertedEvent&lt;OrderRow&gt;&gt;</text>
-<text class="stg-code" x="400" y="510" text-anchor="middle">.AddSqlChangeFeed&lt;OrderRow&gt;(...)</text>
-<g class="stg-mv stg-e8"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-121" y="2" width="117" height="24" rx="12"/><text class="stg-chipc" x="-62.5" y="19" text-anchor="middle">SqlChangeFeed</text></g>
+<text class="stg-cap" x="400" y="34" text-anchor="middle">SQL change feed</text>
+<rect class="stg-box" x="40" y="48" width="720" height="120" rx="14"/>
+<text class="stg-lbl" x="60" y="78">SQL Server &#183; Orders table</text>
+<rect class="stg-pill" x="60" y="90" width="124" height="36" rx="18"/>
+<text class="stg-nm" x="122" y="114" text-anchor="middle">Trigger</text>
+<rect class="stg-ring stg-x-trg" x="60" y="90" width="124" height="36" rx="18"/>
+<text class="stg-code" x="200" y="116">INSERT INTO dbo.Orders (...)</text>
+<text class="stg-nm" x="420" y="218">SQL Server Service Broker</text>
+<text class="stg-lbl" x="740" y="286" text-anchor="end">Event</text>
+<text class="stg-code" x="400" y="700" text-anchor="middle">IMessageHandler&lt;RowInsertedEvent&lt;OrderRow&gt;&gt;</text>
+<text class="stg-code" x="400" y="744" text-anchor="middle">.AddSqlChangeFeed&lt;OrderRow&gt;(...)</text>
+<g class="stg-mv stg-e8"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-182" y="2" width="176" height="30" rx="15"/><text class="stg-chipc" x="-94" y="24" text-anchor="middle">SqlChangeFeed</text></g>
 </g></g>
 <g class="stg-fin" aria-hidden="true">
-<text class="stg-slogan" x="400" y="187" text-anchor="middle">Same handlers. Any broker.</text>
-<path class="stg-ln-acc" d="M400 362V397M140 397H660M140 397V427M400 397V427M660 397V427"/>
-<rect class="stg-pill" x="25" y="427" width="230" height="100" rx="12"/>
-<text class="stg-chipn" x="140" y="459" text-anchor="middle"><tspan x="140">Azure </tspan><tspan x="140" dy="28">Service Bus</tspan></text>
-<text class="stg-chipc stg-sec" x="140" y="513" text-anchor="middle">.AddAzureServiceBus(...)</text>
-<rect class="stg-pill" x="285" y="427" width="230" height="100" rx="12"/>
-<text class="stg-chipn" x="400" y="473" text-anchor="middle">RabbitMQ</text>
-<text class="stg-chipc stg-sec" x="400" y="513" text-anchor="middle">.AddRabbitMq(...)</text>
-<rect class="stg-pill" x="545" y="427" width="230" height="100" rx="12"/>
-<text class="stg-chipn" x="660" y="459" text-anchor="middle"><tspan x="660">SQL Server </tspan><tspan x="660" dy="28">Service Broker</tspan></text>
-<text class="stg-chipc stg-sec" x="660" y="513" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+<text class="stg-slogan" x="400" y="230" text-anchor="middle">Same handlers. Any broker.</text>
+<path class="stg-ln-acc" d="M400 450V706M140 690H660M140 690V706M660 690V706"/>
+<rect class="stg-pill" x="250" y="492" width="300" height="50" rx="25"/>
+<text class="stg-nm" x="400" y="524" text-anchor="middle">Inbox</text>
+<rect class="stg-pill" x="160" y="592" width="480" height="46" rx="23"/>
+<text class="stg-nm" x="400" y="622" text-anchor="middle">Brokered Message Receiver</text>
+<rect class="stg-pill" x="25" y="706" width="230" height="130" rx="12"/>
+<text class="stg-chipn" x="140" y="750" text-anchor="middle"><tspan x="140">Azure </tspan><tspan x="140" dy="28">Service Bus</tspan></text>
+<text class="stg-chipc stg-sec" x="140" y="806" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<rect class="stg-pill" x="285" y="706" width="230" height="130" rx="12"/>
+<text class="stg-chipn" x="400" y="764" text-anchor="middle">RabbitMQ</text>
+<text class="stg-chipc stg-sec" x="400" y="806" text-anchor="middle">.AddRabbitMq(...)</text>
+<rect class="stg-pill" x="545" y="706" width="230" height="130" rx="12"/>
+<text class="stg-chipn" x="660" y="750" text-anchor="middle"><tspan x="660">SQL Server </tspan><tspan x="660" dy="28">Service Broker</tspan></text>
+<text class="stg-chipc stg-sec" x="660" y="806" text-anchor="middle">.AddSqlServiceBroker(...)</text>
 </g>
 <g class="stg-card" aria-hidden="true">
-<rect class="stg-glow" x="-268" y="-58" width="536" height="116" rx="18" opacity="0.22"/>
-<rect class="stg-cardbox" x="-260" y="-50" width="520" height="100" rx="12"/>
-<text class="stg-cardt" x="0" y="-6" text-anchor="middle"><tspan x="0">public class PlaceOrderHandler </tspan><tspan x="0" dy="32">: IMessageHandler&lt;PlaceOrder&gt;</tspan></text>
+<rect class="stg-glow" x="-288" y="-64" width="576" height="132" rx="18" opacity="0.22"/>
+<rect class="stg-cardbox" x="-280" y="-58" width="560" height="116" rx="12"/>
+<text class="stg-cardt" x="0" y="-4" text-anchor="middle"><tspan x="0">public class PlaceOrderHandler </tspan><tspan x="0" dy="34">: IMessageHandler&lt;PlaceOrder&gt;</tspan></text>
 </g>
 </svg></div>
 <p class="anchor">One handler follows a message through every feature, and each package is checked off as it is used.</p>
