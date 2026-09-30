@@ -22,7 +22,7 @@
   --fail: #F47067;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --loop: 20s;
+  --loop: 30s;
 }
 *, *::before, *::after { box-sizing: border-box; }
 html { background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-text-size-adjust: 100%; }
@@ -74,18 +74,18 @@ h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 1
 .lst-nuget { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; color: var(--ink-muted); text-decoration: underline; text-underline-offset: 3px; }
 .lst-nuget:hover { color: var(--ink); }
 
-/* stage layout map (viewBox 0 0 800 680; all coordinates are viewBox units)
-   caption y: 26, x 400, text-anchor middle (stg-cap)
-   b1 in-process zone: box x40 y40 w720 h440 (Orders service); Message Dispatcher pill 260,130 280x36; Command Pipeline ring 230,196 340x84
-   shared service frame (stg-svc, visible for b2-b10): Storefront box x40 y40 w720 h112; label y68; Dispatch(PlaceOrder) text y104
-     wire start 400,152; wire end 400,220 (stg-x-wire, dash length 68); Orders service box x40 y220 w720 h380 (bottom y600)
-     Brokered Message Receiver pill x200 y256 w400 h34 (bottom y290, centre 400,273)
-   b7-b9 inner zone (Orders service): dashed outline x70 y300 w660 h290; label at 88,322; Inbox pill 320,330 160x32; Outbox pill 310,500 180x32; Outbox Processor pill 260,546 280x34; Billing service stub 260,626 280x46
-   b10 zone: Orders service box x40 y220 w720 h380, receiver pill as above; Recovery rows may use x200 y306 to y454, w400 h34
-   handler slot (where envelopes arrive = centre of the handler card): b1 400,380 | b2-b6 400,400 | b7-b9 400,430 (between Inbox y362 and Outbox y498) | b10 400,400
-   card slots: card is 520x100 centred on its slot (x140-660, slot y +-50); use translate(400px, Ypx) with Y from the slot above
-   final card translate: translate(400px, 312px) (card spans y262-362); slogan y187; connector M400 362 to chips; transport chips y427-527 at x25, x285, x545 (w230)
-   envelope outlet (after a handler slot): lower-right, target 745,648 (stage region x700-790 y620-675, outside the Orders box); envelopes are 40x28 glyphs (stg-env), origin at top-left */
+/* stage layout map (viewBox 0 0 800 1000; all coordinates are viewBox units)
+   caption: 400,34 middle (stg-cap)
+   envelope (stg-env): 48x34 glyph at translate(376px, Ypx), centre x 400; chip pill to its left: x -(w+6), y 2, h 30, w = 12 x label chars + 20; chip label x -(w/2+6), y 24
+   envelope Y: start 128 | wire 184 (b2 214) | receiver 339 | inbox pause 420 | handler slot S-17 | outlet translate(740px, 950px); b1: Message Dispatcher 175, Command Pipeline 305
+   handler card: 560x116 box, 576x132 glow, centred on slot S by translate(400px, Spx); S = 580 for b1-b6 and b10, 652 for b7-b8, 730 for b9, 384 for the final frame
+   b1: Orders service box x40 y48 w720 h652; label 60,78; Dispatch 400,114; Message Dispatcher pill 240,168 320x48; Command Pipeline ring 200,266 400x112; accent arrow 378-508
+   shared frame (stg-svc, b2-b10): Storefront box x40 y48 w720 h120, label 60,78, Dispatch 400,114; wire 400,168-256 (dash 88); Orders service box x40 y256 w720 h634, label 60,286; header row y318; Brokered Message Receiver pill x160 y334 w480 h44, text y364
+   beside the wire: transport tick 404-426 y199, label 432,206; b2 code 432,220; b4 Entra ID token pill 432,216 220x34; code under the card y700, second line y744/748
+   b7-b8: context label 740,286 end; code 400,318; outline x60 y392 w680 h450; inbox arrow 430-458 y437; Inbox card x464 y410 w268 h146 (header y438, divider y450, MessageId y476, ReceivedByInboxAtUtc y504, state y536; text x482, values end x716); Cosmos Inbox pill x464 y410 w268 h48; skip bar 372-428 y500, label end 360,508; flow 400,458-580; Outbox pill 300,732 200x40; commit check 512,740-758, label 546,760; processor pill 240,786 320x42; event arrow 400,828-904, dot travel 78; event label 414,872; Billing service stub 250,910 300x56
+   b9: rows x160 w480 h44 at y396 Retry, y456 Circuit Breaker, y562 Error Queue; text x184; receiver mark 576-596 y346-366; recovery dot x622 at y378 start, 418 Retry, 362 receiver, 584 Error Queue
+   b10: SQL Server box over the Storefront box; Trigger pill 60,90 124x36; INSERT 200,116; broker label 420,218; Event 740,286 end
+   final frame: slogan 400,230; card S384; Inbox pill 250,492 300x50; Receiver pill 160,592 480x46; connector 400,450-706; transport chips y706 h130 at x25, x285, x545 (w230) */
 .stg-stage svg { display: block; width: 100%; height: auto; }
 .stg-stage text { fill: var(--ink); font-family: var(--sans); font-size: 20px; }
 .stg-box { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
@@ -109,27 +109,34 @@ h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 1
 .stg-env path { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-linejoin: round; }
 .stg-mu { fill: var(--ink-muted); }
 .stg-ac { fill: var(--accent-ink); }
-.stg-stage .stg-cap { font-size: 22px; font-weight: 600; fill: var(--ink-muted); }
-.stg-stage .stg-lbl { font-size: 17px; fill: var(--ink-muted); }
-.stg-stage .stg-nm { font-size: 17px; }
-.stg-stage .stg-code { font-family: var(--mono); font-size: 17px; }
+.stg-stage .stg-cap { font-size: 28px; font-weight: 600; fill: var(--ink-muted); }
+.stg-stage .stg-lbl { font-size: 21px; fill: var(--ink-muted); }
+.stg-stage .stg-nm { font-size: 22px; }
+.stg-stage .stg-code { font-family: var(--mono); font-size: 20px; }
 .stg-stage .stg-tick { font-family: var(--mono); font-size: 15px; fill: var(--accent-ink); }
-.stg-stage .stg-cardt { font-family: var(--mono); font-size: 20px; }
-.stg-stage .stg-slogan { font-size: 40px; font-weight: 700; }
-.stg-stage .stg-chipn { font-size: 20px; font-weight: 600; }
-.stg-stage .stg-chipc { font-family: var(--mono); font-size: 13px; fill: var(--ink-muted); }
+.stg-stage .stg-cardt { font-family: var(--mono); font-size: 24px; }
+.stg-stage .stg-slogan { font-size: 46px; font-weight: 700; }
+.stg-stage .stg-chipn { font-size: 24px; font-weight: 600; }
+.stg-stage .stg-chipc { font-family: var(--mono); font-size: 20px; fill: var(--ink-muted); }
+.stg-stage .stg-fin .stg-chipc { font-size: 15px; }
+.stg-stage .stg-cell { font-family: var(--mono); font-size: 18px; fill: var(--ink-muted); }
+.stg-stage .stg-cellv { font-family: var(--mono); font-size: 18px; fill: var(--ink); }
+.stg-stage .stg-tag { font-size: 21px; font-weight: 600; fill: var(--accent-ink); }
+.stg-stage .stg-hd { font-weight: 700; fill: var(--accent-ink); }
 
-/* static final frame: scene groups and moving parts hidden; slogan, chips and card shown */
+/* static final frame: scene groups and moving parts hidden; slogan, Inbox, Receiver, chips and card shown */
 .stg-sc, .stg-mv { opacity: 0; }
 .stg-fin, .stg-card { opacity: 1; }
-.stg-card { transform: translate(400px, 312px); }
+.stg-card { transform: translate(400px, 384px); }
 
 @media (max-width: 700px) {
-  .stg-stage .stg-cap { font-size: 24px; }
-  .stg-stage .stg-lbl, .stg-stage .stg-nm, .stg-stage .stg-code { font-size: 24px; }
+  .stg-stage .stg-cap { font-size: 32px; }
+  .stg-stage .stg-lbl, .stg-stage .stg-nm, .stg-stage .stg-tag { font-size: 26px; }
+  .stg-stage .stg-code { font-size: 24px; }
+  .stg-stage .stg-cell, .stg-stage .stg-cellv { font-size: 20px; }
   .stg-stage .stg-tick { font-size: 26px; }
   .stg-stage .stg-cardt { font-size: 27px; }
-  .stg-stage .stg-slogan { font-size: 46px; }
+  .stg-stage .stg-slogan { font-size: 50px; }
   .stg-stage .stg-chipn { font-size: 27px; }
   .stg-sec { display: none; }
 }
