@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter: Same handlers. Any broker.</title>
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --warn: #F0B429;
+  --fail: #F47067;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --loop: 30s;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-text-size-adjust: 100%; }
+body { margin: 0; min-height: 100vh; }
+.page { max-width: 1160px; margin: 0 auto; padding: 20px 16px 40px; }
+a { color: var(--accent-ink); }
+a:focus-visible, #pause:focus-visible + label { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+.top { display: flex; align-items: center; gap: 10px; }
+.wordmark { font-weight: 700; font-size: 18px; letter-spacing: .02em; }
+.chip { font-family: var(--mono); font-size: 13px; color: var(--ink-muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+
+h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 14px; letter-spacing: -.01em; }
+.lede { max-width: 62ch; margin: 0 0 24px; font-size: clamp(1rem, 2.6vw, 1.2rem); color: var(--ink-muted); }
+
+.cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px; margin-bottom: 32px; }
+.cta { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 0 24px; background: var(--accent); color: #fff; border: 1px solid var(--accent-ink); border-radius: 10px; font-weight: 600; font-size: 17px; text-decoration: none; }
+.cta svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
+.cta:hover { background: #5f3ce0; border-color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.cta:active { transform: translateY(1px); }
+.install { display: inline-block; max-width: 100%; font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+
+/* scene: DOM order is pause control, list, stage, anchor; flex order sets the stacked visual order */
+.scene { position: relative; display: flex; flex-direction: column; gap: 18px; }
+#pause { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); }
+#pause + label { order: 1; align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; min-height: 44px; min-width: 44px; padding: 0 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; font-size: 15px; cursor: pointer; }
+#pause + label::before { content: ""; width: 18px; height: 18px; border: 2px solid var(--ink-muted); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1; flex: none; }
+#pause:checked + label::before { content: "\2713"; background: var(--accent); border-color: var(--accent-ink); color: var(--ink); }
+
+.stg-stage { order: 2; width: 100%; min-width: 0; }
+.anchor { order: 3; margin: 0; text-align: center; font-family: var(--mono); font-size: 14px; color: var(--ink-muted); overflow-wrap: anywhere; }
+.anchor code { font-family: inherit; color: var(--ink); }
+
+/* package list: plain HTML, present and clickable in every frame; base state is the finished frame */
+.lst-list { order: 4; list-style: none; margin: 0; padding: 0; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.lst-row { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 12px; align-items: start; padding: 0 6px 0 14px; border-top: 1px solid var(--line); }
+.lst-row:first-child { border-top: 0; border-radius: 11px 11px 0 0; }
+.lst-row:last-child { border-radius: 0 0 11px 11px; }
+.lst-hl { position: absolute; inset: 0; background: rgba(81, 43, 212, .2); border-radius: inherit; transform: scaleX(0); transform-origin: 0 50%; pointer-events: none; }
+.lst-st, .lst-body, .lst-nuget { position: relative; z-index: 1; }
+.lst-st { width: 24px; height: 24px; margin-top: 10px; }
+.lst-ring { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
+.lst-tick { transform-box: fill-box; transform-origin: center; }
+.lst-tick circle { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1.5; }
+.lst-tick path { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.lst-pkg { display: block; min-height: 44px; padding: 12px 0; font-family: var(--mono); font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.lst-pkg:hover { color: var(--ink); }
+.lst-why { display: block; margin-top: -6px; padding-bottom: 12px; font-size: 14px; color: var(--ink-muted); }
+.lst-nuget { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; color: var(--ink-muted); text-decoration: underline; text-underline-offset: 3px; }
+.lst-nuget:hover { color: var(--ink); }
+
+/* stage layout map (viewBox 0 0 800 1000; all coordinates are viewBox units)
+   caption: 400,34 middle (stg-cap)
+   envelope (stg-env): 48x34 glyph at translate(376px, Ypx), centre x 400; chip pill to its left: x -(w+6), y 2, h 30, w = 12 x label chars + 20; chip label x -(w/2+6), y 24
+   envelope Y: start 128 | wire 184 (b2 214) | receiver 339 | inbox pause 420 | handler slot S-17 | outlet translate(740px, 950px); b1: Message Dispatcher 175, Command Pipeline 305
+   handler card: 560x116 box, 576x132 glow, centred on slot S by translate(400px, Spx); S = 580 for b1-b6 and b10, 652 for b7-b8, 730 for b9, 384 for the final frame
+   b1: Orders service box x40 y48 w720 h652; label 60,78; Dispatch 400,114; Message Dispatcher pill 240,168 320x48; Command Pipeline ring 200,266 400x112; accent arrow 378-508
+   shared frame (stg-svc, b2-b10): Storefront box x40 y48 w720 h120, label 60,78, Dispatch 400,114; wire 400,168-256 (dash 88); Orders service box x40 y256 w720 h634, label 60,286; header row y318; Brokered Message Receiver pill x160 y334 w480 h44, text y364
+   beside the wire: transport tick 404-426 y199, label 432,206; b2 code 432,220; b4 Entra ID token pill 432,216 220x34; code under the card y700, second line y744/748
+   b7-b8: context label 740,286 end; code 400,318; outline x60 y392 w680 h450; inbox arrow 430-458 y437; Inbox card x464 y410 w268 h146 (header y438, divider y450, MessageId y476, ReceivedByInboxAtUtc y504, state y536; text x482, values end x716); Cosmos Inbox pill x464 y410 w268 h48; skip bar 372-428 y500, label end 360,508; flow 400,458-580; Outbox pill 300,732 200x40; commit check 512,740-758, label 546,760; processor pill 240,786 320x42; event arrow 400,828-904, dot travel 78; event label 414,872; Billing service stub 250,910 300x56
+   b9: rows x160 w480 h44 at y396 Retry, y456 Circuit Breaker, y562 Error Queue; text x184; receiver mark 576-596 y346-366; recovery dot x622 at y378 start, 418 Retry, 362 receiver, 584 Error Queue
+   b10: SQL Server box over the Storefront box; Trigger pill 60,90 124x36; INSERT 200,116; broker label 420,218; Event 740,286 end
+   final frame: slogan 400,230; card S384; Inbox pill 250,492 300x50; Receiver pill 160,592 480x46; connector 400,450-706; transport chips y706 h130 at x25, x285, x545 (w230) */
+.stg-stage svg { display: block; width: 100%; height: auto; }
+.stg-stage text { fill: var(--ink); font-family: var(--sans); font-size: 20px; }
+.stg-box { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.stg-pill { fill: var(--bg); stroke: var(--ink-muted); stroke-width: 1.5; }
+.stg-ring { fill: none; stroke: var(--accent-ink); stroke-width: 2.5; }
+.stg-outline { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-dasharray: 6 6; }
+.stg-stub { fill: none; stroke: var(--ink-muted); stroke-width: 1.5; stroke-dasharray: 6 6; }
+.stg-ln { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
+.stg-ln-acc { fill: none; stroke: var(--accent-ink); stroke-width: 2; }
+.stg-ok { fill: none; stroke: var(--accent-ink); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.stg-x { fill: none; stroke: var(--fail); stroke-width: 4; stroke-linecap: round; }
+.stg-sw { fill: none; stroke: var(--warn); stroke-width: 3; stroke-linecap: round; }
+.stg-swc { fill: var(--warn); }
+.stg-glow { fill: var(--accent); }
+.stg-dot { fill: var(--accent-ink); }
+.stg-dot-evt { fill: var(--warn); }
+.stg-dot-fail { fill: var(--fail); }
+.stg-arrowhead { fill: var(--ink-muted); }
+.stg-cardbox { fill: var(--surface); stroke: var(--accent-ink); stroke-width: 2; }
+.stg-env rect { fill: var(--bg); stroke: var(--accent-ink); stroke-width: 1.5; }
+.stg-env path { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-linejoin: round; }
+.stg-mu { fill: var(--ink-muted); }
+.stg-ac { fill: var(--accent-ink); }
+.stg-stage .stg-cap { font-size: 28px; font-weight: 600; fill: var(--ink-muted); }
+.stg-stage .stg-lbl { font-size: 21px; fill: var(--ink-muted); }
+.stg-stage .stg-nm { font-size: 22px; }
+.stg-stage .stg-code { font-family: var(--mono); font-size: 20px; }
+.stg-stage .stg-tick { font-family: var(--mono); font-size: 15px; fill: var(--accent-ink); }
+.stg-stage .stg-cardt { font-family: var(--mono); font-size: 24px; }
+.stg-stage .stg-slogan { font-size: 46px; font-weight: 700; }
+.stg-stage .stg-chipn { font-size: 24px; font-weight: 600; }
+.stg-stage .stg-chipc { font-family: var(--mono); font-size: 20px; fill: var(--ink-muted); }
+.stg-stage .stg-fin .stg-chipc { font-size: 15px; }
+.stg-stage .stg-cell { font-family: var(--mono); font-size: 18px; fill: var(--ink-muted); }
+.stg-stage .stg-cellv { font-family: var(--mono); font-size: 18px; fill: var(--ink); }
+.stg-stage .stg-tag { font-size: 21px; font-weight: 600; fill: var(--accent-ink); }
+.stg-stage .stg-hd { font-weight: 700; fill: var(--accent-ink); }
+
+/* static final frame: scene groups and moving parts hidden; slogan, Inbox, Receiver, chips and card shown */
+.stg-sc, .stg-mv { opacity: 0; }
+.stg-fin, .stg-card { opacity: 1; }
+.stg-card { transform: translate(400px, 384px); }
+
+@media (max-width: 700px) {
+  .stg-stage .stg-cap { font-size: 32px; }
+  .stg-stage .stg-lbl, .stg-stage .stg-nm, .stg-stage .stg-tag { font-size: 26px; }
+  .stg-stage .stg-code { font-size: 24px; }
+  .stg-stage .stg-cell, .stg-stage .stg-cellv { font-size: 20px; }
+  .stg-stage .stg-tick { font-size: 26px; }
+  .stg-stage .stg-cardt { font-size: 27px; }
+  .stg-stage .stg-slogan { font-size: 50px; }
+  .stg-stage .stg-chipn { font-size: 27px; }
+  .stg-sec { display: none; }
+}
+
+footer { margin-top: 32px; }
+footer a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--ink-muted); }
+
+@media (min-width: 960px) {
+  .scene { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "lbl lbl" "stg lst" "anc lst"; column-gap: 28px; row-gap: 18px; align-items: start; }
+  #pause + label { grid-area: lbl; }
+  .stg-stage { grid-area: stg; }
+  .anchor { grid-area: anc; }
+  .lst-list { grid-area: lst; }
+}
+@media (max-width: 480px) {
+  .page { padding-inline: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pause, #pause + label { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stg-b1 { animation: stg-b1 var(--loop) linear infinite; }
+  .stg-svc { animation: stg-svc var(--loop) linear infinite; }
+  .stg-x-wire { animation: stg-x-wire var(--loop) linear infinite; }
+  .stg-b2 { animation: stg-b2 var(--loop) linear infinite; }
+  .stg-b3 { animation: stg-b3 var(--loop) linear infinite; }
+  .stg-b4 { animation: stg-b4 var(--loop) linear infinite; }
+  .stg-x-ring { animation: stg-x-ring var(--loop) linear infinite; }
+  .stg-x-tok { animation: stg-x-tok var(--loop) linear infinite; }
+  .stg-e0 { animation: stg-e0 var(--loop) ease-in-out infinite; }
+  .stg-e1 { animation: stg-e1 var(--loop) ease-in-out infinite; }
+  .stg-e2 { animation: stg-e2 var(--loop) ease-in-out infinite; }
+  .stg-e3 { animation: stg-e3 var(--loop) ease-in-out infinite; }
+  @keyframes stg-b1 { 0% { opacity: 0; } 0.4% { opacity: 1; } 7.6% { opacity: 1; } 8% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-svc { 0% { opacity: 0; } 7.6% { opacity: 0; } 8% { opacity: 1; } 87.2% { opacity: 1; } 87.6% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-wire { 0% { stroke-dashoffset: 88; } 8% { stroke-dashoffset: 88; } 9.6% { stroke-dashoffset: 0; } 87.6% { stroke-dashoffset: 0; } 88% { stroke-dashoffset: 88; } 100% { stroke-dashoffset: 88; } }
+  @keyframes stg-b2 { 0% { opacity: 0; } 8% { opacity: 0; } 8.4% { opacity: 1; } 13.28% { opacity: 1; } 13.68% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b3 { 0% { opacity: 0; } 13.28% { opacity: 0; } 13.68% { opacity: 1; } 22.8% { opacity: 1; } 23.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b4 { 0% { opacity: 0; } 19.2% { opacity: 0; } 19.6% { opacity: 1; } 22.8% { opacity: 1; } 23.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-ring { 0% { opacity: 1; } 4.4% { opacity: 1; } 4.8% { opacity: 0.4; } 5.6% { opacity: 1; } 100% { opacity: 1; } }
+  @keyframes stg-x-tok { 0% { opacity: 1; } 20% { opacity: 1; } 20.4% { opacity: 0.5; } 21.2% { opacity: 1; } 100% { opacity: 1; } }
+  @keyframes stg-e0 { 0% { opacity: 0; transform: translate(376px, 175px); } 2.8% { opacity: 0; transform: translate(376px, 175px); } 3.2% { opacity: 1; transform: translate(376px, 175px); } 4.8% { opacity: 1; transform: translate(376px, 305px); } 7.2% { opacity: 1; transform: translate(376px, 563px); } 7.6% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 175px); } }
+  @keyframes stg-e1 { 0% { opacity: 0; transform: translate(376px, 128px); } 8.4% { opacity: 0; transform: translate(376px, 128px); } 8.8% { opacity: 1; transform: translate(376px, 128px); } 10% { opacity: 1; transform: translate(376px, 214px); } 11.2% { opacity: 1; transform: translate(376px, 339px); } 12.8% { opacity: 1; transform: translate(376px, 563px); } 13.2% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-e2 { 0% { opacity: 0; transform: translate(376px, 128px); } 14.8% { opacity: 0; transform: translate(376px, 128px); } 15.2% { opacity: 1; transform: translate(376px, 128px); } 16.4% { opacity: 1; transform: translate(376px, 184px); } 17.36% { opacity: 1; transform: translate(376px, 339px); } 18.4% { opacity: 1; transform: translate(376px, 563px); } 18.8% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-e3 { 0% { opacity: 0; transform: translate(376px, 128px); } 20% { opacity: 0; transform: translate(376px, 128px); } 20.4% { opacity: 1; transform: translate(376px, 128px); } 21.04% { opacity: 1; transform: translate(376px, 184px); } 21.6% { opacity: 1; transform: translate(376px, 339px); } 22.4% { opacity: 1; transform: translate(376px, 563px); } 22.8% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  /* beats 5-8: stg-b7 (outline, Inbox arrow, Outbox, Outbox Processor / Relay pipeline, Billing) stays visible 34.8-69.2% and is shared by beat 7 (EF Core) and beat 8 (Cosmos);
+     stg-x-b7a holds the EF-only pieces (context label, code, Inbox card with its InboxMessages row, redelivery envelope stg-e6r, handler-skipped mark) and cross-fades with stg-b8 (Cosmos label, code, Inbox pill, Outbox Relay) at 63.2%;
+     EF: claim 39.6%, handler 43.6%, stamp 44.4%, commit 45.2%, Outbox Processor 46.8%, redelivery held at the Inbox 54.8-60.4%; Cosmos replays stg-x-inc / stg-x-cmt / stg-x-prc / stg-x-dot 65.6-69.2% */
+  .stg-b5 { animation: stg-b5 var(--loop) linear infinite; }
+  .stg-b6 { animation: stg-b6 var(--loop) linear infinite; }
+  .stg-b7 { animation: stg-b7 var(--loop) linear infinite; }
+  .stg-b8 { animation: stg-b8 var(--loop) linear infinite; }
+  .stg-x-b7a { animation: stg-x-b7a var(--loop) linear infinite; }
+  .stg-x-inb { animation: stg-x-inb var(--loop) linear infinite; }
+  .stg-x-cmt { animation: stg-x-cmt var(--loop) linear infinite; }
+  .stg-x-prc { animation: stg-x-prc var(--loop) linear infinite; }
+  .stg-x-dot { animation: stg-x-dot var(--loop) linear infinite; }
+  .stg-e4 { animation: stg-e4 var(--loop) ease-in-out infinite; }
+  .stg-e5 { animation: stg-e5 var(--loop) ease-in-out infinite; }
+  .stg-e6 { animation: stg-e6 var(--loop) ease-in-out infinite; }
+  .stg-e7 { animation: stg-e7 var(--loop) ease-in-out infinite; }
+  .stg-x-inc { animation: stg-x-inc var(--loop) linear infinite; }
+  .stg-x-iid { animation: stg-x-iid var(--loop) linear infinite; }
+  .stg-x-icl { animation: stg-x-icl var(--loop) linear infinite; }
+  .stg-x-ist { animation: stg-x-ist var(--loop) linear infinite; }
+  .stg-x-skp { animation: stg-x-skp var(--loop) linear infinite; }
+  .stg-e6r { animation: stg-e6r var(--loop) ease-in-out infinite; }
+  @keyframes stg-b5 { 0% { opacity: 0; } 23.2% { opacity: 0; } 23.6% { opacity: 1; } 28.4% { opacity: 1; } 28.8% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b6 { 0% { opacity: 0; } 28.8% { opacity: 0; } 29.2% { opacity: 1; } 34% { opacity: 1; } 34.4% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b7 { 0% { opacity: 0; } 34.4% { opacity: 0; } 34.8% { opacity: 1; } 69.2% { opacity: 1; } 69.6% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b8 { 0% { opacity: 0; } 63.2% { opacity: 0; } 63.6% { opacity: 1; } 69.2% { opacity: 1; } 69.6% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-b7a { 0% { opacity: 0; } 34.4% { opacity: 0; } 34.8% { opacity: 1; } 63.2% { opacity: 1; } 63.6% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-inb { 0% { opacity: 0; } 39.2% { opacity: 0; } 39.5% { opacity: 1; } 42.4% { opacity: 1; } 42.8% { opacity: 0; } 54.8% { opacity: 0; } 55.1% { opacity: 1; } 60.4% { opacity: 1; } 60.8% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-cmt { 0% { stroke-dashoffset: 40; } 45.2% { stroke-dashoffset: 40; } 46.4% { stroke-dashoffset: 0; } 63.2% { stroke-dashoffset: 0; } 63.5% { stroke-dashoffset: 40; } 67.12% { stroke-dashoffset: 40; } 67.68% { stroke-dashoffset: 0; } 69.6% { stroke-dashoffset: 0; } 69.84% { stroke-dashoffset: 40; } 100% { stroke-dashoffset: 40; } }
+  @keyframes stg-x-prc { 0% { opacity: 0; } 46.8% { opacity: 0; } 47.1% { opacity: 1; } 48% { opacity: 1; } 48.4% { opacity: 0; } 67.68% { opacity: 0; } 67.92% { opacity: 1; } 68.16% { opacity: 1; } 68.4% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-dot { 0% { opacity: 0; transform: translate(0px, 0px); } 48.4% { opacity: 0; transform: translate(0px, 0px); } 48.6% { opacity: 1; transform: translate(0px, 0px); } 50% { opacity: 1; transform: translate(0px, 78px); } 50.2% { opacity: 0; transform: translate(0px, 78px); } 50.3% { opacity: 0; transform: translate(0px, 0px); } 68.24% { opacity: 0; transform: translate(0px, 0px); } 68.4% { opacity: 1; transform: translate(0px, 0px); } 68.8% { opacity: 1; transform: translate(0px, 78px); } 68.96% { opacity: 0; transform: translate(0px, 78px); } 69.04% { opacity: 0; transform: translate(0px, 0px); } 100% { opacity: 0; transform: translate(0px, 0px); } }
+  @keyframes stg-x-inc { 0% { opacity: 0; } 65.6% { opacity: 0; } 65.84% { opacity: 1; } 66.72% { opacity: 1; } 66.96% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-iid { 0% { opacity: 0; } 39.6% { opacity: 0; } 40% { opacity: 1; } 62.8% { opacity: 1; } 63.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-icl { 0% { opacity: 0; } 39.6% { opacity: 0; } 40% { opacity: 1; } 44.4% { opacity: 1; } 44.8% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-ist { 0% { opacity: 0; } 44.4% { opacity: 0; } 44.8% { opacity: 1; } 62.8% { opacity: 1; } 63.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-skp { 0% { opacity: 0; } 55.6% { opacity: 0; } 56% { opacity: 1; } 60.4% { opacity: 1; } 60.8% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-e4 { 0% { opacity: 0; transform: translate(376px, 128px); } 25.2% { opacity: 0; transform: translate(376px, 128px); } 25.6% { opacity: 1; transform: translate(376px, 128px); } 26.4% { opacity: 1; transform: translate(376px, 184px); } 27.2% { opacity: 1; transform: translate(376px, 339px); } 28% { opacity: 1; transform: translate(376px, 563px); } 28.4% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-e5 { 0% { opacity: 0; transform: translate(376px, 128px); } 30.8% { opacity: 0; transform: translate(376px, 128px); } 31.2% { opacity: 1; transform: translate(376px, 128px); } 32% { opacity: 1; transform: translate(376px, 184px); } 32.8% { opacity: 1; transform: translate(376px, 339px); } 33.6% { opacity: 1; transform: translate(376px, 563px); } 34% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-e6 { 0% { opacity: 0; transform: translate(376px, 128px); } 35.2% { opacity: 0; transform: translate(376px, 128px); } 35.6% { opacity: 1; transform: translate(376px, 128px); } 36.8% { opacity: 1; transform: translate(376px, 184px); } 38% { opacity: 1; transform: translate(376px, 339px); } 39.2% { opacity: 1; transform: translate(376px, 420px); } 42.4% { opacity: 1; transform: translate(376px, 420px); } 43.6% { opacity: 1; transform: translate(376px, 635px); } 44% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-e6r { 0% { opacity: 0; transform: translate(376px, 128px); } 50.8% { opacity: 0; transform: translate(376px, 128px); } 51.2% { opacity: 1; transform: translate(376px, 128px); } 52.4% { opacity: 1; transform: translate(376px, 184px); } 53.6% { opacity: 1; transform: translate(376px, 339px); } 54.8% { opacity: 1; transform: translate(376px, 420px); } 60.4% { opacity: 1; transform: translate(376px, 420px); } 61% { opacity: 0; transform: translate(376px, 420px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-e7 { 0% { opacity: 0; transform: translate(376px, 128px); } 63.84% { opacity: 0; transform: translate(376px, 128px); } 64.08% { opacity: 1; transform: translate(376px, 128px); } 64.64% { opacity: 1; transform: translate(376px, 184px); } 65.2% { opacity: 1; transform: translate(376px, 339px); } 65.76% { opacity: 1; transform: translate(376px, 420px); } 66.88% { opacity: 1; transform: translate(376px, 420px); } 68.8% { opacity: 1; transform: translate(376px, 635px); } 69.2% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  /* beats 9-10 and final frame: Recovery at the Receiver (69.6-79.2%), SQL change feed (79.2-87.2%), then slogan, Inbox, Receiver, transport chips and card (87.2-98.8%); the shared Orders frame (stg-svc, stg-x-wire) stays visible through 87.2%, and the Storefront box is covered by the SQL Server box in beat 10; the handler card sits at slot y652 for beats 7-8, drops to y730 during Recovery so it stays clear of the Recovery rows, then y580 for beat 10 */
+  .stg-b9 { animation: stg-b9 var(--loop) linear infinite; }
+  .stg-b10 { animation: stg-b10 var(--loop) linear infinite; }
+  .stg-x-c1 { animation: stg-x-c1 var(--loop) linear infinite; }
+  .stg-x-c2 { animation: stg-x-c2 var(--loop) linear infinite; }
+  .stg-x-c3 { animation: stg-x-c3 var(--loop) linear infinite; }
+  .stg-x-cbc { animation: stg-x-cbc var(--loop) linear infinite; }
+  .stg-x-cbo { animation: stg-x-cbo var(--loop) linear infinite; }
+  .stg-x-eq { animation: stg-x-eq var(--loop) linear infinite; }
+  .stg-x-rx { animation: stg-x-rx var(--loop) linear infinite; }
+  .stg-x-trg { animation: stg-x-trg var(--loop) linear infinite; }
+  .stg-rdot { animation: stg-rdot var(--loop) linear infinite; }
+  .stg-e8 { animation: stg-e8 var(--loop) ease-in-out infinite; }
+  .stg-fin { animation: stg-fin var(--loop) linear infinite; }
+  .stg-card { animation: stg-card var(--loop) ease-in-out infinite; }
+  @keyframes stg-b9 { 0% { opacity: 0; } 69.2% { opacity: 0; } 69.6% { opacity: 1; } 78.8% { opacity: 1; } 79.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b10 { 0% { opacity: 0; } 78.8% { opacity: 0; } 79.2% { opacity: 1; } 86.8% { opacity: 1; } 87.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-c1 { 0% { opacity: 0; } 70.56% { opacity: 0; } 70.8% { opacity: 1; } 72% { opacity: 1; } 72.24% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-c2 { 0% { opacity: 0; } 72% { opacity: 0; } 72.24% { opacity: 1; } 73.44% { opacity: 1; } 73.68% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-c3 { 0% { opacity: 0; } 73.44% { opacity: 0; } 73.68% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-cbc { 0% { opacity: 1; } 74.16% { opacity: 1; } 74.48% { opacity: 0; } 79.2% { opacity: 0; } 79.44% { opacity: 1; } 100% { opacity: 1; } }
+  @keyframes stg-x-cbo { 0% { opacity: 0; } 74.16% { opacity: 0; } 74.48% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-eq { 0% { opacity: 0; } 75.04% { opacity: 0; } 75.36% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-rx { 0% { opacity: 0; } 70.56% { opacity: 0; } 70.8% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-trg { 0% { opacity: 0; } 80.8% { opacity: 0; } 81.04% { opacity: 1; } 82.4% { opacity: 1; } 82.72% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-rdot { 0% { opacity: 0; transform: translate(622px, 378px); } 69.92% { opacity: 0; transform: translate(622px, 378px); } 70.16% { opacity: 1; transform: translate(622px, 378px); } 70.72% { opacity: 1; transform: translate(622px, 418px); } 71.52% { opacity: 1; transform: translate(622px, 362px); } 72.16% { opacity: 1; transform: translate(622px, 418px); } 72.96% { opacity: 1; transform: translate(622px, 362px); } 73.6% { opacity: 1; transform: translate(622px, 418px); } 74.72% { opacity: 1; transform: translate(622px, 418px); } 75.84% { opacity: 1; transform: translate(622px, 584px); } 78.24% { opacity: 1; transform: translate(622px, 584px); } 78.56% { opacity: 0; transform: translate(622px, 584px); } 78.64% { opacity: 0; transform: translate(622px, 378px); } 100% { opacity: 0; transform: translate(622px, 378px); } }
+  @keyframes stg-e8 { 0% { opacity: 0; transform: translate(376px, 128px); } 82.8% { opacity: 0; transform: translate(376px, 128px); } 83.04% { opacity: 1; transform: translate(376px, 128px); } 84% { opacity: 1; transform: translate(376px, 184px); } 84.8% { opacity: 1; transform: translate(376px, 339px); } 85.6% { opacity: 1; transform: translate(376px, 339px); } 86.4% { opacity: 1; transform: translate(376px, 563px); } 86.8% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
+  @keyframes stg-fin { 0% { opacity: 0; } 87.2% { opacity: 0; } 88.4% { opacity: 1; } 98.8% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes stg-card { 0% { transform: translate(400px, 580px); } 34% { transform: translate(400px, 580px); } 34.8% { transform: translate(400px, 652px); } 69.2% { transform: translate(400px, 652px); } 70% { transform: translate(400px, 730px); } 78.8% { transform: translate(400px, 730px); } 79.6% { transform: translate(400px, 580px); } 86.8% { transform: translate(400px, 580px); } 88.4% { transform: translate(400px, 384px); } 98.8% { transform: translate(400px, 384px); } 100% { transform: translate(400px, 580px); } }
+  /* package list: a tick scales in as each package envelope is handled, and its row highlight sweeps across */
+  .lst-r0 .lst-tick { animation: lst-t0 var(--loop) ease-out infinite; }
+  .lst-r1 .lst-tick { animation: lst-t1 var(--loop) ease-out infinite; }
+  .lst-r2 .lst-tick { animation: lst-t2 var(--loop) ease-out infinite; }
+  .lst-r3 .lst-tick { animation: lst-t3 var(--loop) ease-out infinite; }
+  .lst-r4 .lst-tick { animation: lst-t4 var(--loop) ease-out infinite; }
+  .lst-r5 .lst-tick { animation: lst-t5 var(--loop) ease-out infinite; }
+  .lst-r6 .lst-tick { animation: lst-t6 var(--loop) ease-out infinite; }
+  .lst-r7 .lst-tick { animation: lst-t7 var(--loop) ease-out infinite; }
+  .lst-r8 .lst-tick { animation: lst-t8 var(--loop) ease-out infinite; }
+  .lst-r0 .lst-hl { animation: lst-h0 var(--loop) ease-in-out infinite; }
+  .lst-r1 .lst-hl { animation: lst-h1 var(--loop) ease-in-out infinite; }
+  .lst-r2 .lst-hl { animation: lst-h2 var(--loop) ease-in-out infinite; }
+  .lst-r3 .lst-hl { animation: lst-h3 var(--loop) ease-in-out infinite; }
+  .lst-r4 .lst-hl { animation: lst-h4 var(--loop) ease-in-out infinite; }
+  .lst-r5 .lst-hl { animation: lst-h5 var(--loop) ease-in-out infinite; }
+  .lst-r6 .lst-hl { animation: lst-h6 var(--loop) ease-in-out infinite; }
+  .lst-r7 .lst-hl { animation: lst-h7 var(--loop) ease-in-out infinite; }
+  .lst-r8 .lst-hl { animation: lst-h8 var(--loop) ease-in-out infinite; }
+  @keyframes lst-t0 { 0% { transform: scale(0); } 7.1% { transform: scale(0); } 7.6% { transform: scale(1.15); } 8.3% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t1 { 0% { transform: scale(0); } 12.7% { transform: scale(0); } 13.2% { transform: scale(1.15); } 13.9% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t2 { 0% { transform: scale(0); } 18.3% { transform: scale(0); } 18.8% { transform: scale(1.15); } 19.5% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t3 { 0% { transform: scale(0); } 22.3% { transform: scale(0); } 22.8% { transform: scale(1.15); } 23.5% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t4 { 0% { transform: scale(0); } 27.9% { transform: scale(0); } 28.4% { transform: scale(1.15); } 29.1% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t5 { 0% { transform: scale(0); } 33.5% { transform: scale(0); } 34% { transform: scale(1.15); } 34.7% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t6 { 0% { transform: scale(0); } 43.5% { transform: scale(0); } 44% { transform: scale(1.15); } 44.7% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t7 { 0% { transform: scale(0); } 68.7% { transform: scale(0); } 69.2% { transform: scale(1.15); } 69.9% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t8 { 0% { transform: scale(0); } 86.3% { transform: scale(0); } 86.8% { transform: scale(1.15); } 87.5% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-h0 { 0% { transform: scaleX(0); } 6.1% { transform: scaleX(0); } 7.6% { transform: scaleX(1); } 9.6% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h1 { 0% { transform: scaleX(0); } 11.7% { transform: scaleX(0); } 13.2% { transform: scaleX(1); } 15.2% { transform: scaleX(0); } 70.8% { transform: scaleX(0); } 72.3% { transform: scaleX(1); } 74.3% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h2 { 0% { transform: scaleX(0); } 17.3% { transform: scaleX(0); } 18.8% { transform: scaleX(1); } 20.8% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h3 { 0% { transform: scaleX(0); } 21.3% { transform: scaleX(0); } 22.8% { transform: scaleX(1); } 24.8% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h4 { 0% { transform: scaleX(0); } 26.9% { transform: scaleX(0); } 28.4% { transform: scaleX(1); } 30.4% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h5 { 0% { transform: scaleX(0); } 32.5% { transform: scaleX(0); } 34.0% { transform: scaleX(1); } 36.0% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h6 { 0% { transform: scaleX(0); } 42.5% { transform: scaleX(0); } 44.0% { transform: scaleX(1); } 46.0% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h7 { 0% { transform: scaleX(0); } 67.7% { transform: scaleX(0); } 69.2% { transform: scaleX(1); } 71.2% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h8 { 0% { transform: scaleX(0); } 85.3% { transform: scaleX(0); } 86.8% { transform: scaleX(1); } 88.8% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  #pause:checked ~ .stg-stage, #pause:checked ~ .stg-stage *, #pause:checked ~ .lst-list, #pause:checked ~ .lst-list * { animation-play-state: paused; }
+  .lst-list:focus-within, .lst-list:focus-within *, .lst-list:focus-within ~ .stg-stage, .lst-list:focus-within ~ .stg-stage * { animation-play-state: paused; }
+  @media (hover: hover) {
+    .lst-list:hover, .lst-list:hover *, .lst-list:hover ~ .stg-stage, .lst-list:hover ~ .stg-stage * { animation-play-state: paused; }
+  }
+}
+</style>
+</head>
+<body>
+<div class="page">
+<header class="top"><span class="wordmark">Chatter</span><span class="chip">.NET 10</span></header>
+<main>
+<h1>Same handlers. Any broker.</h1>
+<p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+<div class="cta-row">
+<a class="cta" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>View on GitHub</a>
+<code class="install">dotnet add package Chatter.CQRS</code>
+</div>
+<div class="scene">
+<input type="checkbox" id="pause">
+<label for="pause">Pause animation</label>
+<ol class="lst-list" role="list" aria-label="Chatter packages">
+<li class="lst-row lst-r0">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md">Chatter.CQRS</a><span class="lst-why">Dispatches Commands, Queries and Events in-process through the Message Dispatcher and a composable Command Pipeline.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.CQRS" aria-label="NuGet package Chatter.CQRS">NuGet</a>
+</li>
+<li class="lst-row lst-r1">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md">Chatter.MessageBrokers</a><span class="lst-why">Brokered Message Receivers, sending and routing, Inbox/Outbox reliability and Recovery: Retry, Circuit Breaker, Error Queue.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers" aria-label="NuGet package Chatter.MessageBrokers">NuGet</a>
+</li>
+<li class="lst-row lst-r2">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md">Chatter.MessageBrokers.AzureServiceBus</a><span class="lst-why">Azure Service Bus transport: queue receivers, topic subscriptions, sessions and cross-entity transactions.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus">NuGet</a>
+</li>
+<li class="lst-row lst-r3">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md">Chatter.MessageBrokers.AzureServiceBus.Auth</a><span class="lst-why">Microsoft Entra ID token authentication for the Azure Service Bus transport, including managed identity.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus.Auth">NuGet</a>
+</li>
+<li class="lst-row lst-r4">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/README.md">Chatter.MessageBrokers.RabbitMQ</a><span class="lst-why">RabbitMQ transport over externally provisioned exchanges and queues.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ" aria-label="NuGet package Chatter.MessageBrokers.RabbitMQ">NuGet</a>
+</li>
+<li class="lst-row lst-r5">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md">Chatter.MessageBrokers.SqlServiceBroker</a><span class="lst-why">SQL Server Service Broker transport over Service Broker conversations and queues you provision.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker" aria-label="NuGet package Chatter.MessageBrokers.SqlServiceBroker">NuGet</a>
+</li>
+<li class="lst-row lst-r6">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md">Chatter.MessageBrokers.Reliability.EntityFramework</a><span class="lst-why">EF Core Inbox, Outbox and Unit of Work, stored in your own DbContext.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework" aria-label="NuGet package Chatter.MessageBrokers.Reliability.EntityFramework">NuGet</a>
+</li>
+<li class="lst-row lst-r7">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md">Chatter.MessageBrokers.Reliability.Cosmos</a><span class="lst-why">Azure Cosmos DB Document Tier, Standalone Inbox Gate and change-feed Outbox Relay.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos" aria-label="NuGet package Chatter.MessageBrokers.Reliability.Cosmos">NuGet</a>
+</li>
+<li class="lst-row lst-r8">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md">Chatter.SqlChangeFeed</a><span class="lst-why">Watched SQL Server table changes delivered as RowInsertedEvent, RowUpdatedEvent and RowDeletedEvent over SQL Server Service Broker.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.SqlChangeFeed" aria-label="NuGet package Chatter.SqlChangeFeed">NuGet</a>
+</li>
+</ol>
+<div class="stg-stage"><svg viewBox="0 0 800 1000" role="img" aria-labelledby="stg-title stg-desc" xmlns="http://www.w3.org/2000/svg">
+<title id="stg-title">One PlaceOrder handler, reached through every Chatter package</title>
+<desc id="stg-desc">A PlaceOrderHandler is reached in-process, then across services from a Storefront to an Orders service. Messages arrive over Azure Service Bus, RabbitMQ and SQL Server Service Broker, with Inbox and Outbox reliability, Recovery and a SQL change feed. Commands are checked against an Inbox in a Reliability.EntityFramework Receiver, and a duplicate delivery is skipped. Each message labelled with a package name checks that package off in the list beside the stage. The final frame shows the same handler behind all three transports and all 9 packages checked.</desc>
+<defs>
+<marker id="stg-ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="stg-arrowhead" d="M0 0L10 5L0 10z"/></marker>
+</defs>
+<g class="stg-sc stg-svc" aria-hidden="true">
+<rect class="stg-box" x="40" y="48" width="720" height="120" rx="14"/>
+<text class="stg-lbl" x="60" y="78">Storefront</text>
+<text class="stg-code" x="400" y="114" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="stg-ln stg-x-wire" x1="400" y1="168" x2="400" y2="256" stroke-dasharray="88"/>
+<rect class="stg-box" x="40" y="256" width="720" height="634" rx="14"/>
+<text class="stg-lbl" x="60" y="286">Orders service</text>
+<rect class="stg-pill" x="160" y="334" width="480" height="44" rx="22"/>
+<text class="stg-nm" x="400" y="364" text-anchor="middle">Brokered Message Receiver</text>
+</g>
+<g class="stg-sc stg-b1"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">In-process</text>
+<rect class="stg-box" x="40" y="48" width="720" height="652" rx="14"/>
+<text class="stg-lbl" x="60" y="78">Orders service</text>
+<text class="stg-code" x="400" y="114" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="stg-ln" x1="400" y1="124" x2="400" y2="164" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="240" y="168" width="320" height="48" rx="24"/>
+<text class="stg-nm" x="400" y="200" text-anchor="middle">Message Dispatcher</text>
+<line class="stg-ln" x1="400" y1="216" x2="400" y2="262" marker-end="url(#stg-ah)"/>
+<rect class="stg-ring stg-x-ring" x="200" y="266" width="400" height="112" rx="56"/>
+<text class="stg-nm" x="400" y="329" text-anchor="middle">Command Pipeline</text>
+<line class="stg-ln-acc" x1="400" y1="378" x2="400" y2="508" marker-end="url(#stg-ah)"/>
+<g class="stg-mv stg-e0"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-74" y="2" width="68" height="30" rx="15"/><text class="stg-chipc" x="-40" y="24" text-anchor="middle">CQRS</text></g>
+</g></g>
+<g class="stg-sc stg-b2"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
+<text class="stg-code" x="432" y="220">.AddMessageBrokers(...)</text>
+<g class="stg-mv stg-e1"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-194" y="2" width="188" height="30" rx="15"/><text class="stg-chipc" x="-100" y="24" text-anchor="middle">MessageBrokers</text></g>
+</g></g>
+<g class="stg-sc stg-b3"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
+<line class="stg-ln-acc" x1="404" y1="199" x2="426" y2="199"/>
+<text class="stg-nm" x="432" y="206">Azure Service Bus</text>
+<text class="stg-code" x="400" y="700" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<g class="stg-mv stg-e2"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-206" y="2" width="200" height="30" rx="15"/><text class="stg-chipc" x="-106" y="24" text-anchor="middle">AzureServiceBus</text></g>
+</g></g>
+<g class="stg-sc stg-b4"><g aria-hidden="true">
+<rect class="stg-pill stg-x-tok" x="432" y="216" width="220" height="34" rx="17"/>
+<text class="stg-nm" x="542" y="240" text-anchor="middle">Entra ID token</text>
+<text class="stg-code" x="400" y="748" text-anchor="middle">.UseAadTokenProviderWithManagedIdentity(...)</text>
+<g class="stg-mv stg-e3"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-266" y="2" width="260" height="30" rx="15"/><text class="stg-chipc" x="-136" y="24" text-anchor="middle">AzureServiceBus.Auth</text></g>
+</g></g>
+<g class="stg-sc stg-b5"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
+<line class="stg-ln-acc" x1="404" y1="199" x2="426" y2="199"/>
+<text class="stg-nm" x="432" y="206">RabbitMQ</text>
+<text class="stg-code" x="400" y="700" text-anchor="middle">.AddRabbitMq(...)</text>
+<g class="stg-mv stg-e4"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-122" y="2" width="116" height="30" rx="15"/><text class="stg-chipc" x="-64" y="24" text-anchor="middle">RabbitMQ</text></g>
+</g></g>
+<g class="stg-sc stg-b6"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
+<line class="stg-ln-acc" x1="404" y1="199" x2="426" y2="199"/>
+<text class="stg-nm" x="432" y="206">SQL Server Service Broker</text>
+<text class="stg-code" x="400" y="700" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+<g class="stg-mv stg-e5"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-218" y="2" width="212" height="30" rx="15"/><text class="stg-chipc" x="-112" y="24" text-anchor="middle">SqlServiceBroker</text></g>
+</g></g>
+<g class="stg-sc stg-b7"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Reliability</text>
+<rect class="stg-outline" x="60" y="392" width="680" height="450" rx="12"/>
+<line class="stg-ln-acc" x1="430" y1="437" x2="458" y2="437" marker-end="url(#stg-ah)"/>
+<line class="stg-ln-acc" x1="400" y1="458" x2="400" y2="580" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="300" y="732" width="200" height="40" rx="20"/>
+<text class="stg-nm" x="400" y="758" text-anchor="middle">Outbox</text>
+<path class="stg-ok stg-x-cmt" d="M512 750l9 9 18-20" stroke-dasharray="40"/>
+<text class="stg-lbl" x="546" y="760">commit</text>
+<rect class="stg-pill" x="240" y="786" width="320" height="42" rx="21"/>
+<rect class="stg-ring stg-x-prc" x="240" y="786" width="320" height="42" rx="21"/>
+<line class="stg-ln-acc" x1="400" y1="828" x2="400" y2="904" marker-end="url(#stg-ah)"/>
+<circle class="stg-dot-evt stg-x-dot" cx="400" cy="828" r="5"/>
+<text class="stg-nm" x="414" y="872">OrderPlaced Event</text>
+<rect class="stg-stub" x="250" y="910" width="300" height="56" rx="10"/>
+<text class="stg-nm" x="400" y="944" text-anchor="middle">Billing service</text>
+<g class="stg-x-b7a">
+<text class="stg-lbl" x="740" y="286" text-anchor="end">EF Core &#183; your DbContext</text>
+<text class="stg-code stg-sec" x="400" y="318" text-anchor="middle">.WithInboxBehavior&lt;OrdersDbContext&gt;()</text>
+<rect class="stg-box" x="464" y="410" width="268" height="146" rx="10"/>
+<text class="stg-hd" x="482" y="438">InboxMessages</text>
+<line class="stg-ln" x1="464" y1="450" x2="732" y2="450"/>
+<text class="stg-cell" x="482" y="476">MessageId</text>
+<text class="stg-cellv stg-x-iid" x="716" y="476" text-anchor="end">7f3a</text>
+<text class="stg-cell" x="482" y="504">ReceivedByInboxAtUtc</text>
+<text class="stg-cellv stg-x-icl" x="716" y="504" text-anchor="end">null</text>
+<text class="stg-cellv stg-x-ist" x="716" y="504" text-anchor="end">09:41:07</text>
+<text class="stg-tag stg-x-icl" x="482" y="536">claimed</text>
+<text class="stg-tag stg-x-ist" x="482" y="536">stamped</text>
+<rect class="stg-ring stg-x-inb" x="464" y="410" width="268" height="146" rx="10"/>
+<g class="stg-x-skp"><line class="stg-sw" x1="372" y1="500" x2="428" y2="500"/><text class="stg-lbl" x="360" y="508" text-anchor="end">handler skipped</text></g>
+<text class="stg-nm" x="400" y="813" text-anchor="middle">Outbox Processor</text>
+<g class="stg-mv stg-e6r"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-230" y="2" width="224" height="30" rx="15"/><text class="stg-chipc" x="-118" y="24" text-anchor="middle">redelivery &#183; 7f3a</text></g>
+</g>
+<g class="stg-mv stg-e6"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-350" y="2" width="344" height="30" rx="15"/><text class="stg-chipc" x="-178" y="24" text-anchor="middle">Reliability.EntityFramework</text></g>
+</g></g>
+<g class="stg-sc stg-b8"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Reliability</text>
+<text class="stg-lbl" x="740" y="286" text-anchor="end">Cosmos DB &#183; your container</text>
+<text class="stg-code stg-sec" x="400" y="318" text-anchor="middle">.WithCosmosDocumentReliability&lt;PlaceOrder&gt;(...)</text>
+<rect class="stg-outline" x="60" y="392" width="680" height="450" rx="12"/>
+<line class="stg-ln-acc" x1="430" y1="437" x2="458" y2="437" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="464" y="410" width="268" height="48" rx="24"/>
+<text class="stg-nm" x="598" y="441" text-anchor="middle">Inbox</text>
+<rect class="stg-ring stg-x-inc" x="464" y="410" width="268" height="48" rx="24"/>
+<line class="stg-ln-acc" x1="400" y1="458" x2="400" y2="580" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="300" y="732" width="200" height="40" rx="20"/>
+<text class="stg-nm" x="400" y="758" text-anchor="middle">Outbox</text>
+<path class="stg-ok stg-x-cmt" d="M512 750l9 9 18-20" stroke-dasharray="40"/>
+<text class="stg-lbl" x="546" y="760">commit</text>
+<rect class="stg-pill" x="240" y="786" width="320" height="42" rx="21"/>
+<rect class="stg-ring stg-x-prc" x="240" y="786" width="320" height="42" rx="21"/>
+<text class="stg-nm" x="400" y="813" text-anchor="middle">Outbox Relay</text>
+<line class="stg-ln-acc" x1="400" y1="828" x2="400" y2="904" marker-end="url(#stg-ah)"/>
+<circle class="stg-dot-evt stg-x-dot" cx="400" cy="828" r="5"/>
+<text class="stg-nm" x="414" y="872">OrderPlaced Event</text>
+<rect class="stg-stub" x="250" y="910" width="300" height="56" rx="10"/>
+<text class="stg-nm" x="400" y="944" text-anchor="middle">Billing service</text>
+<g class="stg-mv stg-e7"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-242" y="2" width="236" height="30" rx="15"/><text class="stg-chipc" x="-124" y="24" text-anchor="middle">Reliability.Cosmos</text></g>
+</g></g>
+<g class="stg-sc stg-b9"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Recovery</text>
+<rect class="stg-pill" x="160" y="396" width="480" height="44" rx="22"/>
+<text class="stg-nm" x="184" y="425">Retry</text>
+<text class="stg-code stg-x-c1" x="290" y="425">1</text>
+<text class="stg-code stg-x-c2" x="290" y="425">2</text>
+<text class="stg-code stg-x-c3" x="290" y="425">3</text>
+<line class="stg-ln" x1="400" y1="440" x2="400" y2="456"/>
+<rect class="stg-pill" x="160" y="456" width="480" height="44" rx="22"/>
+<circle class="stg-swc" cx="400" cy="478" r="4"/>
+<circle class="stg-swc" cx="436" cy="478" r="4"/>
+<g class="stg-x-cbc"><line class="stg-sw" x1="400" y1="478" x2="436" y2="478"/><text class="stg-lbl" x="600" y="485" text-anchor="end">closed</text></g>
+<g class="stg-x-cbo"><line class="stg-sw" x1="400" y1="478" x2="424" y2="464"/><text class="stg-nm" x="600" y="485" text-anchor="end">open</text></g>
+<text class="stg-nm" x="184" y="485">Circuit Breaker</text>
+<g class="stg-x-eq"><line class="stg-ln" x1="400" y1="500" x2="400" y2="560" marker-end="url(#stg-ah)"/><text class="stg-nm" x="416" y="536">max receives exceeded</text></g>
+<rect class="stg-pill" x="160" y="562" width="480" height="44" rx="22"/>
+<text class="stg-nm" x="184" y="591">Error Queue</text>
+<path class="stg-x stg-x-rx" d="M576 346L596 366M596 346L576 366"/>
+<circle class="stg-dot-fail stg-mv stg-rdot" cx="0" cy="0" r="7"/>
+</g></g>
+<g class="stg-sc stg-b10"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="34" text-anchor="middle">SQL change feed</text>
+<rect class="stg-box" x="40" y="48" width="720" height="120" rx="14"/>
+<text class="stg-lbl" x="60" y="78">SQL Server &#183; Orders table</text>
+<rect class="stg-pill" x="60" y="90" width="124" height="36" rx="18"/>
+<text class="stg-nm" x="122" y="114" text-anchor="middle">Trigger</text>
+<rect class="stg-ring stg-x-trg" x="60" y="90" width="124" height="36" rx="18"/>
+<text class="stg-code" x="200" y="116">INSERT INTO dbo.Orders (...)</text>
+<text class="stg-nm" x="420" y="218">SQL Server Service Broker</text>
+<text class="stg-lbl" x="740" y="286" text-anchor="end">Event</text>
+<text class="stg-code" x="400" y="700" text-anchor="middle">IMessageHandler&lt;RowInsertedEvent&lt;OrderRow&gt;&gt;</text>
+<text class="stg-code" x="400" y="744" text-anchor="middle">.AddSqlChangeFeed&lt;OrderRow&gt;(...)</text>
+<g class="stg-mv stg-e8"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-182" y="2" width="176" height="30" rx="15"/><text class="stg-chipc" x="-94" y="24" text-anchor="middle">SqlChangeFeed</text></g>
+</g></g>
+<g class="stg-fin" aria-hidden="true">
+<text class="stg-slogan" x="400" y="230" text-anchor="middle">Same handlers. Any broker.</text>
+<path class="stg-ln-acc" d="M400 450V706M140 690H660M140 690V706M660 690V706"/>
+<rect class="stg-pill" x="250" y="492" width="300" height="50" rx="25"/>
+<text class="stg-nm" x="400" y="524" text-anchor="middle">Inbox</text>
+<rect class="stg-pill" x="160" y="592" width="480" height="46" rx="23"/>
+<text class="stg-nm" x="400" y="622" text-anchor="middle">Brokered Message Receiver</text>
+<rect class="stg-pill" x="25" y="706" width="230" height="130" rx="12"/>
+<text class="stg-chipn" x="140" y="750" text-anchor="middle"><tspan x="140">Azure </tspan><tspan x="140" dy="28">Service Bus</tspan></text>
+<text class="stg-chipc stg-sec" x="140" y="806" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<rect class="stg-pill" x="285" y="706" width="230" height="130" rx="12"/>
+<text class="stg-chipn" x="400" y="764" text-anchor="middle">RabbitMQ</text>
+<text class="stg-chipc stg-sec" x="400" y="806" text-anchor="middle">.AddRabbitMq(...)</text>
+<rect class="stg-pill" x="545" y="706" width="230" height="130" rx="12"/>
+<text class="stg-chipn" x="660" y="750" text-anchor="middle"><tspan x="660">SQL Server </tspan><tspan x="660" dy="28">Service Broker</tspan></text>
+<text class="stg-chipc stg-sec" x="660" y="806" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+</g>
+<g class="stg-card" aria-hidden="true">
+<rect class="stg-glow" x="-288" y="-64" width="576" height="132" rx="18" opacity="0.22"/>
+<rect class="stg-cardbox" x="-280" y="-58" width="560" height="116" rx="12"/>
+<text class="stg-cardt" x="0" y="-4" text-anchor="middle"><tspan x="0">public class PlaceOrderHandler </tspan><tspan x="0" dy="34">: IMessageHandler&lt;PlaceOrder&gt;</tspan></text>
+</g>
+</svg></div>
+<p class="anchor">One handler follows a message through every feature, and each package is checked off as it is used.</p>
+</div>
+</main>
+<footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter: Same handlers. Any broker.</title>
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<style>
+:root {
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --warn: #F0B429;
+  --fail: #F47067;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --loop: 16s;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 40px; }
+header.top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wordmark { font-weight: 700; font-size: 1.25rem; letter-spacing: 0.01em; color: var(--ink); }
+.chip {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--accent-ink);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+h1 {
+  margin: 28px 0 12px;
+  font-size: clamp(2rem, 6.2vw, 3.5rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+.lede { margin: 0 0 24px; max-width: 62ch; color: var(--ink-muted); font-size: 1.0625rem; }
+
+/* pause control: native checkbox, no script */
+#pause { position: absolute; width: 44px; height: 44px; margin: 0; opacity: 0; cursor: pointer; }
+label[for="pause"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.9375rem;
+  cursor: pointer;
+  user-select: none;
+}
+label[for="pause"]::before {
+  content: "";
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--ink-muted);
+  border-radius: 4px;
+  text-align: center;
+  line-height: 14px;
+  font-size: 14px;
+}
+#pause:checked + label[for="pause"]::before { content: "\2713"; border-color: var(--accent-ink); color: var(--ink); background: var(--accent); }
+#pause:focus-visible + label[for="pause"] { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+.stage { display: block; width: 100%; max-width: 760px; height: auto; margin: 16px auto 0; }
+.stage .panel { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.stage .strip { fill: var(--surface); stroke: var(--accent-ink); stroke-width: 1.5; }
+.stage text { fill: var(--ink); }
+.stage .code { font-family: var(--mono); font-size: 21px; white-space: pre; }
+.stage .k { fill: var(--accent-ink); }
+.stage .c { fill: var(--ink-muted); }
+.stage .cap { font-family: var(--sans); font-size: 20px; fill: var(--ink-muted); }
+.stage .hd { font-family: var(--sans); font-size: 18px; font-weight: 600; fill: var(--ink-muted); }
+.stage .sec { font-family: var(--sans); font-size: 15px; fill: var(--ink-muted); }
+.stage .reg { font-family: var(--mono); font-size: 24px; font-weight: 600; fill: var(--accent-ink); white-space: pre; }
+.stage .slogan { font-family: var(--sans); font-size: 28px; font-weight: 700; fill: var(--ink); }
+.stage .wire { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 0; opacity: 0; }
+.stage .plumb, .stage .lbl-before { opacity: 0; }
+
+.anchor {
+  margin: 20px auto 0;
+  max-width: 760px;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.cta-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 16px 24px; margin-top: 28px; }
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 24px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent-ink);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 1.0625rem;
+  text-decoration: none;
+}
+.cta svg { width: 20px; height: 20px; fill: currentColor; }
+.install {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+footer { margin-top: 40px; text-align: center; font-size: 0.875rem; }
+footer a { color: var(--ink-muted); }
+a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+@media (max-width: 520px) {
+  .stage .sec { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #pause, label[for="pause"] { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stage .wire { animation: wires var(--loop) ease-in-out infinite; }
+  .stage .plumb-top { animation: foldUp var(--loop) ease-in-out infinite; }
+  .stage .plumb-bot { animation: foldDown var(--loop) ease-in-out infinite; }
+  .stage .plumb-mid { animation: foldMid var(--loop) ease-in-out infinite; }
+  .stage .handler { animation: handlerIn var(--loop) ease-in-out infinite; }
+  .stage .lbl-before { animation: lblBefore var(--loop) ease-in-out infinite; }
+  .stage .lbl-after { animation: lblAfter var(--loop) ease-in-out infinite; }
+  .stage .strip-wrap { animation: stripIn var(--loop) ease-in-out infinite; }
+  .stage .t-azure { animation: tAzure var(--loop) ease-in-out infinite; }
+  .stage .t-rabbit { animation: tRabbit var(--loop) ease-in-out infinite; }
+  .stage .t-sql { animation: tSql var(--loop) ease-in-out infinite; }
+  .stage .or-lines { animation: orLines var(--loop) ease-in-out infinite; }
+  .stage .slogan-wrap { animation: sloganIn var(--loop) ease-in-out infinite; }
+  #pause:checked ~ .stage *, #pause:checked ~ .stage { animation-play-state: paused; }
+}
+
+@keyframes wires {
+  0%   { opacity: 0; stroke-dashoffset: 1; }
+  3%   { opacity: 1; stroke-dashoffset: 1; }
+  14%  { opacity: 1; stroke-dashoffset: 0; }
+  25%  { opacity: 1; stroke-dashoffset: 0; }
+  33%  { opacity: 0; stroke-dashoffset: 0; }
+  100% { opacity: 0; stroke-dashoffset: 0; }
+}
+@keyframes foldUp {
+  0%, 25% { opacity: 1; transform: translate(0, 0); }
+  36%, 100% { opacity: 0; transform: translate(0, -30px); }
+}
+@keyframes foldDown {
+  0%, 25% { opacity: 1; transform: translate(0, 0); }
+  36%, 100% { opacity: 0; transform: translate(0, 30px); }
+}
+@keyframes foldMid {
+  0%, 25% { opacity: 1; transform: translate(0, 0); }
+  32%, 100% { opacity: 0; transform: translate(-24px, 0); }
+}
+@keyframes handlerIn {
+  0%, 26% { opacity: 0; transform: translate(0, 14px); }
+  40%, 100% { opacity: 1; transform: translate(0, 0); }
+}
+@keyframes lblBefore {
+  0%, 24% { opacity: 1; }
+  30%, 100% { opacity: 0; }
+}
+@keyframes lblAfter {
+  0%, 28% { opacity: 0; }
+  36%, 100% { opacity: 1; }
+}
+@keyframes stripIn {
+  0%, 40% { opacity: 0; transform: translate(0, 12px); }
+  46%, 100% { opacity: 1; transform: translate(0, 0); }
+}
+@keyframes tAzure {
+  0%, 44% { opacity: 0; transform: translate(14px, 0); }
+  47%, 54% { opacity: 1; transform: translate(0, 0); }
+  57%, 73% { opacity: 0; transform: translate(-14px, 0); }
+  74%, 76% { opacity: 0; transform: translate(14px, 0); }
+  79%, 100% { opacity: 1; transform: translate(0, 0); }
+}
+@keyframes tRabbit {
+  0%, 53% { opacity: 0; transform: translate(14px, 0); }
+  57%, 65% { opacity: 1; transform: translate(0, 0); }
+  68%, 100% { opacity: 0; transform: translate(-14px, 0); }
+}
+@keyframes tSql {
+  0%, 64% { opacity: 0; transform: translate(14px, 0); }
+  68%, 76% { opacity: 1; transform: translate(0, 0); }
+  79%, 100% { opacity: 0; transform: translate(-14px, 0); }
+}
+@keyframes orLines {
+  0%, 78% { opacity: 0; }
+  82%, 100% { opacity: 1; }
+}
+@keyframes sloganIn {
+  0%, 87% { opacity: 0; }
+  91%, 100% { opacity: 1; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <span class="wordmark">Chatter</span>
+    <span class="chip">.NET 10</span>
+  </header>
+
+  <h1>Same handlers. Any broker.</h1>
+  <p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+
+  <input type="checkbox" id="pause">
+  <label for="pause">Pause animation</label>
+
+  <svg class="stage" viewBox="0 0 640 610" role="img" aria-labelledby="stage-title stage-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="stage-title">Handler code before and after Chatter</title>
+    <desc id="stage-desc">Receive loop, Retry, Circuit Breaker and Error Queue plumbing folds away, leaving only PlaceOrderHandler. The handler stays the same while the registration line switches between Azure Service Bus, RabbitMQ and SQL Server Service Broker.</desc>
+
+    <rect class="panel" x="8" y="8" width="624" height="372" rx="10"/>
+    <circle cx="28" cy="28" r="5" fill="#2A2540"/>
+    <circle cx="46" cy="28" r="5" fill="#2A2540"/>
+    <circle cx="64" cy="28" r="5" fill="#2A2540"/>
+    <text class="hd lbl-after" x="84" y="34">With Chatter</text>
+    <text class="hd lbl-before" x="84" y="34">Before</text>
+    <line x1="9" y1="48" x2="631" y2="48" stroke="#2A2540" stroke-width="2"/>
+
+    <!-- plumbing, folds away -->
+    <g class="plumb plumb-top">
+      <text class="code" x="28" y="76"><tspan class="k">while</tspan> running:</text>
+      <text class="code" x="28" y="104">  msg = receive(queue)</text>
+      <text class="code" x="28" y="132">  body = deserialize(msg)</text>
+      <text class="code" x="28" y="160">  handler = find_handler(body)</text>
+      <text class="code" x="28" y="188">  <tspan class="k">retry</tspan>(3):</text>
+      <text class="code" x="28" y="216">    <tspan class="k">circuit_breaker</tspan>:</text>
+    </g>
+    <g class="plumb plumb-mid">
+      <text class="code" x="28" y="244">      handler.handle(body)</text>
+    </g>
+    <g class="plumb plumb-bot">
+      <text class="code" x="28" y="272">  <tspan class="k">if</tspan> msg.receives &gt; max:</text>
+      <text class="code" x="28" y="300">    move_to_error_queue(msg)</text>
+      <path class="sec" d="M396 287 L410 301 M410 287 L396 301" fill="none" stroke="#F47067" stroke-width="3" stroke-linecap="round"/>
+      <text class="sec" x="420" y="300">max receives exceeded</text>
+      <text class="code" x="28" y="328">  <tspan class="k">else</tspan>:</text>
+      <text class="code" x="28" y="356">    settle(msg)</text>
+    </g>
+
+    <!-- tangled wire strokes over the before panel -->
+    <path class="wire" pathLength="1" stroke="#512BD4" d="M12 70 C200 20 220 200 330 150 S520 330 628 300"/>
+    <path class="wire" pathLength="1" stroke="#F0B429" d="M12 340 C160 250 260 380 360 240 S540 100 628 130"/>
+    <path class="wire" pathLength="1" stroke="#F47067" d="M12 190 C140 330 260 60 380 200 S520 370 628 220"/>
+    <path class="wire" pathLength="1" stroke="#A78BFA" d="M12 260 C120 100 300 340 420 110 S560 300 628 60"/>
+
+    <!-- the handler, the part that stays -->
+    <g class="handler">
+      <rect x="20" y="118" width="4" height="196" rx="2" fill="#512BD4"/>
+      <text class="code" x="36" y="138"><tspan class="k">public class</tspan> PlaceOrderHandler</text>
+      <text class="code" x="36" y="166">    : IMessageHandler&lt;PlaceOrder&gt; {</text>
+      <text class="code" x="36" y="194">  <tspan class="k">public async</tspan> Task Handle(...) {</text>
+      <text class="code" x="36" y="222">    <tspan class="k">await</tspan> context.Publish(</text>
+      <text class="code" x="36" y="250">      <tspan class="k">new</tspan> OrderPlaced { ... });</text>
+      <text class="code" x="36" y="278">  }</text>
+      <text class="code" x="36" y="306">}</text>
+    </g>
+
+    <!-- transport strip -->
+    <g class="strip-wrap">
+      <rect class="strip" x="8" y="398" width="624" height="150" rx="10"/>
+      <g class="t-azure">
+        <text class="cap" x="28" y="430">Azure Service Bus</text>
+        <text class="reg" x="28" y="470">.AddAzureServiceBus(...)</text>
+      </g>
+      <g class="t-rabbit" opacity="0" style="opacity:0">
+        <text class="cap" x="28" y="430">RabbitMQ</text>
+        <text class="reg" x="28" y="470">.AddRabbitMq(...)</text>
+      </g>
+      <g class="t-sql" style="opacity:0">
+        <text class="cap" x="28" y="430">SQL Server Service Broker</text>
+        <text class="reg" x="28" y="470">.AddSqlServiceBroker(...)</text>
+      </g>
+      <g class="or-lines">
+        <text class="code" x="28" y="508">or .AddRabbitMq(...) ·</text>
+        <text class="code" x="28" y="536">or .AddSqlServiceBroker(...)</text>
+      </g>
+    </g>
+
+    <g class="slogan-wrap">
+      <text class="slogan" x="320" y="596" text-anchor="middle">Same handlers. Any broker.</text>
+    </g>
+  </svg>
+
+  <p class="anchor">Dispatch(PlaceOrder) &rarr; PlaceOrderHandler &rarr; context.Publish(new OrderPlaced { ... })</p>
+
+  <div class="cta-row">
+    <a class="cta" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>View on GitHub</a>
+    <code class="install">dotnet add package Chatter.CQRS</code>
+  </div>
+
+  <footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</div>
+</body>
+</html>

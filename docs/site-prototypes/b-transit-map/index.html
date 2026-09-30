@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter: Same handlers. Any broker.</title>
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<style>
+:root{
+  --bg:#0B0A12;--surface:#16131F;--line:#2A2540;--ink:#EDEAF6;--ink-muted:#A9A3BD;
+  --accent:#512BD4;--accent-ink:#A78BFA;--warn:#F0B429;--fail:#F47067;
+  --line-azure:#38BDF8;--line-rabbit:#FB923C;--line-sql:#4ADE80;--line-rel:#F472B6;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --loop:18s;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--sans)}
+.wrap{max-width:820px;margin:0 auto;padding:24px 20px 40px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem}
+.chip{font:12px/1 var(--mono);border:1px solid var(--line);color:var(--ink-muted);padding:4px 8px;border-radius:999px}
+h1{font-size:clamp(2rem,7vw,3.25rem);line-height:1.1;margin:28px 0 12px}
+.lede{color:var(--ink-muted);max-width:62ch;margin:0 0 24px}
+.cta-row{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin:0 0 20px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 24px;background:var(--accent);color:#fff;border:1px solid var(--accent-ink);border-radius:8px;font-weight:600;text-decoration:none}
+.btn:hover{border-color:var(--ink)}
+.install{display:inline-block;max-width:100%;font:14px/1.5 var(--mono);color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 14px;overflow-wrap:anywhere;-webkit-user-select:all;user-select:all}
+a:focus-visible,#pause:focus-visible+label{outline:2px solid var(--ink);outline-offset:3px}
+#pause{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%)}
+#pause+label{display:inline-flex;align-items:center;gap:10px;min-width:44px;min-height:44px;margin:8px 0 0;padding:0 14px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;cursor:pointer}
+#pause+label::before{content:"";display:grid;place-items:center;width:20px;height:20px;border:2px solid var(--ink);border-radius:4px;font-size:14px;line-height:1;color:var(--bg)}
+#pause:checked+label::before{content:"\2713";background:var(--accent-ink)}
+.stage{width:100%;max-width:760px;margin:12px auto 0;padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.map{display:block;width:100%;height:auto}
+.anchor{font:14px/1.6 var(--mono);color:var(--ink-muted);margin:16px 0 0;overflow-wrap:anywhere;text-align:center}
+footer{margin-top:32px;font-size:.875rem;color:var(--ink-muted)}
+footer a{color:var(--ink-muted)}
+
+/* SVG static final frame */
+.seg{fill:none;stroke-width:6;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:0}
+.link{fill:none;stroke-width:3;stroke-linejoin:round}
+.core{stroke:var(--accent-ink)}
+.azure{stroke:var(--line-azure)}
+.rabbit{stroke:var(--line-rabbit)}
+.sql{stroke:var(--line-sql)}
+.rel{stroke:var(--line-rel)}
+.stn{fill:var(--bg);stroke-width:4}
+.hub{fill:var(--bg);stroke:var(--ink);stroke-width:4}
+.name{fill:var(--ink);font:600 22px var(--sans)}
+.tag{fill:var(--ink-muted);font:22px var(--sans)}
+.code{fill:var(--ink-muted);font:17px var(--mono)}
+.box{fill:var(--surface);stroke:var(--ink-muted);stroke-width:2}
+.slogan{fill:var(--ink);font:700 30px var(--sans)}
+.ring{fill:none;stroke:var(--accent-ink);stroke-width:3;opacity:0}
+.badge circle{fill:var(--surface);stroke:var(--ink);stroke-width:2}
+.badge path{fill:none;stroke:var(--ink);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+.train{opacity:0}
+.train .body{stroke:var(--bg);stroke-width:2}
+.train .win{fill:var(--bg)}
+.train.a .body{fill:var(--line-azure)}
+.train.b .body{fill:var(--line-rabbit)}
+.train.c .body{fill:var(--line-sql)}
+
+@media (max-width:600px){
+  .wrap{padding:16px 14px 32px}
+  .sec{display:none}
+}
+
+@media (prefers-reduced-motion:reduce){
+  #pause,#pause+label{display:none}
+}
+
+@media (prefers-reduced-motion:no-preference){
+  .seg{animation:draw var(--loop) ease-out infinite}
+  .fade{animation:fadein var(--loop) ease-out infinite}
+  .slogan{animation:sloganin var(--loop) ease-out infinite}
+  .train.a{animation:trainA var(--loop) linear infinite}
+  .train.b{animation:trainB var(--loop) linear infinite}
+  .train.c{animation:trainC var(--loop) linear infinite}
+  .ring{animation:ringpulse var(--loop) ease-in-out infinite}
+  .badge{transform-box:fill-box;transform-origin:center;animation:badgepulse var(--loop) ease-in-out infinite}
+  #pause:checked ~ .stage *,#pause:checked ~ .stage{animation-play-state:paused}
+
+  @keyframes draw{0%{stroke-dashoffset:1}9%,100%{stroke-dashoffset:0}}
+  @keyframes fadein{0%{opacity:0}9%,100%{opacity:1}}
+  @keyframes sloganin{0%,84%{opacity:0}88%,100%{opacity:1}}
+  @keyframes trainA{
+    0%,9.9%{transform:translate(140px,64px);opacity:0}
+    10%{transform:translate(140px,64px);opacity:1}
+    13%{transform:translate(140px,130px);opacity:1}
+    16%{transform:translate(140px,230px);opacity:1}
+    17.5%{transform:translate(172px,230px);opacity:1}
+    20%{transform:translate(172px,310px);opacity:1}
+    21.5%{transform:translate(230px,310px);opacity:1}
+    27%{transform:translate(442px,310px);opacity:1}
+    30%{transform:translate(442px,440px);opacity:1}
+    31.5%,33.5%{transform:translate(442px,458px);opacity:1}
+    34%,100%{transform:translate(442px,458px);opacity:0}
+  }
+  @keyframes trainB{
+    0%,34.9%{transform:translate(140px,64px);opacity:0}
+    35%{transform:translate(140px,64px);opacity:1}
+    38%{transform:translate(140px,130px);opacity:1}
+    41%{transform:translate(140px,230px);opacity:1}
+    42.5%{transform:translate(154px,230px);opacity:1}
+    46%{transform:translate(154px,470px);opacity:1}
+    47.5%{transform:translate(230px,470px);opacity:1}
+    53%{transform:translate(426px,470px);opacity:1}
+    55%,57.5%{transform:translate(440px,470px);opacity:1}
+    58%,100%{transform:translate(440px,470px);opacity:0}
+  }
+  @keyframes trainC{
+    0%,59.9%{transform:translate(140px,64px);opacity:0}
+    60%{transform:translate(140px,64px);opacity:1}
+    63%{transform:translate(140px,130px);opacity:1}
+    66%{transform:translate(140px,230px);opacity:1}
+    67.5%{transform:translate(136px,230px);opacity:1}
+    72%{transform:translate(136px,570px);opacity:1}
+    73.5%{transform:translate(230px,570px);opacity:1}
+    79%{transform:translate(442px,570px);opacity:1}
+    82%,83.5%{transform:translate(442px,482px);opacity:1}
+    84%,100%{transform:translate(442px,482px);opacity:0}
+  }
+  @keyframes ringpulse{
+    0%,31%{opacity:0}32%{opacity:1}34%{opacity:0}
+    54.5%{opacity:0}55.5%{opacity:1}57.5%{opacity:0}
+    81.5%{opacity:0}82.5%{opacity:1}84.5%,100%{opacity:0}
+  }
+  @keyframes badgepulse{
+    0%,31%{transform:scale(1)}32.5%{transform:scale(1.35)}34%{transform:scale(1)}
+    54.5%{transform:scale(1)}56%{transform:scale(1.35)}57.5%{transform:scale(1)}
+    81.5%{transform:scale(1)}83%{transform:scale(1.35)}84.5%,100%{transform:scale(1)}
+  }
+}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="brand"><span>Chatter</span><span class="chip">.NET 10</span></div>
+  <h1>Same handlers. Any broker.</h1>
+  <p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+  <div class="cta-row">
+    <a class="btn" href="https://github.com/brenpike/Chatter">View on GitHub</a>
+    <code class="install">dotnet add package Chatter.CQRS</code>
+  </div>
+
+  <input type="checkbox" id="pause">
+  <label for="pause">Pause animation</label>
+
+  <figure class="stage">
+  <svg class="map" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 960" role="img" aria-labelledby="map-title map-desc">
+    <title id="map-title">Chatter packages as a transit map</title>
+    <desc id="map-desc">Nine Chatter packages are stations, with MessageBrokers as the interchange between CQRS and the Azure Service Bus, RabbitMQ and SQL Server Service Broker lines. Three trains carry an OrderPlaced Event from the Orders service through CQRS and MessageBrokers and over each transport to the same IMessageHandler&lt;OrderPlaced&gt; in the Billing service.</desc>
+
+    <!-- 8 package-to-package track segments (F1 dependency edges) -->
+    <g>
+      <path class="seg core"   pathLength="1" d="M140 130V230"/>
+      <path class="seg azure"  pathLength="1" d="M172 230V310H230"/>
+      <path class="seg rabbit" pathLength="1" d="M154 230V470H230"/>
+      <path class="seg sql"    pathLength="1" d="M136 230V570H230"/>
+      <path class="seg rel"    pathLength="1" d="M118 230V730H230"/>
+      <path class="seg rel"    pathLength="1" d="M100 230V800H470"/>
+      <path class="seg azure"  pathLength="1" d="M230 310V365H300"/>
+      <path class="seg sql"    pathLength="1" d="M230 570V625H300"/>
+    </g>
+
+    <g class="fade">
+      <!-- service connections (not package tracks) -->
+      <path class="link core"   d="M140 64V130"/>
+      <path class="link azure"  d="M230 310H442V440"/>
+      <path class="link rabbit" d="M230 470H426"/>
+      <path class="link sql"    d="M230 570H442V500"/>
+
+      <!-- termini -->
+      <rect class="box" x="45" y="24" width="190" height="40" rx="8"/>
+      <text class="name" x="140" y="51" text-anchor="middle">Orders service</text>
+      <text class="code sec" x="156" y="92">context.Publish(</text>
+      <text class="code sec" x="156" y="112">new OrderPlaced { ... })</text>
+
+      <rect class="box" x="426" y="440" width="194" height="60" rx="8"/>
+      <text class="name" x="523" y="477" text-anchor="middle">Billing service</text>
+      <text class="code sec" x="620" y="405" text-anchor="end">IMessageHandler&lt;</text>
+      <text class="code sec" x="620" y="425" text-anchor="end">OrderPlaced&gt;</text>
+
+      <!-- core -->
+      <circle class="stn core" cx="140" cy="130" r="11"/>
+      <text class="name" x="164" y="136">CQRS</text>
+      <text class="tag" x="156" y="196">Core line</text>
+      <rect class="hub" x="90" y="214" width="100" height="32" rx="16"/>
+      <text class="name" x="204" y="236">MessageBrokers</text>
+
+      <!-- Azure Service Bus line -->
+      <circle class="stn azure" cx="230" cy="310" r="11"/>
+      <text class="name" x="216" y="286">AzureServiceBus</text>
+      <text class="tag" x="250" y="336">Azure line</text>
+      <circle class="stn azure" cx="300" cy="365" r="11"/>
+      <text class="name" x="300" y="400" text-anchor="middle">AzureServiceBus.Auth</text>
+
+      <!-- RabbitMQ line -->
+      <circle class="stn rabbit" cx="230" cy="470" r="11"/>
+      <text class="name" x="216" y="446">RabbitMQ</text>
+      <text class="tag" x="250" y="496">RabbitMQ line</text>
+
+      <!-- SQL Server Service Broker line -->
+      <circle class="stn sql" cx="230" cy="570" r="11"/>
+      <text class="name" x="216" y="546">SqlServiceBroker</text>
+      <text class="tag" x="250" y="596">SQL Server line</text>
+      <circle class="stn sql" cx="300" cy="625" r="11"/>
+      <text class="name" x="300" y="660" text-anchor="middle">SqlChangeFeed</text>
+
+      <!-- Reliability branch -->
+      <circle class="stn rel" cx="230" cy="730" r="11"/>
+      <text class="name" x="216" y="696">Reliability.<tspan x="216" dy="22">EntityFramework</tspan></text>
+      <text class="tag" x="254" y="770">Reliability line</text>
+      <circle class="stn rel" cx="470" cy="800" r="11"/>
+      <text class="name" x="454" y="762">Reliability.<tspan x="454" dy="22">Cosmos</tspan></text>
+
+      <!-- legend -->
+      <text class="tag" x="24" y="866">Station names drop the Chatter. prefix.</text>
+      <text class="tag" x="24" y="894">Lines follow package dependencies.</text>
+
+      <!-- Billing success check -->
+      <g class="badge">
+        <circle cx="620" cy="440" r="16"/>
+        <path d="M612 441L618 447L629 434"/>
+      </g>
+    </g>
+
+    <rect class="ring" x="420" y="434" width="206" height="72" rx="12"/>
+
+    <text class="slogan" x="320" y="940" text-anchor="middle">Same handlers. Any broker.</text>
+
+    <!-- trains: Orders service to CQRS to MessageBrokers to transport to Billing service -->
+    <g class="train a"><rect class="body" x="-14" y="-9" width="28" height="18" rx="4"/><rect class="win" x="-9" y="-5" width="6" height="6"/><rect class="win" x="1" y="-5" width="6" height="6"/></g>
+    <g class="train b"><rect class="body" x="-14" y="-9" width="28" height="18" rx="4"/><rect class="win" x="-9" y="-5" width="6" height="6"/><rect class="win" x="1" y="-5" width="6" height="6"/></g>
+    <g class="train c"><rect class="body" x="-14" y="-9" width="28" height="18" rx="4"/><rect class="win" x="-9" y="-5" width="6" height="6"/><rect class="win" x="1" y="-5" width="6" height="6"/></g>
+  </svg>
+  </figure>
+
+  <p class="anchor">IMessageHandler&lt;OrderPlaced&gt; &middot; .AddAzureServiceBus(...) | .AddRabbitMq(...) | .AddSqlServiceBroker(...)</p>
+
+  <footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</main>
+</body>
+</html>

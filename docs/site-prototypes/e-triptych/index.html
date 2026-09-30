@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter: Same handlers. Any broker.</title>
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<style>
+:root {
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --warn: #F0B429;
+  --fail: #F47067;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --loop: 12s;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 40px; }
+header.top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wordmark { font-weight: 700; font-size: 1.25rem; letter-spacing: 0.01em; color: var(--ink); }
+.chip {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--accent-ink);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+h1 {
+  margin: 28px 0 12px;
+  font-size: clamp(2rem, 6.2vw, 3.5rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+.lede { margin: 0 0 24px; max-width: 62ch; color: var(--ink-muted); font-size: 1.0625rem; }
+
+/* pause control: native checkbox, no script */
+#pause { position: absolute; width: 44px; height: 44px; margin: 0; opacity: 0; cursor: pointer; }
+label[for="pause"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.9375rem;
+  cursor: pointer;
+  user-select: none;
+}
+label[for="pause"]::before {
+  content: "";
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--ink-muted);
+  border-radius: 4px;
+  text-align: center;
+  line-height: 14px;
+  font-size: 14px;
+}
+#pause:checked + label[for="pause"]::before { content: "\2713"; border-color: var(--accent-ink); color: var(--ink); background: var(--accent); }
+#pause:focus-visible + label[for="pause"] { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+/* stage: three columns, base CSS is the static final frame */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px 12px;
+  width: 100%;
+  max-width: 1100px;
+  margin: 16px auto 0;
+  padding: 20px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.col { display: contents; }
+.hd {
+  margin: 8px 0 0;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--ink);
+  text-align: center;
+  align-self: end;
+}
+.lane {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 56px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.lane .q { font-size: 0.75rem; color: var(--ink-muted); letter-spacing: 0.04em; }
+.msg {
+  position: relative;
+  z-index: 2;
+  display: inline-block;
+  padding: 3px 12px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent-ink);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.card {
+  display: flex;
+  align-items: center;
+  padding: 14px 14px 14px 18px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+}
+.card code {
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.card .k { color: var(--accent-ink); }
+.reg {
+  align-self: start;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-ink);
+  border-radius: 8px;
+  background: var(--bg);
+  text-align: center;
+}
+.reg code {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+.eq {
+  align-self: center;
+  justify-self: center;
+  font-family: var(--mono);
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent-ink);
+}
+
+@media (min-width: 720px) {
+  .stage {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-rows: auto 56px 1fr auto;
+    padding: 24px 20px 28px;
+  }
+  .hd { margin: 0; }
+  .a .hd, .a .lane, .a .card, .a .reg { grid-column: 1; }
+  .b .hd, .b .lane, .b .card, .b .reg { grid-column: 3; }
+  .c .hd, .c .lane, .c .card, .c .reg { grid-column: 5; }
+  .hd { grid-row: 1; }
+  .lane { grid-row: 2; }
+  .card { grid-row: 3; }
+  .reg { grid-row: 4; }
+  .eq { grid-row: 3; }
+  .eq-1 { grid-column: 2; }
+  .eq-2 { grid-column: 4; }
+}
+
+.anchor {
+  margin: 20px auto 0;
+  max-width: 860px;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.cta-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 16px 24px; margin-top: 28px; }
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 24px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent-ink);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 1.0625rem;
+  text-decoration: none;
+}
+.cta svg { width: 20px; height: 20px; fill: currentColor; }
+.install {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+footer { margin-top: 40px; text-align: center; font-size: 0.875rem; }
+footer a { color: var(--ink-muted); }
+a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  #pause, label[for="pause"] { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .a .msg { animation: dropA var(--loop) ease-in-out infinite; }
+  .b .msg { animation: dropB var(--loop) ease-in-out infinite; }
+  .c .msg { animation: dropC var(--loop) ease-in-out infinite; }
+  .card { animation: pulse var(--loop) ease-in-out infinite; }
+  .eq { animation: pulseEq var(--loop) ease-in-out infinite; }
+  #pause:checked ~ .stage *, #pause:checked ~ .stage { animation-play-state: paused; }
+}
+
+/* messages land a third of a loop apart (6%, 39%, 72%); all cards pulse together at 80%; final frame holds 83% to 106% */
+@keyframes dropA {
+  0%, 6%      { opacity: 1; transform: translate(0, 0); }
+  11%         { opacity: 0; transform: translate(0, 56px); }
+  11.1%, 13%  { opacity: 0; transform: translate(0, -12px); }
+  17%, 100%   { opacity: 1; transform: translate(0, 0); }
+}
+@keyframes dropB {
+  0%, 39%     { opacity: 1; transform: translate(0, 0); }
+  44%         { opacity: 0; transform: translate(0, 56px); }
+  44.1%, 46%  { opacity: 0; transform: translate(0, -12px); }
+  50%, 100%   { opacity: 1; transform: translate(0, 0); }
+}
+@keyframes dropC {
+  0%, 72%     { opacity: 1; transform: translate(0, 0); }
+  77%         { opacity: 0; transform: translate(0, 56px); }
+  77.1%, 79%  { opacity: 0; transform: translate(0, -12px); }
+  83%, 100%   { opacity: 1; transform: translate(0, 0); }
+}
+@keyframes pulse {
+  0%, 77%   { transform: scale(1); }
+  80%       { transform: scale(1.035); }
+  83%, 100% { transform: scale(1); }
+}
+@keyframes pulseEq {
+  0%, 77%   { transform: scale(1); }
+  80%       { transform: scale(1.35); }
+  83%, 100% { transform: scale(1); }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <span class="wordmark">Chatter</span>
+    <span class="chip">.NET 10</span>
+  </header>
+
+  <h1>Same handlers. Any broker.</h1>
+  <p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+
+  <input type="checkbox" id="pause">
+  <label for="pause">Pause animation</label>
+
+  <div class="stage" role="group" aria-labelledby="stage-title" aria-describedby="stage-desc">
+    <p class="sr" id="stage-title">One handler on three brokers</p>
+    <p class="sr" id="stage-desc">An Event drops into a queue on Azure Service Bus, RabbitMQ and SQL Server Service Broker in turn, and each column shows the same IMessageHandler&lt;OrderPlaced&gt; handler. Only the registration line differs: .AddAzureServiceBus(...), .AddRabbitMq(...) or .AddSqlServiceBroker(...).</p>
+
+    <div class="col a">
+      <h2 class="hd">Azure Service Bus</h2>
+      <div class="lane" aria-hidden="true"><span class="q">queue</span><span class="msg">Event</span></div>
+      <div class="card"><code><span class="k">public class</span> OrderPlacedHandler : IMessageHandler&lt;OrderPlaced&gt;</code></div>
+      <div class="reg"><code>.AddAzureServiceBus(...)</code></div>
+    </div>
+
+    <div class="eq eq-1" aria-hidden="true">=</div>
+
+    <div class="col b">
+      <h2 class="hd">RabbitMQ</h2>
+      <div class="lane" aria-hidden="true"><span class="q">queue</span><span class="msg">Event</span></div>
+      <div class="card"><code><span class="k">public class</span> OrderPlacedHandler : IMessageHandler&lt;OrderPlaced&gt;</code></div>
+      <div class="reg"><code>.AddRabbitMq(...)</code></div>
+    </div>
+
+    <div class="eq eq-2" aria-hidden="true">=</div>
+
+    <div class="col c">
+      <h2 class="hd">SQL Server Service Broker</h2>
+      <div class="lane" aria-hidden="true"><span class="q">queue</span><span class="msg">Event</span></div>
+      <div class="card"><code><span class="k">public class</span> OrderPlacedHandler : IMessageHandler&lt;OrderPlaced&gt;</code></div>
+      <div class="reg"><code>.AddSqlServiceBroker(...)</code></div>
+    </div>
+  </div>
+
+  <p class="anchor">Swap .AddAzureServiceBus(...) for .AddRabbitMq(...) or .AddSqlServiceBroker(...). The handler stays the same.</p>
+
+  <div class="cta-row">
+    <a class="cta" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>View on GitHub</a>
+    <code class="install">dotnet add package Chatter.CQRS</code>
+  </div>
+
+  <footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</div>
+</body>
+</html>

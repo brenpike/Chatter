@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter site prototypes</title>
+<meta name="description" content="Motion-design prototypes for a future Chatter one-pager. Not deployed.">
+<style>
+:root {
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 40px; }
+header.top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wordmark { font-weight: 700; font-size: 1.25rem; letter-spacing: 0.01em; color: var(--ink); }
+.chip {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--accent-ink);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+h1 {
+  margin: 28px 0 12px;
+  font-size: clamp(2rem, 6.2vw, 3.5rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+.lede { margin: 0 0 28px; max-width: 62ch; color: var(--ink-muted); font-size: 1.0625rem; }
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.cards li { margin: 0; min-width: 0; }
+a.card {
+  display: block;
+  height: 100%;
+  min-height: 44px;
+  padding: 18px 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 12px;
+  color: var(--ink);
+  text-decoration: none;
+}
+a.card:hover { border-color: var(--accent-ink); background: #1D1929; }
+a.card:active { background: #221D31; }
+a.card:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.letter {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--accent-ink);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin-bottom: 10px;
+}
+.card h2 { margin: 0 0 6px; font-size: 1.25rem; line-height: 1.25; color: var(--ink); }
+.card p { margin: 0 0 12px; color: var(--ink-muted); }
+.card .path {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+.card .path::after { content: " \2192"; }
+footer.foot {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+footer.foot p { margin: 0; }
+footer.foot a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+footer.foot a:hover { color: var(--ink); }
+footer.foot a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+@media (min-width: 640px) {
+  .page { padding: 32px 24px 56px; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+}
+@media (min-width: 1000px) {
+  .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="top">
+    <span class="wordmark">Chatter</span>
+    <span class="chip">Same handlers. Any broker.</span>
+  </header>
+  <h1>Chatter site prototypes</h1>
+  <p class="lede">Motion-design prototypes for a future one-pager. Not deployed. Open each file in a browser; check reduced motion via DevTools &gt; Rendering &gt; Emulate prefers-reduced-motion.</p>
+
+  <ul class="cards">
+    <li>
+      <a class="card" href="a-handler-travels/index.html">
+        <span class="letter">A</span>
+        <h2>Handler that travels</h2>
+        <p>One handler moves in-process to across services while the transport changes beneath it.</p>
+        <span class="path">a-handler-travels/index.html</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="b-transit-map/index.html">
+        <span class="letter">B</span>
+        <h2>Transit map</h2>
+        <p>A message traverses the 9 packages along their dependency lines.</p>
+        <span class="path">b-transit-map/index.html</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="c-packages-as-messages/index.html">
+        <span class="letter">C</span>
+        <h2>Packages as messages</h2>
+        <p>The 9 packages are handled as messages and land in a clickable list.</p>
+        <span class="path">c-packages-as-messages/index.html</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="d-before-after/index.html">
+        <span class="letter">D</span>
+        <h2>Before/after</h2>
+        <p>Broker plumbing folds into one clean handler.</p>
+        <span class="path">d-before-after/index.html</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="e-triptych/index.html">
+        <span class="letter">E</span>
+        <h2>Triptych</h2>
+        <p>The same handler card under three transports.</p>
+        <span class="path">e-triptych/index.html</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="f-journey-checklist/index.html">
+        <span class="letter">F</span>
+        <h2>Journey checklist</h2>
+        <p>One handler journey through the features, ticking off the package list.</p>
+        <span class="path">f-journey-checklist/index.html</span>
+      </a>
+    </li>
+  </ul>
+
+  <footer class="foot">
+    <p>Source and docs:</p>
+    <a href="https://github.com/brenpike/Chatter">github.com/brenpike/Chatter</a>
+  </footer>
+</main>
+</body>
+</html>
