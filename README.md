@@ -8,6 +8,7 @@
 [![CodeQL](https://github.com/brenpike/Chatter/actions/workflows/codeql-analysis.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/codeql-analysis.yml)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Site](https://img.shields.io/badge/site-brenpike.github.io%2FChatter-512BD4.svg)](https://brenpike.github.io/Chatter/)
 
 </div>
 
