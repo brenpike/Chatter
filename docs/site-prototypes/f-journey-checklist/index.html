@@ -431,31 +431,40 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <g class="stg-mv stg-e5"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-218" y="2" width="212" height="30" rx="15"/><text class="stg-chipc" x="-112" y="24" text-anchor="middle">SqlServiceBroker</text></g>
 </g></g>
 <g class="stg-sc stg-b7"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="26" text-anchor="middle">Reliability</text>
-<rect class="stg-outline" x="70" y="300" width="660" height="290" rx="12"/>
-<rect class="stg-pill" x="320" y="330" width="160" height="32" rx="16"/>
-<text class="stg-nm" x="400" y="352" text-anchor="middle">Inbox</text>
-<rect class="stg-ring stg-x-inb" x="320" y="330" width="160" height="32" rx="16"/>
-<line class="stg-ln-acc" x1="400" y1="362" x2="400" y2="376" marker-end="url(#stg-ah)"/>
-<line class="stg-ln-acc" x1="400" y1="484" x2="400" y2="496" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="310" y="500" width="180" height="32" rx="16"/>
-<text class="stg-nm" x="400" y="522" text-anchor="middle">Outbox</text>
-<path class="stg-ok stg-x-cmt" d="M500 516l8 8 16-18" stroke-dasharray="40"/>
-<text class="stg-lbl" x="534" y="522">commit</text>
-<line class="stg-ln-acc" x1="400" y1="532" x2="400" y2="543" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="260" y="546" width="280" height="34" rx="17"/>
-<rect class="stg-ring stg-x-prc" x="260" y="546" width="280" height="34" rx="17"/>
-<line class="stg-ln-acc" x1="400" y1="580" x2="400" y2="622" marker-end="url(#stg-ah)"/>
-<circle class="stg-dot-evt stg-x-dot" cx="400" cy="580" r="5"/>
-<text class="stg-nm" x="412" y="618">OrderPlaced Event</text>
-<rect class="stg-stub" x="260" y="626" width="280" height="46" rx="10"/>
-<text class="stg-nm" x="400" y="654" text-anchor="middle">Billing service</text>
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Reliability</text>
+<rect class="stg-outline" x="60" y="392" width="680" height="450" rx="12"/>
+<line class="stg-ln-acc" x1="430" y1="437" x2="458" y2="437" marker-end="url(#stg-ah)"/>
+<line class="stg-ln-acc" x1="400" y1="458" x2="400" y2="580" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="300" y="732" width="200" height="40" rx="20"/>
+<text class="stg-nm" x="400" y="758" text-anchor="middle">Outbox</text>
+<path class="stg-ok stg-x-cmt" d="M512 750l9 9 18-20" stroke-dasharray="40"/>
+<text class="stg-lbl" x="546" y="760">commit</text>
+<rect class="stg-pill" x="240" y="786" width="320" height="42" rx="21"/>
+<rect class="stg-ring stg-x-prc" x="240" y="786" width="320" height="42" rx="21"/>
+<line class="stg-ln-acc" x1="400" y1="828" x2="400" y2="904" marker-end="url(#stg-ah)"/>
+<circle class="stg-dot-evt stg-x-dot" cx="400" cy="828" r="5"/>
+<text class="stg-nm" x="414" y="872">OrderPlaced Event</text>
+<rect class="stg-stub" x="250" y="910" width="300" height="56" rx="10"/>
+<text class="stg-nm" x="400" y="944" text-anchor="middle">Billing service</text>
 <g class="stg-x-b7a">
-<text class="stg-lbl" x="88" y="322">EF Core &#183; your DbContext</text>
-<text class="stg-nm" x="400" y="569" text-anchor="middle">Outbox Processor</text>
-<text class="stg-code stg-sec" x="722" y="322" text-anchor="end">.WithInboxBehavior&lt;OrdersDbContext&gt;()</text>
+<text class="stg-lbl" x="740" y="286" text-anchor="end">EF Core &#183; your DbContext</text>
+<text class="stg-code stg-sec" x="400" y="318" text-anchor="middle">.WithInboxBehavior&lt;OrdersDbContext&gt;()</text>
+<rect class="stg-box" x="464" y="410" width="268" height="146" rx="10"/>
+<text class="stg-hd" x="482" y="438">InboxMessages</text>
+<line class="stg-ln" x1="464" y1="450" x2="732" y2="450"/>
+<text class="stg-cell" x="482" y="476">MessageId</text>
+<text class="stg-cellv stg-x-iid" x="716" y="476" text-anchor="end">7f3a</text>
+<text class="stg-cell" x="482" y="504">ReceivedByInboxAtUtc</text>
+<text class="stg-cellv stg-x-icl" x="716" y="504" text-anchor="end">null</text>
+<text class="stg-cellv stg-x-ist" x="716" y="504" text-anchor="end">09:41:07</text>
+<text class="stg-tag stg-x-icl" x="482" y="536">claimed</text>
+<text class="stg-tag stg-x-ist" x="482" y="536">stamped</text>
+<rect class="stg-ring stg-x-inb" x="464" y="410" width="268" height="146" rx="10"/>
+<g class="stg-x-skp"><line class="stg-sw" x1="372" y1="500" x2="428" y2="500"/><text class="stg-lbl" x="360" y="508" text-anchor="end">handler skipped</text></g>
+<text class="stg-nm" x="400" y="813" text-anchor="middle">Outbox Processor</text>
+<g class="stg-mv stg-e6r"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-230" y="2" width="224" height="30" rx="15"/><text class="stg-chipc" x="-118" y="24" text-anchor="middle">redelivery &#183; 7f3a</text></g>
 </g>
-<g class="stg-mv stg-e6"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-231" y="2" width="227" height="24" rx="12"/><text class="stg-chipc" x="-117.5" y="19" text-anchor="middle">Reliability.EntityFramework</text></g>
+<g class="stg-mv stg-e6"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-350" y="2" width="344" height="30" rx="15"/><text class="stg-chipc" x="-178" y="24" text-anchor="middle">Reliability.EntityFramework</text></g>
 </g></g>
 <g class="stg-sc stg-b8"><g aria-hidden="true">
 <text class="stg-lbl" x="88" y="322">Azure Cosmos DB</text>
