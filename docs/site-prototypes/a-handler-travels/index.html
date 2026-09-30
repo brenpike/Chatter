@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex">
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<title>Chatter: Same handlers. Any broker.</title>
+<style>
+:root {
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --warn: #F0B429;
+  --fail: #F47067;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --loop: 18s;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { background: var(--bg); }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 20px 20px 40px;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wordmark {
+  font-weight: 700;
+  font-size: 1.125rem;
+  letter-spacing: 0.01em;
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--accent-ink);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+h1 {
+  margin: 28px 0 12px;
+  font-size: clamp(2rem, 6vw, 3.25rem);
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  margin: 0 0 20px;
+  max-width: 46rem;
+  color: var(--ink-muted);
+  font-size: clamp(1rem, 2.4vw, 1.1875rem);
+}
+
+/* Pause control (native checkbox, no script) */
+#pause {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+label[for="pause"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px 0 10px;
+  margin-bottom: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--ink-muted);
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+label[for="pause"]::before {
+  content: "";
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  background: transparent;
+}
+
+#pause:checked + label[for="pause"]::before {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--surface);
+}
+
+code { font-family: var(--mono); }
+
+.stage {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.stage svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.anchor {
+  margin: 20px 0 0;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: clamp(0.8125rem, 2.6vw, 1rem);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.anchor .arrow { color: var(--accent-ink); padding: 0 0.4em; }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 16px 24px;
+  margin-top: 28px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 24px;
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent-ink);
+  border-radius: 8px;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.btn svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
+
+.btn:hover { background: #5f3ce0; }
+
+.install {
+  display: inline-block;
+  max-width: 100%;
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  user-select: all;
+  -webkit-user-select: all;
+  overflow-wrap: anywhere;
+}
+
+footer {
+  margin-top: 40px;
+  text-align: center;
+  font-size: 0.875rem;
+}
+
+footer a { color: var(--accent-ink); padding: 10px 6px; display: inline-block; }
+
+a:focus-visible,
+#pause:focus-visible + label[for="pause"] {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+/* ---- Stage graphics: base rules are the static final frame ---- */
+.box { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.pill { fill: var(--bg); stroke: var(--ink-muted); stroke-width: 1.5; }
+.ring { fill: none; stroke: var(--accent-ink); stroke-width: 2.5; }
+.outline { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-dasharray: 6 6; }
+.stub { fill: none; stroke: var(--ink-muted); stroke-width: 1.5; stroke-dasharray: 6 6; }
+.ln { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
+.ln-acc { fill: none; stroke: var(--accent-ink); stroke-width: 2; }
+.ok { fill: none; stroke: var(--accent-ink); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.x { fill: none; stroke: var(--fail); stroke-width: 4; stroke-linecap: round; }
+.sw { fill: none; stroke: var(--warn); stroke-width: 3; stroke-linecap: round; }
+.swc { fill: var(--warn); }
+.glow { fill: var(--accent); }
+.dot { fill: var(--accent-ink); }
+.dot-evt { fill: var(--warn); }
+.dot-fail { fill: var(--fail); }
+.arrowhead { fill: var(--ink-muted); }
+
+svg text { fill: var(--ink); font-family: var(--sans); font-size: 20px; }
+svg .mono { font-family: var(--mono); }
+svg .mu { fill: var(--ink-muted); }
+svg .ac { fill: var(--accent-ink); }
+svg .cap { font-size: 22px; font-weight: 600; fill: var(--ink-muted); }
+svg .lbl { font-size: 17px; fill: var(--ink-muted); }
+svg .nm { font-size: 17px; }
+svg .code { font-family: var(--mono); font-size: 17px; }
+svg .tick { font-family: var(--mono); font-size: 15px; fill: var(--accent-ink); }
+svg .cardt { font-family: var(--mono); font-size: 20px; }
+svg .slogan { font-size: 40px; font-weight: 700; }
+svg .chipn { font-size: 20px; font-weight: 600; }
+svg .chipc { font-family: var(--mono); font-size: 13px; fill: var(--ink-muted); }
+
+/* Scene groups are hidden in the static final frame */
+.sc, .dotm { opacity: 0; }
+.fin, .card { opacity: 1; }
+.card { transform: translate(400px, 312px); }
+
+@media (max-width: 700px) {
+  .page { padding: 16px 16px 32px; }
+  svg .cap { font-size: 24px; }
+  svg .lbl, svg .nm, svg .code { font-size: 24px; }
+  svg .tick { font-size: 26px; }
+  svg .cardt { font-size: 27px; }
+  svg .slogan { font-size: 46px; }
+  svg .chipn { font-size: 27px; }
+  svg .sec { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pause, label[for="pause"] { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #pause:checked ~ .stage *, #pause:checked ~ .stage { animation-play-state: paused; }
+
+  .a-s1 { animation: s1 var(--loop) linear infinite; }
+  .a-s2 { animation: s2 var(--loop) linear infinite; }
+  .a-s4 { animation: s4 var(--loop) linear infinite; }
+  .a-s5 { animation: s5 var(--loop) linear infinite; }
+  .a-fin { animation: fin var(--loop) linear infinite; }
+  .a-card { animation: card var(--loop) ease-in-out infinite; }
+  .a-wire { animation: wire var(--loop) linear infinite; }
+  .a-t1 { animation: t1 var(--loop) linear infinite; }
+  .a-t2 { animation: t2 var(--loop) linear infinite; }
+  .a-t3 { animation: t3 var(--loop) linear infinite; }
+  .a-dot1 { animation: dot1 var(--loop) linear infinite; }
+  .a-dA { animation: dA var(--loop) linear infinite; }
+  .a-dB { animation: dB var(--loop) linear infinite; }
+  .a-dC { animation: dC var(--loop) linear infinite; }
+  .a-gate { animation: gate var(--loop) linear infinite; }
+  .a-obx { animation: obx var(--loop) linear infinite; }
+  .a-cmd { animation: cmd var(--loop) linear infinite; }
+  .a-chk { animation: chk var(--loop) linear infinite; }
+  .a-ctxt { animation: ctxt var(--loop) linear infinite; }
+  .a-evt { animation: evt var(--loop) linear infinite; }
+  .a-evl { animation: evl var(--loop) linear infinite; }
+  .a-rdot { animation: rdot var(--loop) linear infinite; }
+  .a-rx { animation: rx var(--loop) linear infinite; }
+  .a-c1 { animation: c1 var(--loop) linear infinite; }
+  .a-c2 { animation: c2 var(--loop) linear infinite; }
+  .a-c3 { animation: c3 var(--loop) linear infinite; }
+  .a-cbc { animation: cbc var(--loop) linear infinite; }
+  .a-cbo { animation: cbo var(--loop) linear infinite; }
+  .a-eq { animation: eq var(--loop) linear infinite; }
+
+  /* Scene 1: In-process (0-14%) */
+  @keyframes s1 { 0% { opacity: 0; } 1%, 13% { opacity: 1; } 14%, 100% { opacity: 0; } }
+  @keyframes dot1 {
+    0% { opacity: 0; transform: translate(400px, 104px); }
+    1% { opacity: 1; transform: translate(400px, 104px); }
+    3% { transform: translate(400px, 148px); }
+    4.5% { transform: translate(400px, 196px); }
+    5.3% { transform: translate(528px, 196px); }
+    5.9% { transform: translate(570px, 238px); }
+    6.5% { transform: translate(528px, 280px); }
+    7.5% { transform: translate(272px, 280px); }
+    8.1% { transform: translate(230px, 238px); }
+    8.7% { transform: translate(272px, 196px); }
+    9.7% { transform: translate(528px, 196px); }
+    10.3% { transform: translate(570px, 238px); }
+    10.9% { transform: translate(528px, 280px); }
+    11.6% { transform: translate(400px, 280px); }
+    13% { opacity: 1; transform: translate(400px, 330px); }
+    13.5% { opacity: 0; transform: translate(400px, 330px); }
+    100% { opacity: 0; transform: translate(400px, 330px); }
+  }
+
+  /* Scene 2: Across services (14-26%) and the Orders service view until recovery ends */
+  @keyframes s2 { 0%, 14% { opacity: 0; } 15.5%, 81% { opacity: 1; } 82%, 100% { opacity: 0; } }
+  @keyframes wire { 0%, 14% { stroke-dashoffset: 68; } 19%, 100% { stroke-dashoffset: 0; } }
+  @keyframes card {
+    0%, 13.5% { transform: translate(400px, 380px); }
+    18%, 69.5% { transform: translate(400px, 430px); }
+    72%, 81.5% { transform: translate(400px, 520px); }
+    86%, 100% { transform: translate(400px, 312px); }
+  }
+
+  /* Scene 3: transports cycle across the wire (26-56%) */
+  @keyframes t1 { 0%, 25.9% { opacity: 0; } 26%, 35.9% { opacity: 1; } 36%, 100% { opacity: 0; } }
+  @keyframes t2 { 0%, 35.9% { opacity: 0; } 36%, 45.9% { opacity: 1; } 46%, 100% { opacity: 0; } }
+  @keyframes t3 { 0%, 45.9% { opacity: 0; } 46%, 55.9% { opacity: 1; } 56%, 100% { opacity: 0; } }
+  @keyframes dA {
+    0%, 26.9% { opacity: 0; transform: translate(400px, 152px); }
+    27% { opacity: 1; transform: translate(400px, 152px); }
+    30.5% { opacity: 1; transform: translate(400px, 256px); }
+    31%, 100% { opacity: 0; transform: translate(400px, 256px); }
+  }
+  @keyframes dB {
+    0%, 36.9% { opacity: 0; transform: translate(400px, 152px); }
+    37% { opacity: 1; transform: translate(400px, 152px); }
+    40.5% { opacity: 1; transform: translate(400px, 256px); }
+    41%, 100% { opacity: 0; transform: translate(400px, 256px); }
+  }
+  @keyframes dC {
+    0%, 46.9% { opacity: 0; transform: translate(400px, 152px); }
+    47% { opacity: 1; transform: translate(400px, 152px); }
+    50.5% { opacity: 1; transform: translate(400px, 256px); }
+    51%, 100% { opacity: 0; transform: translate(400px, 256px); }
+  }
+
+  /* Scene 4: Inbox, handler, Outbox, Event to Billing service (56-70%) */
+  @keyframes s4 { 0%, 55.9% { opacity: 0; } 56.5%, 69.5% { opacity: 1; } 70%, 100% { opacity: 0; } }
+  @keyframes cmd {
+    0%, 56.9% { opacity: 0; transform: translate(400px, 270px); }
+    57% { opacity: 1; transform: translate(400px, 270px); }
+    58.4% { transform: translate(400px, 346px); }
+    59.6% { transform: translate(400px, 346px); }
+    60.4% { transform: translate(400px, 380px); }
+    62% { transform: translate(400px, 480px); }
+    63% { opacity: 1; transform: translate(400px, 516px); }
+    63.8%, 100% { opacity: 0; transform: translate(400px, 516px); }
+  }
+  @keyframes gate { 0%, 58% { opacity: 0; } 58.4%, 59.6% { opacity: 0.5; } 60%, 100% { opacity: 0; } }
+  @keyframes obx { 0%, 62.9% { opacity: 0; } 63.3%, 65% { opacity: 0.5; } 65.4%, 100% { opacity: 0; } }
+  @keyframes chk { 0%, 63.4% { stroke-dashoffset: 40; } 64.4%, 100% { stroke-dashoffset: 0; } }
+  @keyframes ctxt { 0%, 63.7% { opacity: 0; } 64.2%, 100% { opacity: 1; } }
+  @keyframes evt {
+    0%, 64.9% { opacity: 0; transform: translate(400px, 563px); }
+    65.2% { opacity: 1; transform: translate(400px, 563px); }
+    68.3% { opacity: 1; transform: translate(400px, 626px); }
+    68.8%, 100% { opacity: 0; transform: translate(400px, 626px); }
+  }
+  @keyframes evl { 0%, 65.4% { opacity: 0; } 65.8%, 100% { opacity: 1; } }
+
+  /* Scene 5: Recovery at the Receiver (70-82%) */
+  @keyframes s5 { 0%, 70.4% { opacity: 0; } 71%, 81.4% { opacity: 1; } 82%, 100% { opacity: 0; } }
+  @keyframes rdot {
+    0%, 70.9% { opacity: 0; transform: translate(570px, 290px); }
+    71.2% { opacity: 1; transform: translate(570px, 290px); }
+    72% { transform: translate(570px, 323px); }
+    73% { transform: translate(570px, 296px); }
+    73.8% { transform: translate(570px, 323px); }
+    75% { transform: translate(570px, 296px); }
+    75.8% { transform: translate(570px, 323px); }
+    78.3% { transform: translate(570px, 323px); }
+    79.6% { transform: translate(570px, 437px); }
+    81.5% { opacity: 1; transform: translate(570px, 437px); }
+    81.9%, 100% { opacity: 0; transform: translate(570px, 437px); }
+  }
+  @keyframes rx { 0%, 71.9% { opacity: 0; } 72.2%, 100% { opacity: 1; } }
+  @keyframes c1 { 0%, 71.9% { opacity: 0; } 72%, 73.9% { opacity: 1; } 74%, 100% { opacity: 0; } }
+  @keyframes c2 { 0%, 73.9% { opacity: 0; } 74%, 75.9% { opacity: 1; } 76%, 100% { opacity: 0; } }
+  @keyframes c3 { 0%, 75.9% { opacity: 0; } 76%, 100% { opacity: 1; } }
+  @keyframes cbc { 0%, 76.9% { opacity: 1; } 77%, 100% { opacity: 0; } }
+  @keyframes cbo { 0%, 76.9% { opacity: 0; } 77%, 100% { opacity: 1; } }
+  @keyframes eq { 0%, 78% { opacity: 0; } 78.5%, 100% { opacity: 1; } }
+
+  /* Final frame (86-100%, held about 2.5 s): slogan, handler card, transport chips */
+  @keyframes fin { 0%, 81.9% { opacity: 0; } 86%, 100% { opacity: 1; } }
+}
+</style>
+</head>
+<body>
+<main class="page">
+<div class="top"><span class="wordmark">Chatter</span><span class="chip">.NET 10</span></div>
+<h1>Same handlers. Any broker.</h1>
+<p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+<input type="checkbox" id="pause">
+<label for="pause">Pause animation</label>
+<div class="stage">
+<svg viewBox="0 0 800 680" role="img" aria-labelledby="st sd" xmlns="http://www.w3.org/2000/svg">
+<title id="st">One handler, three brokers</title>
+<desc id="sd">A PlaceOrderHandler dispatched in-process moves unchanged to a separate Orders service, where a Receiver takes Commands from Azure Service Bus, RabbitMQ or SQL Server Service Broker. The final frame shows the same handler behind all three transports.</desc>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker>
+</defs>
+<text class="cap sc a-s1" x="400" y="26" text-anchor="middle">In-process</text>
+<text class="cap sc a-s2" x="400" y="26" text-anchor="middle">Across services</text>
+
+<g class="sc a-s1">
+<rect class="box" x="40" y="40" width="720" height="440" rx="14"/>
+<text class="lbl" x="60" y="68">Orders service</text>
+<text class="code" x="400" y="104" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="ln" x1="400" y1="112" x2="400" y2="126" marker-end="url(#ah)"/>
+<rect class="pill" x="260" y="130" width="280" height="36" rx="18"/>
+<text class="nm" x="400" y="154" text-anchor="middle">Message Dispatcher</text>
+<line class="ln" x1="400" y1="166" x2="400" y2="194" marker-end="url(#ah)"/>
+<rect class="ring" x="230" y="196" width="340" height="84" rx="42"/>
+<text class="nm" x="400" y="244" text-anchor="middle">Command Pipeline</text>
+<line class="ln" x1="400" y1="280" x2="400" y2="326" marker-end="url(#ah)"/>
+<circle class="dot dotm a-dot1" r="7"/>
+</g>
+
+<g class="sc a-s2">
+<rect class="box" x="40" y="40" width="720" height="112" rx="14"/>
+<text class="lbl" x="60" y="68">Storefront</text>
+<text class="code" x="400" y="104" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="ln a-wire" x1="400" y1="152" x2="400" y2="220" stroke-dasharray="68"/>
+<rect class="box" x="40" y="220" width="720" height="380" rx="14"/>
+<text class="lbl" x="60" y="246">Orders service</text>
+<rect class="pill" x="200" y="256" width="400" height="34" rx="17"/>
+<text class="nm" x="400" y="279" text-anchor="middle">Brokered Message Receiver</text>
+</g>
+
+<g>
+<text class="tick sc a-t1" x="400" y="140" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<text class="tick sc a-t2" x="400" y="140" text-anchor="middle">.AddRabbitMq(...)</text>
+<text class="tick sc a-t3" x="400" y="140" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+<text class="nm sc a-t1" x="418" y="192">Azure Service Bus</text>
+<text class="nm sc a-t2" x="418" y="192">RabbitMQ</text>
+<text class="nm sc a-t3" x="418" y="192">SQL Server Service Broker</text>
+<circle class="dot sc a-dA" r="7"/>
+<circle class="dot sc a-dB" r="7"/>
+<circle class="dot sc a-dC" r="7"/>
+</g>
+
+<g class="sc a-s4">
+<rect class="outline" x="70" y="300" width="660" height="290" rx="12"/>
+<text class="lbl" x="88" y="322">Command Pipeline</text>
+<rect class="glow sc a-gate" x="312" y="322" width="176" height="48" rx="14"/>
+<rect class="pill" x="320" y="330" width="160" height="32" rx="16"/>
+<text class="nm" x="400" y="353" text-anchor="middle">Inbox</text>
+<line class="ln" x1="400" y1="362" x2="400" y2="378" marker-end="url(#ah)"/>
+<line class="ln" x1="400" y1="480" x2="400" y2="498" marker-end="url(#ah)"/>
+<rect class="glow sc a-obx" x="302" y="492" width="196" height="48" rx="14"/>
+<rect class="pill" x="310" y="500" width="180" height="32" rx="16"/>
+<text class="nm" x="400" y="523" text-anchor="middle">Outbox</text>
+<path class="ok a-chk" d="M528 517l9 9l19-20" stroke-dasharray="40"/>
+<text class="nm sc a-ctxt" x="566" y="524">commit</text>
+<line class="ln" x1="400" y1="532" x2="400" y2="544" marker-end="url(#ah)"/>
+<rect class="pill" x="260" y="546" width="280" height="34" rx="17"/>
+<text class="nm" x="400" y="569" text-anchor="middle">Outbox Processor</text>
+<rect class="stub" x="260" y="626" width="280" height="46" rx="10"/>
+<text class="nm" x="400" y="647" text-anchor="middle">Billing service</text>
+<text class="chipc sec" x="400" y="664" text-anchor="middle">IMessageHandler&lt;OrderPlaced&gt;</text>
+<text class="code sc a-evl" x="420" y="614">OrderPlaced Event</text>
+<circle class="dot dotm a-cmd" r="7"/>
+<circle class="dot-evt dotm a-evt" r="7"/>
+</g>
+
+<g class="sc a-s5">
+<text class="lbl" x="60" y="330">Recovery</text>
+<rect class="pill" x="200" y="306" width="400" height="34" rx="17"/>
+<text class="nm" x="220" y="329">Retry</text>
+<text class="code sc a-c1" x="300" y="329">1</text>
+<text class="code sc a-c2" x="300" y="329">2</text>
+<text class="code sc a-c3" x="300" y="329">3</text>
+<line class="ln" x1="400" y1="340" x2="400" y2="352"/>
+<rect class="pill" x="200" y="352" width="400" height="34" rx="17"/>
+<circle class="swc" cx="222" cy="369" r="4"/>
+<circle class="swc" cx="254" cy="369" r="4"/>
+<line class="sw sc a-cbc" x1="222" y1="369" x2="254" y2="369"/>
+<line class="sw sc a-cbo" x1="222" y1="369" x2="246" y2="357"/>
+<text class="nm" x="276" y="375">Circuit Breaker</text>
+<g class="sc a-eq">
+<line class="ln" x1="400" y1="386" x2="400" y2="418" marker-end="url(#ah)"/>
+<text class="nm" x="416" y="408">max receives exceeded</text>
+</g>
+<rect class="pill" x="200" y="420" width="400" height="34" rx="17"/>
+<text class="nm" x="220" y="443">Error Queue</text>
+<path class="x sc a-rx" d="M560 313L580 333M580 313L560 333"/>
+<circle class="dot-fail dotm a-rdot" r="7"/>
+</g>
+
+<g class="fin a-fin">
+<text class="slogan" x="400" y="187" text-anchor="middle">Same handlers. Any broker.</text>
+<path class="ln-acc" d="M400 362V397M140 397H660M140 397V427M400 397V427M660 397V427"/>
+<rect class="pill" x="25" y="427" width="230" height="100" rx="12"/>
+<text class="chipn" x="140" y="459" text-anchor="middle"><tspan x="140">Azure </tspan><tspan x="140" dy="28">Service Bus</tspan></text>
+<text class="chipc sec" x="140" y="513" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<rect class="pill" x="285" y="427" width="230" height="100" rx="12"/>
+<text class="chipn" x="400" y="473" text-anchor="middle">RabbitMQ</text>
+<text class="chipc sec" x="400" y="513" text-anchor="middle">.AddRabbitMq(...)</text>
+<rect class="pill" x="545" y="427" width="230" height="100" rx="12"/>
+<text class="chipn" x="660" y="459" text-anchor="middle"><tspan x="660">SQL Server </tspan><tspan x="660" dy="28">Service Broker</tspan></text>
+<text class="chipc sec" x="660" y="513" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+</g>
+
+<g class="card a-card">
+<rect class="glow" x="-268" y="-58" width="536" height="116" rx="18" opacity="0.22"/>
+<rect x="-260" y="-50" width="520" height="100" rx="12" fill="#16131F" stroke="#A78BFA" stroke-width="2"/>
+<text class="cardt" x="0" y="-6" text-anchor="middle"><tspan x="0">public class PlaceOrderHandler </tspan><tspan x="0" dy="32">: IMessageHandler&lt;PlaceOrder&gt;</tspan></text>
+</g>
+</svg>
+</div>
+<p class="anchor"><code>.AddAzureServiceBus(...)</code><span class="arrow" aria-hidden="true">&rarr;</span><code>.AddRabbitMq(...)</code><span class="arrow" aria-hidden="true">&rarr;</span><code>.AddSqlServiceBroker(...)</code></p>
+<div class="actions">
+<a class="btn" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>View on GitHub</a>
+<code class="install">dotnet add package Chatter.CQRS</code>
+</div>
+<footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</main>
+</body>
+</html>

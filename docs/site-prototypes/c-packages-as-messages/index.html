@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter: Same handlers. Any broker.</title>
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --warn: #F0B429;
+  --fail: #F47067;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --loop: 20s;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-text-size-adjust: 100%; }
+body { margin: 0; min-height: 100vh; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+a { color: var(--accent-ink); }
+a:focus-visible, #pause:focus-visible + label { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+.top { display: flex; align-items: center; gap: 10px; }
+.mark { font-weight: 700; font-size: 18px; letter-spacing: .02em; }
+.chip { font-family: var(--mono); font-size: 13px; color: var(--ink-muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+
+h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 14px; letter-spacing: -.01em; }
+.lede { max-width: 62ch; margin: 0 0 24px; font-size: clamp(1rem, 2.6vw, 1.2rem); color: var(--ink-muted); }
+
+.cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px; margin-bottom: 32px; }
+.cta { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 0 24px; background: var(--accent); color: #fff; border: 1px solid var(--accent-ink); border-radius: 10px; font-weight: 600; font-size: 17px; text-decoration: none; }
+.cta svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
+.cta:hover { border-color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.cta:active { transform: translateY(1px); }
+.install { display: inline-block; max-width: 100%; font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+
+/* scene: DOM order keeps the pause control before the stage; flex order sets the visual order */
+.scene { position: relative; display: flex; flex-direction: column; gap: 18px; }
+#pause { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); }
+label[for="pause"] { order: 1; align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; min-height: 44px; min-width: 44px; padding: 0 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; font-size: 15px; cursor: pointer; }
+label[for="pause"]::before { content: ""; width: 18px; height: 18px; border: 2px solid var(--ink-muted); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1; flex: none; }
+#pause:checked + label::before { content: "\2713"; background: var(--accent); border-color: var(--accent-ink); color: var(--ink); }
+
+.stage { order: 2; width: 100%; max-width: 1100px; margin-inline: auto; }
+.stage svg { display: block; width: 100%; height: auto; }
+.anchor { order: 3; margin: 0; text-align: center; font-family: var(--mono); font-size: 14px; color: var(--ink-muted); overflow-wrap: anywhere; }
+.anchor code { font-family: inherit; color: var(--ink); }
+
+/* stage shapes */
+.lane { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.card { fill: var(--surface); stroke: var(--accent-ink); stroke-width: 1.5; }
+.track { fill: none; stroke: var(--line); stroke-width: 2; stroke-dasharray: 6 6; }
+.glow { fill: var(--accent); opacity: .22; }
+.disp { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1.5; }
+.flow { fill: none; stroke: var(--ink-muted); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.icon { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.stage text { fill: var(--ink); font-family: var(--sans); font-size: 18px; }
+.stage text.mono { font-family: var(--mono); }
+.env rect { fill: var(--bg); stroke: var(--accent-ink); stroke-width: 1.5; }
+.env path { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-linejoin: round; }
+.badge circle { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1.5; }
+.badge path { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.e0{transform:translate(60px,240px)}
+.e1{transform:translate(130px,240px)}
+.e2{transform:translate(200px,240px)}
+.e3{transform:translate(270px,240px)}
+.e4{transform:translate(340px,240px)}
+.e5{transform:translate(410px,240px)}
+.e6{transform:translate(480px,240px)}
+.e7{transform:translate(550px,240px)}
+.e8{transform:translate(620px,240px)}
+
+/* package list: plain HTML, present and clickable in every frame */
+.list { order: 4; list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.row { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 12px; align-items: start; padding: 0 6px 0 14px; border-top: 1px solid var(--line); }
+.row:first-child { border-top: 0; border-radius: 11px 11px 0 0; }
+.row:last-child { border-radius: 0 0 11px 11px; }
+.hl { position: absolute; inset: 0; background: rgba(81, 43, 212, .2); border-radius: inherit; transform: scaleX(0); transform-origin: 0 50%; pointer-events: none; }
+.st, .body, .nuget { position: relative; z-index: 1; }
+.st { width: 24px; height: 24px; margin-top: 10px; }
+.ring { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
+.tick { transform-box: fill-box; transform-origin: center; }
+.tick circle { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1.5; }
+.tick path { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.pkg { display: block; min-height: 44px; padding: 12px 0; font-family: var(--mono); font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.pkg:hover { color: var(--ink); }
+.why { display: block; margin-top: -6px; padding-bottom: 12px; font-size: 14px; color: var(--ink-muted); }
+.nuget { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; color: var(--ink-muted); text-decoration: underline; text-underline-offset: 3px; }
+.nuget:hover { color: var(--ink); }
+
+footer { margin-top: 32px; }
+footer a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--ink-muted); }
+
+@media (min-width: 900px) {
+  .stage text { font-size: 14px; }
+}
+@media (max-width: 480px) {
+  .stage text { font-size: 25px; }
+  .wrap { padding-inline: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pause, label[for="pause"] { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+@keyframes e0{0%{transform:translate(-70px,50px)}3%{transform:translate(162px,50px)}30%{transform:translate(162px,50px)}31.2%{transform:translate(302px,82px)}32.4%{transform:translate(452px,132px)}33.2%{transform:translate(452px,132px)}33.8%{transform:translate(540px,200px)}34.4%{transform:translate(60px,240px)}100%{transform:translate(60px,240px)}}
+@keyframes t0{0%,34.4%{transform:scale(0)}35.6%,100%{transform:scale(1)}}
+@keyframes h0{0%,34.4%{transform:scaleX(0)}35.4%{transform:scaleX(1)}37%,100%{transform:scaleX(0)}}
+@keyframes e1{0%{transform:translate(-70px,50px)}3%{transform:translate(-70px,50px)}6%{transform:translate(106px,50px)}34.2%{transform:translate(106px,50px)}35.4%{transform:translate(302px,82px)}36.6%{transform:translate(452px,132px)}37.4%{transform:translate(452px,132px)}38%{transform:translate(540px,200px)}38.6%{transform:translate(130px,240px)}100%{transform:translate(130px,240px)}}
+@keyframes t1{0%,38.6%{transform:scale(0)}39.8%,100%{transform:scale(1)}}
+@keyframes h1{0%,38.6%{transform:scaleX(0)}39.6%{transform:scaleX(1)}41.2%,100%{transform:scaleX(0)}}
+@keyframes e2{0%{transform:translate(-70px,50px)}6%{transform:translate(-70px,50px)}9%{transform:translate(50px,50px)}38.4%{transform:translate(50px,50px)}39.6%{transform:translate(302px,82px)}40.8%{transform:translate(452px,132px)}41.6%{transform:translate(452px,132px)}42.2%{transform:translate(540px,200px)}42.8%{transform:translate(200px,240px)}100%{transform:translate(200px,240px)}}
+@keyframes t2{0%,42.8%{transform:scale(0)}44%,100%{transform:scale(1)}}
+@keyframes h2{0%,42.8%{transform:scaleX(0)}43.8%{transform:scaleX(1)}45.4%,100%{transform:scaleX(0)}}
+@keyframes e3{0%{transform:translate(-70px,96px)}9%{transform:translate(-70px,96px)}12%{transform:translate(162px,96px)}42.6%{transform:translate(162px,96px)}43.8%{transform:translate(302px,82px)}45%{transform:translate(452px,132px)}45.8%{transform:translate(452px,132px)}46.4%{transform:translate(540px,200px)}47%{transform:translate(270px,240px)}100%{transform:translate(270px,240px)}}
+@keyframes t3{0%,47%{transform:scale(0)}48.2%,100%{transform:scale(1)}}
+@keyframes h3{0%,47%{transform:scaleX(0)}48%{transform:scaleX(1)}49.6%,100%{transform:scaleX(0)}}
+@keyframes e4{0%{transform:translate(-70px,96px)}12%{transform:translate(-70px,96px)}15%{transform:translate(106px,96px)}46.8%{transform:translate(106px,96px)}48%{transform:translate(302px,82px)}49.2%{transform:translate(452px,132px)}50%{transform:translate(452px,132px)}50.6%{transform:translate(540px,200px)}51.2%{transform:translate(340px,240px)}100%{transform:translate(340px,240px)}}
+@keyframes t4{0%,51.2%{transform:scale(0)}52.4%,100%{transform:scale(1)}}
+@keyframes h4{0%,51.2%{transform:scaleX(0)}52.2%{transform:scaleX(1)}53.8%,100%{transform:scaleX(0)}}
+@keyframes e5{0%{transform:translate(-70px,96px)}15%{transform:translate(-70px,96px)}18%{transform:translate(50px,96px)}51%{transform:translate(50px,96px)}52.2%{transform:translate(302px,82px)}53.4%{transform:translate(452px,132px)}54.2%{transform:translate(452px,132px)}54.8%{transform:translate(540px,200px)}55.4%{transform:translate(410px,240px)}100%{transform:translate(410px,240px)}}
+@keyframes t5{0%,55.4%{transform:scale(0)}56.6%,100%{transform:scale(1)}}
+@keyframes h5{0%,55.4%{transform:scaleX(0)}56.4%{transform:scaleX(1)}58%,100%{transform:scaleX(0)}}
+@keyframes e6{0%{transform:translate(-70px,142px)}18%{transform:translate(-70px,142px)}21%{transform:translate(162px,142px)}55.2%{transform:translate(162px,142px)}56.4%{transform:translate(302px,82px)}57.6%{transform:translate(452px,132px)}58.4%{transform:translate(452px,132px)}59%{transform:translate(540px,200px)}59.6%{transform:translate(480px,240px)}100%{transform:translate(480px,240px)}}
+@keyframes t6{0%,59.6%{transform:scale(0)}60.8%,100%{transform:scale(1)}}
+@keyframes h6{0%,59.6%{transform:scaleX(0)}60.6%{transform:scaleX(1)}62.2%,100%{transform:scaleX(0)}}
+@keyframes e7{0%{transform:translate(-70px,142px)}21%{transform:translate(-70px,142px)}24%{transform:translate(106px,142px)}59.4%{transform:translate(106px,142px)}60.6%{transform:translate(302px,82px)}61.8%{transform:translate(452px,132px)}62.6%{transform:translate(452px,132px)}63.2%{transform:translate(540px,200px)}63.8%{transform:translate(550px,240px)}100%{transform:translate(550px,240px)}}
+@keyframes t7{0%,63.8%{transform:scale(0)}65%,100%{transform:scale(1)}}
+@keyframes h7{0%,63.8%{transform:scaleX(0)}64.8%{transform:scaleX(1)}66.4%,100%{transform:scaleX(0)}}
+@keyframes e8{0%{transform:translate(-70px,142px)}24%{transform:translate(-70px,142px)}27%{transform:translate(50px,142px)}63.6%{transform:translate(50px,142px)}64.8%{transform:translate(302px,82px)}66%{transform:translate(452px,132px)}66.8%{transform:translate(452px,132px)}67.4%{transform:translate(540px,200px)}68%{transform:translate(620px,240px)}100%{transform:translate(620px,240px)}}
+@keyframes t8{0%,68%{transform:scale(0)}69.2%,100%{transform:scale(1)}}
+@keyframes h8{0%,68%{transform:scaleX(0)}69%{transform:scaleX(1)}70.6%,100%{transform:scaleX(0)}}
+@keyframes bd{0%{opacity:0}32%{opacity:0}32.6%{opacity:1}33.4%{opacity:1}34%{opacity:0}36.2%{opacity:0}36.8%{opacity:1}37.6%{opacity:1}38.2%{opacity:0}40.4%{opacity:0}41%{opacity:1}41.8%{opacity:1}42.4%{opacity:0}44.6%{opacity:0}45.2%{opacity:1}46%{opacity:1}46.6%{opacity:0}48.8%{opacity:0}49.4%{opacity:1}50.2%{opacity:1}50.8%{opacity:0}53%{opacity:0}53.6%{opacity:1}54.4%{opacity:1}55%{opacity:0}57.2%{opacity:0}57.8%{opacity:1}58.6%{opacity:1}59.2%{opacity:0}61.4%{opacity:0}62%{opacity:1}62.8%{opacity:1}63.4%{opacity:0}65.6%{opacity:0}66.2%{opacity:1}100%{opacity:1}}
+.e0{animation:e0 var(--loop) ease-in-out infinite}
+.r0 .tick{animation:t0 var(--loop) ease-out infinite}
+.r0 .hl{animation:h0 var(--loop) ease-in-out infinite}
+.e1{animation:e1 var(--loop) ease-in-out infinite}
+.r1 .tick{animation:t1 var(--loop) ease-out infinite}
+.r1 .hl{animation:h1 var(--loop) ease-in-out infinite}
+.e2{animation:e2 var(--loop) ease-in-out infinite}
+.r2 .tick{animation:t2 var(--loop) ease-out infinite}
+.r2 .hl{animation:h2 var(--loop) ease-in-out infinite}
+.e3{animation:e3 var(--loop) ease-in-out infinite}
+.r3 .tick{animation:t3 var(--loop) ease-out infinite}
+.r3 .hl{animation:h3 var(--loop) ease-in-out infinite}
+.e4{animation:e4 var(--loop) ease-in-out infinite}
+.r4 .tick{animation:t4 var(--loop) ease-out infinite}
+.r4 .hl{animation:h4 var(--loop) ease-in-out infinite}
+.e5{animation:e5 var(--loop) ease-in-out infinite}
+.r5 .tick{animation:t5 var(--loop) ease-out infinite}
+.r5 .hl{animation:h5 var(--loop) ease-in-out infinite}
+.e6{animation:e6 var(--loop) ease-in-out infinite}
+.r6 .tick{animation:t6 var(--loop) ease-out infinite}
+.r6 .hl{animation:h6 var(--loop) ease-in-out infinite}
+.e7{animation:e7 var(--loop) ease-in-out infinite}
+.r7 .tick{animation:t7 var(--loop) ease-out infinite}
+.r7 .hl{animation:h7 var(--loop) ease-in-out infinite}
+.e8{animation:e8 var(--loop) ease-in-out infinite}
+.r8 .tick{animation:t8 var(--loop) ease-out infinite}
+.r8 .hl{animation:h8 var(--loop) ease-in-out infinite}
+.badge{animation:bd var(--loop) linear infinite}
+  #pause:checked ~ .stage, #pause:checked ~ .stage *, #pause:checked ~ .list, #pause:checked ~ .list * { animation-play-state: paused; }
+  .list:hover, .list:hover .row *, .list:hover ~ .stage, .list:hover ~ .stage * { animation-play-state: paused; }
+  .list:focus-within, .list:focus-within .row *, .list:focus-within ~ .stage, .list:focus-within ~ .stage * { animation-play-state: paused; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top"><span class="mark">Chatter</span><span class="chip">.NET 10</span></header>
+<main>
+<h1>Same handlers. Any broker.</h1>
+<p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+<div class="cta-row">
+<a class="cta" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>View on GitHub</a>
+<code class="install">dotnet add package Chatter.CQRS</code>
+</div>
+<div class="scene">
+<input type="checkbox" id="pause">
+<label for="pause">Pause animation</label>
+<ol class="list" role="list" aria-label="Chatter packages">
+<li class="row r0">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md">Chatter.CQRS</a><span class="why">In-process Commands, Queries and Events, with a composable Command Pipeline.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.CQRS" aria-label="NuGet package Chatter.CQRS">NuGet</a>
+</li>
+<li class="row r1">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md">Chatter.MessageBrokers</a><span class="why">Technology-agnostic brokered messaging: Receivers, sending, routing, Inbox/Outbox and Recovery.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers" aria-label="NuGet package Chatter.MessageBrokers">NuGet</a>
+</li>
+<li class="row r2">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md">Chatter.MessageBrokers.AzureServiceBus</a><span class="why">Azure Service Bus transport: queues, topic subscriptions, sessions and cross-entity transactions.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus">NuGet</a>
+</li>
+<li class="row r3">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md">Chatter.MessageBrokers.AzureServiceBus.Auth</a><span class="why">Microsoft Entra ID token authentication for the Azure Service Bus transport.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus.Auth">NuGet</a>
+</li>
+<li class="row r4">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/README.md">Chatter.MessageBrokers.RabbitMQ</a><span class="why">RabbitMQ transport over externally provisioned exchanges and queues.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ" aria-label="NuGet package Chatter.MessageBrokers.RabbitMQ">NuGet</a>
+</li>
+<li class="row r5">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md">Chatter.MessageBrokers.SqlServiceBroker</a><span class="why">SQL Server Service Broker transport over Service Broker conversations.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker" aria-label="NuGet package Chatter.MessageBrokers.SqlServiceBroker">NuGet</a>
+</li>
+<li class="row r6">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md">Chatter.MessageBrokers.Reliability.EntityFramework</a><span class="why">EF Core Inbox, Outbox and Unit of Work, stored in your own DbContext.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework" aria-label="NuGet package Chatter.MessageBrokers.Reliability.EntityFramework">NuGet</a>
+</li>
+<li class="row r7">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md">Chatter.MessageBrokers.Reliability.Cosmos</a><span class="why">Azure Cosmos DB Document Tier, Standalone Inbox Gate and change-feed Outbox Relay.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos" aria-label="NuGet package Chatter.MessageBrokers.Reliability.Cosmos">NuGet</a>
+</li>
+<li class="row r8">
+<span class="hl" aria-hidden="true"></span>
+<svg class="st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="ring" cx="12" cy="12" r="10"/><g class="tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="body"><a class="pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md">Chatter.SqlChangeFeed</a><span class="why">Typed insert, update and delete notifications from a watched SQL Server table.</span></div>
+<a class="nuget" href="https://www.nuget.org/packages/Chatter.SqlChangeFeed" aria-label="NuGet package Chatter.SqlChangeFeed">NuGet</a>
+</li>
+</ol>
+<div class="stage">
+<svg viewBox="0 0 720 280" role="img" aria-labelledby="st-t st-d" xmlns="http://www.w3.org/2000/svg">
+<title id="st-t">Nine Chatter packages handled as messages</title>
+<desc id="st-d">Nine package envelopes wait in a queue, and the Message Dispatcher passes each one to an IMessageHandler&lt;PackageListed&gt; handler, which ticks it off. Every package then lands on its row in the list, checked.</desc>
+<rect class="lane" x="8" y="8" width="232" height="176" rx="12"/>
+<text x="24" y="36">queue</text>
+<path class="flow" d="M246 96h24M262 88l8 8-8 8"/>
+<circle class="glow" cx="322" cy="96" r="56"/>
+<circle class="disp" cx="322" cy="96" r="42"/>
+<path class="icon" d="M304 96h34M328 86l10 10-10 10"/>
+<text x="322" y="168" text-anchor="middle">Message</text>
+<text x="322" y="196" text-anchor="middle">Dispatcher</text>
+<path class="flow" d="M368 96h46M406 88l8 8-8 8"/>
+<rect class="card" x="424" y="8" width="288" height="176" rx="12"/>
+<text class="mono" x="440" y="44">IMessageHandler</text>
+<text class="mono" x="440" y="76">&lt;PackageListed&gt;</text>
+<g class="badge"><circle cx="676" cy="146" r="18"/><path d="M667 146l7 7 12-14"/></g>
+<rect class="track" x="30" y="230" width="660" height="46" rx="10"/>
+<g class="env e0"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e1"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e2"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e3"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e4"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e5"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e6"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e7"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+<g class="env e8"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g>
+</svg>
+</div>
+<p class="anchor"><code>Dispatch(PackageListed)</code> &rarr; <code>IMessageHandler&lt;PackageListed&gt;</code></p>
+</div>
+</main>
+<footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</div>
+</body>
+</html>
