@@ -368,35 +368,35 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.SqlChangeFeed" aria-label="NuGet package Chatter.SqlChangeFeed">NuGet</a>
 </li>
 </ol>
-<div class="stg-stage"><svg viewBox="0 0 800 680" role="img" aria-labelledby="stg-title stg-desc" xmlns="http://www.w3.org/2000/svg">
+<div class="stg-stage"><svg viewBox="0 0 800 1000" role="img" aria-labelledby="stg-title stg-desc" xmlns="http://www.w3.org/2000/svg">
 <title id="stg-title">One PlaceOrder handler, reached through every Chatter package</title>
-<desc id="stg-desc">A PlaceOrderHandler is reached in-process, then across services from a Storefront to an Orders service. Messages arrive over Azure Service Bus, RabbitMQ and SQL Server Service Broker, with Inbox and Outbox reliability, Recovery and a SQL change feed. Each message labelled with a package name checks that package off in the list beside the stage. The final frame shows the same handler behind all three transports and all 9 packages checked.</desc>
+<desc id="stg-desc">A PlaceOrderHandler is reached in-process, then across services from a Storefront to an Orders service. Messages arrive over Azure Service Bus, RabbitMQ and SQL Server Service Broker, with Inbox and Outbox reliability, Recovery and a SQL change feed. Commands are checked against an Inbox in a Reliability.EntityFramework Receiver, and a duplicate delivery is skipped. Each message labelled with a package name checks that package off in the list beside the stage. The final frame shows the same handler behind all three transports and all 9 packages checked.</desc>
 <defs>
 <marker id="stg-ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="stg-arrowhead" d="M0 0L10 5L0 10z"/></marker>
 </defs>
 <g class="stg-sc stg-svc" aria-hidden="true">
-<rect class="stg-box" x="40" y="40" width="720" height="112" rx="14"/>
-<text class="stg-lbl" x="60" y="68">Storefront</text>
-<text class="stg-code" x="400" y="104" text-anchor="middle">Dispatch(PlaceOrder)</text>
-<line class="stg-ln stg-x-wire" x1="400" y1="152" x2="400" y2="220" stroke-dasharray="68"/>
-<rect class="stg-box" x="40" y="220" width="720" height="380" rx="14"/>
-<text class="stg-lbl" x="60" y="246">Orders service</text>
-<rect class="stg-pill" x="200" y="256" width="400" height="34" rx="17"/>
-<text class="stg-nm" x="400" y="279" text-anchor="middle">Brokered Message Receiver</text>
+<rect class="stg-box" x="40" y="48" width="720" height="120" rx="14"/>
+<text class="stg-lbl" x="60" y="78">Storefront</text>
+<text class="stg-code" x="400" y="114" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="stg-ln stg-x-wire" x1="400" y1="168" x2="400" y2="256" stroke-dasharray="88"/>
+<rect class="stg-box" x="40" y="256" width="720" height="634" rx="14"/>
+<text class="stg-lbl" x="60" y="286">Orders service</text>
+<rect class="stg-pill" x="160" y="334" width="480" height="44" rx="22"/>
+<text class="stg-nm" x="400" y="364" text-anchor="middle">Brokered Message Receiver</text>
 </g>
 <g class="stg-sc stg-b1"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="26" text-anchor="middle">In-process</text>
-<rect class="stg-box" x="40" y="40" width="720" height="440" rx="14"/>
-<text class="stg-lbl" x="60" y="68">Orders service</text>
-<text class="stg-code" x="400" y="104" text-anchor="middle">Dispatch(PlaceOrder)</text>
-<line class="stg-ln" x1="400" y1="110" x2="400" y2="126" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="260" y="130" width="280" height="36" rx="18"/>
-<text class="stg-nm" x="400" y="154" text-anchor="middle">Message Dispatcher</text>
-<line class="stg-ln" x1="400" y1="166" x2="400" y2="192" marker-end="url(#stg-ah)"/>
-<rect class="stg-ring stg-x-ring" x="230" y="196" width="340" height="84" rx="42"/>
-<text class="stg-nm" x="400" y="244" text-anchor="middle">Command Pipeline</text>
-<line class="stg-ln-acc" x1="400" y1="280" x2="400" y2="326" marker-end="url(#stg-ah)"/>
-<g class="stg-mv stg-e0"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-50" y="2" width="46" height="24" rx="12"/><text class="stg-chipc" x="-27" y="19" text-anchor="middle">CQRS</text></g>
+<text class="stg-cap" x="400" y="34" text-anchor="middle">In-process</text>
+<rect class="stg-box" x="40" y="48" width="720" height="652" rx="14"/>
+<text class="stg-lbl" x="60" y="78">Orders service</text>
+<text class="stg-code" x="400" y="114" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="stg-ln" x1="400" y1="124" x2="400" y2="164" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="240" y="168" width="320" height="48" rx="24"/>
+<text class="stg-nm" x="400" y="200" text-anchor="middle">Message Dispatcher</text>
+<line class="stg-ln" x1="400" y1="216" x2="400" y2="262" marker-end="url(#stg-ah)"/>
+<rect class="stg-ring stg-x-ring" x="200" y="266" width="400" height="112" rx="56"/>
+<text class="stg-nm" x="400" y="329" text-anchor="middle">Command Pipeline</text>
+<line class="stg-ln-acc" x1="400" y1="378" x2="400" y2="508" marker-end="url(#stg-ah)"/>
+<g class="stg-mv stg-e0"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-74" y="2" width="68" height="30" rx="15"/><text class="stg-chipc" x="-40" y="24" text-anchor="middle">CQRS</text></g>
 </g></g>
 <g class="stg-sc stg-b2"><g aria-hidden="true">
 <text class="stg-cap" x="400" y="26" text-anchor="middle">Across services</text>
