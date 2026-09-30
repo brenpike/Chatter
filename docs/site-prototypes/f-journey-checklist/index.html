@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Chatter: Same handlers. Any broker.</title>
+<meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0B0A12;
+  --surface: #16131F;
+  --line: #2A2540;
+  --ink: #EDEAF6;
+  --ink-muted: #A9A3BD;
+  --accent: #512BD4;
+  --accent-ink: #A78BFA;
+  --warn: #F0B429;
+  --fail: #F47067;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --loop: 20s;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-text-size-adjust: 100%; }
+body { margin: 0; min-height: 100vh; }
+.page { max-width: 1160px; margin: 0 auto; padding: 20px 16px 40px; }
+a { color: var(--accent-ink); }
+a:focus-visible, #pause:focus-visible + label { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+.top { display: flex; align-items: center; gap: 10px; }
+.wordmark { font-weight: 700; font-size: 18px; letter-spacing: .02em; }
+.chip { font-family: var(--mono); font-size: 13px; color: var(--ink-muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+
+h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 14px; letter-spacing: -.01em; }
+.lede { max-width: 62ch; margin: 0 0 24px; font-size: clamp(1rem, 2.6vw, 1.2rem); color: var(--ink-muted); }
+
+.cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px; margin-bottom: 32px; }
+.cta { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 0 24px; background: var(--accent); color: #fff; border: 1px solid var(--accent-ink); border-radius: 10px; font-weight: 600; font-size: 17px; text-decoration: none; }
+.cta svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
+.cta:hover { background: #5f3ce0; border-color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.cta:active { transform: translateY(1px); }
+.install { display: inline-block; max-width: 100%; font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+
+/* scene: DOM order is pause control, list, stage, anchor; flex order sets the stacked visual order */
+.scene { position: relative; display: flex; flex-direction: column; gap: 18px; }
+#pause { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); }
+#pause + label { order: 1; align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; min-height: 44px; min-width: 44px; padding: 0 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; font-size: 15px; cursor: pointer; }
+#pause + label::before { content: ""; width: 18px; height: 18px; border: 2px solid var(--ink-muted); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1; flex: none; }
+#pause:checked + label::before { content: "\2713"; background: var(--accent); border-color: var(--accent-ink); color: var(--ink); }
+
+.stg-stage { order: 2; width: 100%; min-width: 0; }
+.anchor { order: 3; margin: 0; text-align: center; font-family: var(--mono); font-size: 14px; color: var(--ink-muted); overflow-wrap: anywhere; }
+.anchor code { font-family: inherit; color: var(--ink); }
+
+/* package list: plain HTML, present and clickable in every frame; base state is the finished frame */
+.lst-list { order: 4; list-style: none; margin: 0; padding: 0; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.lst-row { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 12px; align-items: start; padding: 0 6px 0 14px; border-top: 1px solid var(--line); }
+.lst-row:first-child { border-top: 0; border-radius: 11px 11px 0 0; }
+.lst-row:last-child { border-radius: 0 0 11px 11px; }
+.lst-hl { position: absolute; inset: 0; background: rgba(81, 43, 212, .2); border-radius: inherit; transform: scaleX(0); transform-origin: 0 50%; pointer-events: none; }
+.lst-st, .lst-body, .lst-nuget { position: relative; z-index: 1; }
+.lst-st { width: 24px; height: 24px; margin-top: 10px; }
+.lst-ring { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
+.lst-tick { transform-box: fill-box; transform-origin: center; }
+.lst-tick circle { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1.5; }
+.lst-tick path { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.lst-pkg { display: block; min-height: 44px; padding: 12px 0; font-family: var(--mono); font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.lst-pkg:hover { color: var(--ink); }
+.lst-why { display: block; margin-top: -6px; padding-bottom: 12px; font-size: 14px; color: var(--ink-muted); }
+.lst-nuget { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; color: var(--ink-muted); text-decoration: underline; text-underline-offset: 3px; }
+.lst-nuget:hover { color: var(--ink); }
+
+/* @F:STAGE-CSS */
+
+footer { margin-top: 32px; }
+footer a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--ink-muted); }
+
+@media (min-width: 960px) {
+  .scene { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "lbl lbl" "stg lst" "anc lst"; column-gap: 28px; row-gap: 18px; align-items: start; }
+  #pause + label { grid-area: lbl; }
+  .stg-stage { grid-area: stg; }
+  .anchor { grid-area: anc; }
+  .lst-list { grid-area: lst; }
+}
+@media (max-width: 480px) {
+  .page { padding-inline: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pause, #pause + label { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+/* @F:ANIM-B1-4 */
+/* @F:ANIM-B5-8 */
+/* @F:ANIM-B9-FIN */
+  #pause:checked ~ .stg-stage, #pause:checked ~ .stg-stage *, #pause:checked ~ .lst-list, #pause:checked ~ .lst-list * { animation-play-state: paused; }
+  .lst-list:focus-within, .lst-list:focus-within *, .lst-list:focus-within ~ .stg-stage, .lst-list:focus-within ~ .stg-stage * { animation-play-state: paused; }
+  @media (hover: hover) {
+    .lst-list:hover, .lst-list:hover *, .lst-list:hover ~ .stg-stage, .lst-list:hover ~ .stg-stage * { animation-play-state: paused; }
+  }
+}
+</style>
+</head>
+<body>
+<div class="page">
+<header class="top"><span class="wordmark">Chatter</span><span class="chip">.NET 10</span></header>
+<main>
+<h1>Same handlers. Any broker.</h1>
+<p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
+<div class="cta-row">
+<a class="cta" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>View on GitHub</a>
+<code class="install">dotnet add package Chatter.CQRS</code>
+</div>
+<div class="scene">
+<input type="checkbox" id="pause">
+<label for="pause">Pause animation</label>
+<ol class="lst-list" role="list" aria-label="Chatter packages">
+<li class="lst-row lst-r0">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md">Chatter.CQRS</a><span class="lst-why">Dispatches Commands, Queries and Events in-process through the Message Dispatcher and a composable Command Pipeline.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.CQRS" aria-label="NuGet package Chatter.CQRS">NuGet</a>
+</li>
+<li class="lst-row lst-r1">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md">Chatter.MessageBrokers</a><span class="lst-why">Brokered Message Receivers, sending and routing, Inbox/Outbox reliability and Recovery: Retry, Circuit Breaker, Error Queue.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers" aria-label="NuGet package Chatter.MessageBrokers">NuGet</a>
+</li>
+<li class="lst-row lst-r2">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md">Chatter.MessageBrokers.AzureServiceBus</a><span class="lst-why">Azure Service Bus transport: queue receivers, topic subscriptions, sessions and cross-entity transactions.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus">NuGet</a>
+</li>
+<li class="lst-row lst-r3">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md">Chatter.MessageBrokers.AzureServiceBus.Auth</a><span class="lst-why">Microsoft Entra ID token authentication for the Azure Service Bus transport, including managed identity.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus.Auth">NuGet</a>
+</li>
+<li class="lst-row lst-r4">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/README.md">Chatter.MessageBrokers.RabbitMQ</a><span class="lst-why">RabbitMQ transport over externally provisioned exchanges and queues.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ" aria-label="NuGet package Chatter.MessageBrokers.RabbitMQ">NuGet</a>
+</li>
+<li class="lst-row lst-r5">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md">Chatter.MessageBrokers.SqlServiceBroker</a><span class="lst-why">SQL Server Service Broker transport over Service Broker conversations and queues you provision.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker" aria-label="NuGet package Chatter.MessageBrokers.SqlServiceBroker">NuGet</a>
+</li>
+<li class="lst-row lst-r6">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md">Chatter.MessageBrokers.Reliability.EntityFramework</a><span class="lst-why">EF Core Inbox, Outbox and Unit of Work, stored in your own DbContext.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework" aria-label="NuGet package Chatter.MessageBrokers.Reliability.EntityFramework">NuGet</a>
+</li>
+<li class="lst-row lst-r7">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md">Chatter.MessageBrokers.Reliability.Cosmos</a><span class="lst-why">Azure Cosmos DB Document Tier, Standalone Inbox Gate and change-feed Outbox Relay.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos" aria-label="NuGet package Chatter.MessageBrokers.Reliability.Cosmos">NuGet</a>
+</li>
+<li class="lst-row lst-r8">
+<span class="lst-hl" aria-hidden="true"></span>
+<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
+<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md">Chatter.SqlChangeFeed</a><span class="lst-why">Watched SQL Server table changes delivered as RowInsertedEvent, RowUpdatedEvent and RowDeletedEvent over SQL Server Service Broker.</span></div>
+<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.SqlChangeFeed" aria-label="NuGet package Chatter.SqlChangeFeed">NuGet</a>
+</li>
+</ol>
+<div class="stg-stage"><!-- @F:STAGE-SVG --></div>
+<p class="anchor">One handler follows a message through every feature, and each package is checked off as it is used.</p>
+</div>
+</main>
+<footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
+</div>
+</body>
+</html>
