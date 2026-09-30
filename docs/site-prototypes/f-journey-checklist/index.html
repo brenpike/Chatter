@@ -153,7 +153,30 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 }
 
 @media (prefers-reduced-motion: no-preference) {
-/* @F:ANIM-B1-4 */
+  .stg-b1 { animation: stg-b1 var(--loop) linear infinite; }
+  .stg-svc { animation: stg-svc var(--loop) linear infinite; }
+  .stg-x-wire { animation: stg-x-wire var(--loop) linear infinite; }
+  .stg-b2 { animation: stg-b2 var(--loop) linear infinite; }
+  .stg-b3 { animation: stg-b3 var(--loop) linear infinite; }
+  .stg-b4 { animation: stg-b4 var(--loop) linear infinite; }
+  .stg-x-ring { animation: stg-x-ring var(--loop) linear infinite; }
+  .stg-x-tok { animation: stg-x-tok var(--loop) linear infinite; }
+  .stg-e0 { animation: stg-e0 var(--loop) ease-in-out infinite; }
+  .stg-e1 { animation: stg-e1 var(--loop) ease-in-out infinite; }
+  .stg-e2 { animation: stg-e2 var(--loop) ease-in-out infinite; }
+  .stg-e3 { animation: stg-e3 var(--loop) ease-in-out infinite; }
+  @keyframes stg-b1 { 0% { opacity: 0; } 0.5% { opacity: 1; } 9.5% { opacity: 1; } 10% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-svc { 0% { opacity: 0; } 9.5% { opacity: 0; } 10% { opacity: 1; } 74% { opacity: 1; } 74.5% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-wire { 0% { stroke-dashoffset: 68; } 10% { stroke-dashoffset: 68; } 12% { stroke-dashoffset: 0; } 74.5% { stroke-dashoffset: 0; } 75% { stroke-dashoffset: 68; } 100% { stroke-dashoffset: 68; } }
+  @keyframes stg-b2 { 0% { opacity: 0; } 10% { opacity: 0; } 10.5% { opacity: 1; } 16.6% { opacity: 1; } 17.1% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b3 { 0% { opacity: 0; } 16.6% { opacity: 0; } 17.1% { opacity: 1; } 28.5% { opacity: 1; } 29% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b4 { 0% { opacity: 0; } 24% { opacity: 0; } 24.5% { opacity: 1; } 28.5% { opacity: 1; } 29% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-ring { 0% { opacity: 1; } 5.5% { opacity: 1; } 6% { opacity: 0.4; } 7% { opacity: 1; } 100% { opacity: 1; } }
+  @keyframes stg-x-tok { 0% { opacity: 1; } 25% { opacity: 1; } 25.5% { opacity: 0.5; } 26.5% { opacity: 1; } 100% { opacity: 1; } }
+  @keyframes stg-e0 { 0% { opacity: 0; transform: translate(380px, 138px); } 3.5% { opacity: 0; transform: translate(380px, 138px); } 4% { opacity: 1; transform: translate(380px, 138px); } 6% { opacity: 1; transform: translate(380px, 224px); } 9% { opacity: 1; transform: translate(380px, 366px); } 9.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 138px); } }
+  @keyframes stg-e1 { 0% { opacity: 0; transform: translate(380px, 116px); } 10.5% { opacity: 0; transform: translate(380px, 116px); } 11% { opacity: 1; transform: translate(380px, 116px); } 12.5% { opacity: 1; transform: translate(380px, 190px); } 14% { opacity: 1; transform: translate(380px, 259px); } 16% { opacity: 1; transform: translate(380px, 386px); } 16.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
+  @keyframes stg-e2 { 0% { opacity: 0; transform: translate(380px, 116px); } 18.5% { opacity: 0; transform: translate(380px, 116px); } 19% { opacity: 1; transform: translate(380px, 116px); } 20.5% { opacity: 1; transform: translate(380px, 164px); } 21.7% { opacity: 1; transform: translate(380px, 259px); } 23% { opacity: 1; transform: translate(380px, 386px); } 23.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
+  @keyframes stg-e3 { 0% { opacity: 0; transform: translate(380px, 116px); } 25% { opacity: 0; transform: translate(380px, 116px); } 25.5% { opacity: 1; transform: translate(380px, 116px); } 26.3% { opacity: 1; transform: translate(380px, 164px); } 27% { opacity: 1; transform: translate(380px, 259px); } 28% { opacity: 1; transform: translate(380px, 386px); } 28.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
 /* @F:ANIM-B5-8 */
 /* @F:ANIM-B9-FIN */
   #pause:checked ~ .stg-stage, #pause:checked ~ .stg-stage *, #pause:checked ~ .lst-list, #pause:checked ~ .lst-list * { animation-play-state: paused; }
@@ -249,10 +272,38 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <rect class="stg-pill" x="200" y="256" width="400" height="34" rx="17"/>
 <text class="stg-nm" x="400" y="279" text-anchor="middle">Brokered Message Receiver</text>
 </g>
-<g class="stg-sc stg-b1"><!-- @F:SVG-B1 --></g>
-<g class="stg-sc stg-b2"><!-- @F:SVG-B2 --></g>
-<g class="stg-sc stg-b3"><!-- @F:SVG-B3 --></g>
-<g class="stg-sc stg-b4"><!-- @F:SVG-B4 --></g>
+<g class="stg-sc stg-b1"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">In-process</text>
+<rect class="stg-box" x="40" y="40" width="720" height="440" rx="14"/>
+<text class="stg-lbl" x="60" y="68">Orders service</text>
+<text class="stg-code" x="400" y="104" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="stg-ln" x1="400" y1="110" x2="400" y2="126" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="260" y="130" width="280" height="36" rx="18"/>
+<text class="stg-nm" x="400" y="154" text-anchor="middle">Message Dispatcher</text>
+<line class="stg-ln" x1="400" y1="166" x2="400" y2="192" marker-end="url(#stg-ah)"/>
+<rect class="stg-ring stg-x-ring" x="230" y="196" width="340" height="84" rx="42"/>
+<text class="stg-nm" x="400" y="244" text-anchor="middle">Command Pipeline</text>
+<line class="stg-ln-acc" x1="400" y1="280" x2="400" y2="326" marker-end="url(#stg-ah)"/>
+<g class="stg-mv stg-e0"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-50" y="2" width="46" height="24" rx="12"/><text class="stg-chipc" x="-27" y="19" text-anchor="middle">CQRS</text></g>
+</g></g>
+<g class="stg-sc stg-b2"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">Across services</text>
+<text class="stg-code" x="432" y="192">.AddMessageBrokers(...)</text>
+<g class="stg-mv stg-e1"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-129" y="2" width="125" height="24" rx="12"/><text class="stg-chipc" x="-66.5" y="19" text-anchor="middle">MessageBrokers</text></g>
+</g></g>
+<g class="stg-sc stg-b3"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">Across services</text>
+<line class="stg-ln-acc" x1="404" y1="172" x2="426" y2="172"/>
+<text class="stg-nm" x="432" y="178">Azure Service Bus</text>
+<text class="stg-code" x="400" y="490" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<g class="stg-mv stg-e2"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-137" y="2" width="133" height="24" rx="12"/><text class="stg-chipc" x="-70.5" y="19" text-anchor="middle">AzureServiceBus</text></g>
+</g></g>
+<g class="stg-sc stg-b4"><g aria-hidden="true">
+<rect class="stg-pill stg-x-tok" x="432" y="188" width="190" height="30" rx="15"/>
+<text class="stg-nm" x="527" y="209" text-anchor="middle">Entra ID token</text>
+<text class="stg-code" x="400" y="530" text-anchor="middle">.UseAadTokenProviderWithManagedIdentity(...)</text>
+<g class="stg-mv stg-e3"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-176" y="2" width="172" height="24" rx="12"/><text class="stg-chipc" x="-90" y="19" text-anchor="middle">AzureServiceBus.Auth</text></g>
+</g></g>
 <g class="stg-sc stg-b5"><!-- @F:SVG-B5 --></g>
 <g class="stg-sc stg-b6"><!-- @F:SVG-B6 --></g>
 <g class="stg-sc stg-b7"><!-- @F:SVG-B7 --></g>
