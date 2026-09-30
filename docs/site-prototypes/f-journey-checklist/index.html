@@ -177,7 +177,35 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
   @keyframes stg-e1 { 0% { opacity: 0; transform: translate(380px, 116px); } 10.5% { opacity: 0; transform: translate(380px, 116px); } 11% { opacity: 1; transform: translate(380px, 116px); } 12.5% { opacity: 1; transform: translate(380px, 190px); } 14% { opacity: 1; transform: translate(380px, 259px); } 16% { opacity: 1; transform: translate(380px, 386px); } 16.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
   @keyframes stg-e2 { 0% { opacity: 0; transform: translate(380px, 116px); } 18.5% { opacity: 0; transform: translate(380px, 116px); } 19% { opacity: 1; transform: translate(380px, 116px); } 20.5% { opacity: 1; transform: translate(380px, 164px); } 21.7% { opacity: 1; transform: translate(380px, 259px); } 23% { opacity: 1; transform: translate(380px, 386px); } 23.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
   @keyframes stg-e3 { 0% { opacity: 0; transform: translate(380px, 116px); } 25% { opacity: 0; transform: translate(380px, 116px); } 25.5% { opacity: 1; transform: translate(380px, 116px); } 26.3% { opacity: 1; transform: translate(380px, 164px); } 27% { opacity: 1; transform: translate(380px, 259px); } 28% { opacity: 1; transform: translate(380px, 386px); } 28.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
-/* @F:ANIM-B5-8 */
+  /* beats 5-8: stg-b7 (Inbox, Outbox, Outbox Processor / Relay pipeline) stays visible 43-62% and is shared by beat 7 (EF Core) and beat 8 (Cosmos);
+     stg-x-b7a holds the EF-only pieces (store tag, Outbox Processor label, code label) and cross-fades with stg-b8 (Cosmos tag, Outbox Relay label, code label) at 54%;
+     stg-x-inb / stg-x-cmt / stg-x-prc / stg-x-dot replay in each half: 46-53% for EF Core, 57-61% for Cosmos */
+  .stg-b5 { animation: stg-b5 var(--loop) linear infinite; }
+  .stg-b6 { animation: stg-b6 var(--loop) linear infinite; }
+  .stg-b7 { animation: stg-b7 var(--loop) linear infinite; }
+  .stg-b8 { animation: stg-b8 var(--loop) linear infinite; }
+  .stg-x-b7a { animation: stg-x-b7a var(--loop) linear infinite; }
+  .stg-x-inb { animation: stg-x-inb var(--loop) linear infinite; }
+  .stg-x-cmt { animation: stg-x-cmt var(--loop) linear infinite; }
+  .stg-x-prc { animation: stg-x-prc var(--loop) linear infinite; }
+  .stg-x-dot { animation: stg-x-dot var(--loop) linear infinite; }
+  .stg-e4 { animation: stg-e4 var(--loop) ease-in-out infinite; }
+  .stg-e5 { animation: stg-e5 var(--loop) ease-in-out infinite; }
+  .stg-e6 { animation: stg-e6 var(--loop) ease-in-out infinite; }
+  .stg-e7 { animation: stg-e7 var(--loop) ease-in-out infinite; }
+  @keyframes stg-b5 { 0% { opacity: 0; } 29% { opacity: 0; } 29.5% { opacity: 1; } 35.5% { opacity: 1; } 36% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b6 { 0% { opacity: 0; } 36% { opacity: 0; } 36.5% { opacity: 1; } 42.5% { opacity: 1; } 43% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b7 { 0% { opacity: 0; } 43% { opacity: 0; } 43.5% { opacity: 1; } 61.5% { opacity: 1; } 62% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b8 { 0% { opacity: 0; } 54% { opacity: 0; } 54.5% { opacity: 1; } 61.5% { opacity: 1; } 62% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-b7a { 0% { opacity: 0; } 43% { opacity: 0; } 43.5% { opacity: 1; } 54% { opacity: 1; } 54.5% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-inb { 0% { opacity: 0; } 46.8% { opacity: 0; } 47.1% { opacity: 1; } 48.6% { opacity: 1; } 49% { opacity: 0; } 57% { opacity: 0; } 57.3% { opacity: 1; } 58.4% { opacity: 1; } 58.7% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-cmt { 0% { stroke-dashoffset: 40; } 49.4% { stroke-dashoffset: 40; } 50.4% { stroke-dashoffset: 0; } 54% { stroke-dashoffset: 0; } 54.3% { stroke-dashoffset: 40; } 58.9% { stroke-dashoffset: 40; } 59.6% { stroke-dashoffset: 0; } 62% { stroke-dashoffset: 0; } 62.3% { stroke-dashoffset: 40; } 100% { stroke-dashoffset: 40; } }
+  @keyframes stg-x-prc { 0% { opacity: 0; } 50.6% { opacity: 0; } 50.9% { opacity: 1; } 51.6% { opacity: 1; } 52% { opacity: 0; } 59.6% { opacity: 0; } 59.9% { opacity: 1; } 60.2% { opacity: 1; } 60.5% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-dot { 0% { opacity: 0; transform: translate(0px, 0px); } 51.8% { opacity: 0; transform: translate(0px, 0px); } 52% { opacity: 1; transform: translate(0px, 0px); } 52.7% { opacity: 1; transform: translate(0px, 46px); } 52.9% { opacity: 0; transform: translate(0px, 46px); } 53% { opacity: 0; transform: translate(0px, 0px); } 60.3% { opacity: 0; transform: translate(0px, 0px); } 60.5% { opacity: 1; transform: translate(0px, 0px); } 61% { opacity: 1; transform: translate(0px, 46px); } 61.2% { opacity: 0; transform: translate(0px, 46px); } 61.3% { opacity: 0; transform: translate(0px, 0px); } 100% { opacity: 0; transform: translate(0px, 0px); } }
+  @keyframes stg-e4 { 0% { opacity: 0; transform: translate(380px, 116px); } 31.5% { opacity: 0; transform: translate(380px, 116px); } 32% { opacity: 1; transform: translate(380px, 116px); } 33% { opacity: 1; transform: translate(380px, 164px); } 34% { opacity: 1; transform: translate(380px, 259px); } 35% { opacity: 1; transform: translate(380px, 386px); } 35.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
+  @keyframes stg-e5 { 0% { opacity: 0; transform: translate(380px, 116px); } 38.5% { opacity: 0; transform: translate(380px, 116px); } 39% { opacity: 1; transform: translate(380px, 116px); } 40% { opacity: 1; transform: translate(380px, 164px); } 41% { opacity: 1; transform: translate(380px, 259px); } 42% { opacity: 1; transform: translate(380px, 386px); } 42.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
+  @keyframes stg-e6 { 0% { opacity: 0; transform: translate(380px, 116px); } 43.8% { opacity: 0; transform: translate(380px, 116px); } 44.1% { opacity: 1; transform: translate(380px, 116px); } 44.8% { opacity: 1; transform: translate(380px, 164px); } 45.6% { opacity: 1; transform: translate(380px, 259px); } 46.6% { opacity: 1; transform: translate(380px, 332px); } 48.6% { opacity: 1; transform: translate(380px, 332px); } 53% { opacity: 1; transform: translate(380px, 416px); } 53.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
+  @keyframes stg-e7 { 0% { opacity: 0; transform: translate(380px, 116px); } 54.8% { opacity: 0; transform: translate(380px, 116px); } 55.1% { opacity: 1; transform: translate(380px, 116px); } 55.8% { opacity: 1; transform: translate(380px, 164px); } 56.5% { opacity: 1; transform: translate(380px, 259px); } 57.2% { opacity: 1; transform: translate(380px, 332px); } 58.6% { opacity: 1; transform: translate(380px, 332px); } 61% { opacity: 1; transform: translate(380px, 416px); } 61.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
 /* @F:ANIM-B9-FIN */
   #pause:checked ~ .stg-stage, #pause:checked ~ .stg-stage *, #pause:checked ~ .lst-list, #pause:checked ~ .lst-list * { animation-play-state: paused; }
   .lst-list:focus-within, .lst-list:focus-within *, .lst-list:focus-within ~ .stg-stage, .lst-list:focus-within ~ .stg-stage * { animation-play-state: paused; }
@@ -304,10 +332,53 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <text class="stg-code" x="400" y="530" text-anchor="middle">.UseAadTokenProviderWithManagedIdentity(...)</text>
 <g class="stg-mv stg-e3"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-176" y="2" width="172" height="24" rx="12"/><text class="stg-chipc" x="-90" y="19" text-anchor="middle">AzureServiceBus.Auth</text></g>
 </g></g>
-<g class="stg-sc stg-b5"><!-- @F:SVG-B5 --></g>
-<g class="stg-sc stg-b6"><!-- @F:SVG-B6 --></g>
-<g class="stg-sc stg-b7"><!-- @F:SVG-B7 --></g>
-<g class="stg-sc stg-b8"><!-- @F:SVG-B8 --></g>
+<g class="stg-sc stg-b5"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">Across services</text>
+<line class="stg-ln-acc" x1="404" y1="172" x2="426" y2="172"/>
+<text class="stg-nm" x="432" y="178">RabbitMQ</text>
+<text class="stg-code" x="400" y="490" text-anchor="middle">.AddRabbitMq(...)</text>
+<g class="stg-mv stg-e4"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-83" y="2" width="79" height="24" rx="12"/><text class="stg-chipc" x="-43.5" y="19" text-anchor="middle">RabbitMQ</text></g>
+</g></g>
+<g class="stg-sc stg-b6"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">Across services</text>
+<line class="stg-ln-acc" x1="404" y1="172" x2="426" y2="172"/>
+<text class="stg-nm" x="432" y="178">SQL Server Service Broker</text>
+<text class="stg-code" x="400" y="490" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+<g class="stg-mv stg-e5"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-145" y="2" width="141" height="24" rx="12"/><text class="stg-chipc" x="-74.5" y="19" text-anchor="middle">SqlServiceBroker</text></g>
+</g></g>
+<g class="stg-sc stg-b7"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">Reliability</text>
+<rect class="stg-outline" x="70" y="300" width="660" height="290" rx="12"/>
+<rect class="stg-pill" x="320" y="330" width="160" height="32" rx="16"/>
+<text class="stg-nm" x="400" y="352" text-anchor="middle">Inbox</text>
+<rect class="stg-ring stg-x-inb" x="320" y="330" width="160" height="32" rx="16"/>
+<line class="stg-ln-acc" x1="400" y1="362" x2="400" y2="376" marker-end="url(#stg-ah)"/>
+<line class="stg-ln-acc" x1="400" y1="484" x2="400" y2="496" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="310" y="500" width="180" height="32" rx="16"/>
+<text class="stg-nm" x="400" y="522" text-anchor="middle">Outbox</text>
+<path class="stg-ok stg-x-cmt" d="M500 516l8 8 16-18" stroke-dasharray="40"/>
+<text class="stg-lbl" x="534" y="522">commit</text>
+<line class="stg-ln-acc" x1="400" y1="532" x2="400" y2="543" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="260" y="546" width="280" height="34" rx="17"/>
+<rect class="stg-ring stg-x-prc" x="260" y="546" width="280" height="34" rx="17"/>
+<line class="stg-ln-acc" x1="400" y1="580" x2="400" y2="622" marker-end="url(#stg-ah)"/>
+<circle class="stg-dot-evt stg-x-dot" cx="400" cy="580" r="5"/>
+<text class="stg-nm" x="412" y="618">OrderPlaced Event</text>
+<rect class="stg-stub" x="260" y="626" width="280" height="46" rx="10"/>
+<text class="stg-nm" x="400" y="654" text-anchor="middle">Billing service</text>
+<g class="stg-x-b7a">
+<text class="stg-lbl" x="88" y="322">EF Core &#183; your DbContext</text>
+<text class="stg-nm" x="400" y="569" text-anchor="middle">Outbox Processor</text>
+<text class="stg-code stg-sec" x="722" y="322" text-anchor="end">.WithInboxBehavior&lt;OrdersDbContext&gt;()</text>
+</g>
+<g class="stg-mv stg-e6"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-231" y="2" width="227" height="24" rx="12"/><text class="stg-chipc" x="-117.5" y="19" text-anchor="middle">Reliability.EntityFramework</text></g>
+</g></g>
+<g class="stg-sc stg-b8"><g aria-hidden="true">
+<text class="stg-lbl" x="88" y="322">Azure Cosmos DB</text>
+<text class="stg-nm" x="400" y="569" text-anchor="middle">Outbox Relay</text>
+<text class="stg-code stg-sec" x="722" y="322" text-anchor="end">.WithCosmosDocumentReliability&lt;PlaceOrder&gt;(...)</text>
+<g class="stg-mv stg-e7"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-161" y="2" width="157" height="24" rx="12"/><text class="stg-chipc" x="-82.5" y="19" text-anchor="middle">Reliability.Cosmos</text></g>
+</g></g>
 <g class="stg-sc stg-b9"><!-- @F:SVG-B9 --></g>
 <g class="stg-sc stg-b10"><!-- @F:SVG-B10 --></g>
 <g class="stg-fin" aria-hidden="true">
