@@ -74,7 +74,65 @@ h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 1
 .lst-nuget { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; color: var(--ink-muted); text-decoration: underline; text-underline-offset: 3px; }
 .lst-nuget:hover { color: var(--ink); }
 
-/* @F:STAGE-CSS */
+/* stage layout map (viewBox 0 0 800 680; all coordinates are viewBox units)
+   caption y: 26, x 400, text-anchor middle (stg-cap)
+   b1 in-process zone: box x40 y40 w720 h440 (Orders service); Message Dispatcher pill 260,130 280x36; Command Pipeline ring 230,196 340x84
+   shared service frame (stg-svc, visible for b2-b10): Storefront box x40 y40 w720 h112; label y68; Dispatch(PlaceOrder) text y104
+     wire start 400,152; wire end 400,220 (stg-x-wire, dash length 68); Orders service box x40 y220 w720 h380 (bottom y600)
+     Brokered Message Receiver pill x200 y256 w400 h34 (bottom y290, centre 400,273)
+   b7-b9 inner zone (Orders service): dashed outline x70 y300 w660 h290; label at 88,322; Inbox pill 320,330 160x32; Outbox pill 310,500 180x32; Outbox Processor pill 260,546 280x34; Billing service stub 260,626 280x46
+   b10 zone: Orders service box x40 y220 w720 h380, receiver pill as above; Recovery rows may use x200 y306 to y454, w400 h34
+   handler slot (where envelopes arrive = centre of the handler card): b1 400,380 | b2-b6 400,400 | b7-b9 400,430 (between Inbox y362 and Outbox y498) | b10 400,400
+   card slots: card is 520x100 centred on its slot (x140-660, slot y +-50); use translate(400px, Ypx) with Y from the slot above
+   final card translate: translate(400px, 312px) (card spans y262-362); slogan y187; connector M400 362 to chips; transport chips y427-527 at x25, x285, x545 (w230)
+   envelope outlet (after a handler slot): lower-right, target 745,648 (stage region x700-790 y620-675, outside the Orders box); envelopes are 40x28 glyphs (stg-env), origin at top-left */
+.stg-stage svg { display: block; width: 100%; height: auto; }
+.stg-stage text { fill: var(--ink); font-family: var(--sans); font-size: 20px; }
+.stg-box { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.stg-pill { fill: var(--bg); stroke: var(--ink-muted); stroke-width: 1.5; }
+.stg-ring { fill: none; stroke: var(--accent-ink); stroke-width: 2.5; }
+.stg-outline { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-dasharray: 6 6; }
+.stg-stub { fill: none; stroke: var(--ink-muted); stroke-width: 1.5; stroke-dasharray: 6 6; }
+.stg-ln { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
+.stg-ln-acc { fill: none; stroke: var(--accent-ink); stroke-width: 2; }
+.stg-ok { fill: none; stroke: var(--accent-ink); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.stg-x { fill: none; stroke: var(--fail); stroke-width: 4; stroke-linecap: round; }
+.stg-sw { fill: none; stroke: var(--warn); stroke-width: 3; stroke-linecap: round; }
+.stg-swc { fill: var(--warn); }
+.stg-glow { fill: var(--accent); }
+.stg-dot { fill: var(--accent-ink); }
+.stg-dot-evt { fill: var(--warn); }
+.stg-dot-fail { fill: var(--fail); }
+.stg-arrowhead { fill: var(--ink-muted); }
+.stg-cardbox { fill: var(--surface); stroke: var(--accent-ink); stroke-width: 2; }
+.stg-env rect { fill: var(--bg); stroke: var(--accent-ink); stroke-width: 1.5; }
+.stg-env path { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-linejoin: round; }
+.stg-mu { fill: var(--ink-muted); }
+.stg-ac { fill: var(--accent-ink); }
+.stg-stage .stg-cap { font-size: 22px; font-weight: 600; fill: var(--ink-muted); }
+.stg-stage .stg-lbl { font-size: 17px; fill: var(--ink-muted); }
+.stg-stage .stg-nm { font-size: 17px; }
+.stg-stage .stg-code { font-family: var(--mono); font-size: 17px; }
+.stg-stage .stg-tick { font-family: var(--mono); font-size: 15px; fill: var(--accent-ink); }
+.stg-stage .stg-cardt { font-family: var(--mono); font-size: 20px; }
+.stg-stage .stg-slogan { font-size: 40px; font-weight: 700; }
+.stg-stage .stg-chipn { font-size: 20px; font-weight: 600; }
+.stg-stage .stg-chipc { font-family: var(--mono); font-size: 13px; fill: var(--ink-muted); }
+
+/* static final frame: scene groups and moving parts hidden; slogan, chips and card shown */
+.stg-sc, .stg-mv { opacity: 0; }
+.stg-fin, .stg-card { opacity: 1; }
+.stg-card { transform: translate(400px, 312px); }
+
+@media (max-width: 700px) {
+  .stg-stage .stg-cap { font-size: 24px; }
+  .stg-stage .stg-lbl, .stg-stage .stg-nm, .stg-stage .stg-code { font-size: 24px; }
+  .stg-stage .stg-tick { font-size: 26px; }
+  .stg-stage .stg-cardt { font-size: 27px; }
+  .stg-stage .stg-slogan { font-size: 46px; }
+  .stg-stage .stg-chipn { font-size: 27px; }
+  .stg-sec { display: none; }
+}
 
 footer { margin-top: 32px; }
 footer a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--ink-muted); }
@@ -175,7 +233,51 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.SqlChangeFeed" aria-label="NuGet package Chatter.SqlChangeFeed">NuGet</a>
 </li>
 </ol>
-<div class="stg-stage"><!-- @F:STAGE-SVG --></div>
+<div class="stg-stage"><svg viewBox="0 0 800 680" role="img" aria-labelledby="stg-title stg-desc" xmlns="http://www.w3.org/2000/svg">
+<title id="stg-title">One PlaceOrder handler, reached through every Chatter package</title>
+<desc id="stg-desc">A PlaceOrderHandler is reached in-process, then across services from a Storefront to an Orders service. Messages arrive over Azure Service Bus, RabbitMQ and SQL Server Service Broker, with Inbox and Outbox reliability, Recovery and a SQL change feed. Each message labelled with a package name checks that package off in the list beside the stage. The final frame shows the same handler behind all three transports and all 9 packages checked.</desc>
+<defs>
+<marker id="stg-ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="stg-arrowhead" d="M0 0L10 5L0 10z"/></marker>
+</defs>
+<g class="stg-sc stg-svc" aria-hidden="true">
+<rect class="stg-box" x="40" y="40" width="720" height="112" rx="14"/>
+<text class="stg-lbl" x="60" y="68">Storefront</text>
+<text class="stg-code" x="400" y="104" text-anchor="middle">Dispatch(PlaceOrder)</text>
+<line class="stg-ln stg-x-wire" x1="400" y1="152" x2="400" y2="220" stroke-dasharray="68"/>
+<rect class="stg-box" x="40" y="220" width="720" height="380" rx="14"/>
+<text class="stg-lbl" x="60" y="246">Orders service</text>
+<rect class="stg-pill" x="200" y="256" width="400" height="34" rx="17"/>
+<text class="stg-nm" x="400" y="279" text-anchor="middle">Brokered Message Receiver</text>
+</g>
+<g class="stg-sc stg-b1"><!-- @F:SVG-B1 --></g>
+<g class="stg-sc stg-b2"><!-- @F:SVG-B2 --></g>
+<g class="stg-sc stg-b3"><!-- @F:SVG-B3 --></g>
+<g class="stg-sc stg-b4"><!-- @F:SVG-B4 --></g>
+<g class="stg-sc stg-b5"><!-- @F:SVG-B5 --></g>
+<g class="stg-sc stg-b6"><!-- @F:SVG-B6 --></g>
+<g class="stg-sc stg-b7"><!-- @F:SVG-B7 --></g>
+<g class="stg-sc stg-b8"><!-- @F:SVG-B8 --></g>
+<g class="stg-sc stg-b9"><!-- @F:SVG-B9 --></g>
+<g class="stg-sc stg-b10"><!-- @F:SVG-B10 --></g>
+<g class="stg-fin" aria-hidden="true">
+<text class="stg-slogan" x="400" y="187" text-anchor="middle">Same handlers. Any broker.</text>
+<path class="stg-ln-acc" d="M400 362V397M140 397H660M140 397V427M400 397V427M660 397V427"/>
+<rect class="stg-pill" x="25" y="427" width="230" height="100" rx="12"/>
+<text class="stg-chipn" x="140" y="459" text-anchor="middle"><tspan x="140">Azure </tspan><tspan x="140" dy="28">Service Bus</tspan></text>
+<text class="stg-chipc stg-sec" x="140" y="513" text-anchor="middle">.AddAzureServiceBus(...)</text>
+<rect class="stg-pill" x="285" y="427" width="230" height="100" rx="12"/>
+<text class="stg-chipn" x="400" y="473" text-anchor="middle">RabbitMQ</text>
+<text class="stg-chipc stg-sec" x="400" y="513" text-anchor="middle">.AddRabbitMq(...)</text>
+<rect class="stg-pill" x="545" y="427" width="230" height="100" rx="12"/>
+<text class="stg-chipn" x="660" y="459" text-anchor="middle"><tspan x="660">SQL Server </tspan><tspan x="660" dy="28">Service Broker</tspan></text>
+<text class="stg-chipc stg-sec" x="660" y="513" text-anchor="middle">.AddSqlServiceBroker(...)</text>
+</g>
+<g class="stg-card" aria-hidden="true">
+<rect class="stg-glow" x="-268" y="-58" width="536" height="116" rx="18" opacity="0.22"/>
+<rect class="stg-cardbox" x="-260" y="-50" width="520" height="100" rx="12"/>
+<text class="stg-cardt" x="0" y="-6" text-anchor="middle"><tspan x="0">public class PlaceOrderHandler </tspan><tspan x="0" dy="32">: IMessageHandler&lt;PlaceOrder&gt;</tspan></text>
+</g>
+</svg></div>
 <p class="anchor">One handler follows a message through every feature, and each package is checked off as it is used.</p>
 </div>
 </main>
