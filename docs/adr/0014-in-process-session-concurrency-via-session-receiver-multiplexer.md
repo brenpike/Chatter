@@ -144,6 +144,23 @@ way is what makes the recovery ladder convert it to a `Failed` Settlement Outcom
 and reported as such — instead of retrying forever or feeding failures to the Circuit Breaker for a condition
 no cooling period repairs.
 
+**Amended 2026-09-29 (#487): the "bare `Task`" premise above no longer holds.** Starting in
+`Chatter.MessageBrokers.AzureServiceBus` 2.4.1 (#374), the internal port's settlement members
+(`IServiceBusMessageReceiver.CompleteAsync` / `AbandonAsync` / `DeadLetterAsync`) no longer return a bare `Task` —
+they return `ServiceBusSettlementOutcome`, a third state alongside `Settled` and `NotOwed`:
+`DeliveryUnreachable`, for a settlement that cannot reach the delivery it targets. The multiplexer now answers
+`DeliveryUnreachable` when a settlement targets a message no held child delivered, instead of throwing, and
+`ServiceBusReceiver` reports that answer as a `Failed` settlement — the same path a released session already
+takes. Both goals this section states still hold: a message no child holds still cannot report `Settled`, and it
+is still not retried — but the second goal no longer depends on the recovery ladder converting a deterministic
+exception type into a terminal outcome, because the outcome is terminal from the moment the multiplexer answers
+it, whatever the retry or Circuit Breaker predicates are configured to do with an exception. Pinned by
+`WhenMultiplexingSessions.MustReportAnUnreachableDeliveryWhenCompletingAMessageNoChildHolds`,
+`...WhenAbandoningAMessageNoChildHolds` and `...WhenDeadLetteringAMessageNoChildHolds`
+(`src/Chatter.MessageBrokers.AzureServiceBus/tests/Receiving/UsingSessionReceiverMultiplexer/WhenMultiplexingSessions.cs`),
+and by `WhenAcknowledgingMessage.MustReportFailedWhenTheSessionMultiplexerNoLongerHoldsTheDelivery`
+(`src/Chatter.MessageBrokers.AzureServiceBus/tests/Receiving/UsingServiceBusReceiver/WhenAcknowledgingMessage.cs`).
+
 ### The stale-lock backstop is LOG-ONLY
 
 An earlier design for the multiplexer reclaimed a session slot when the held session's lock expiry had passed,
