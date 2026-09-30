@@ -166,8 +166,8 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
   .stg-e2 { animation: stg-e2 var(--loop) ease-in-out infinite; }
   .stg-e3 { animation: stg-e3 var(--loop) ease-in-out infinite; }
   @keyframes stg-b1 { 0% { opacity: 0; } 0.5% { opacity: 1; } 9.5% { opacity: 1; } 10% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-svc { 0% { opacity: 0; } 9.5% { opacity: 0; } 10% { opacity: 1; } 74% { opacity: 1; } 74.5% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-wire { 0% { stroke-dashoffset: 68; } 10% { stroke-dashoffset: 68; } 12% { stroke-dashoffset: 0; } 74.5% { stroke-dashoffset: 0; } 75% { stroke-dashoffset: 68; } 100% { stroke-dashoffset: 68; } }
+  @keyframes stg-svc { 0% { opacity: 0; } 9.5% { opacity: 0; } 10% { opacity: 1; } 84% { opacity: 1; } 84.5% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-wire { 0% { stroke-dashoffset: 68; } 10% { stroke-dashoffset: 68; } 12% { stroke-dashoffset: 0; } 84.5% { stroke-dashoffset: 0; } 85% { stroke-dashoffset: 68; } 100% { stroke-dashoffset: 68; } }
   @keyframes stg-b2 { 0% { opacity: 0; } 10% { opacity: 0; } 10.5% { opacity: 1; } 16.6% { opacity: 1; } 17.1% { opacity: 0; } 100% { opacity: 0; } }
   @keyframes stg-b3 { 0% { opacity: 0; } 16.6% { opacity: 0; } 17.1% { opacity: 1; } 28.5% { opacity: 1; } 29% { opacity: 0; } 100% { opacity: 0; } }
   @keyframes stg-b4 { 0% { opacity: 0; } 24% { opacity: 0; } 24.5% { opacity: 1; } 28.5% { opacity: 1; } 29% { opacity: 0; } 100% { opacity: 0; } }
@@ -206,7 +206,74 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
   @keyframes stg-e5 { 0% { opacity: 0; transform: translate(380px, 116px); } 38.5% { opacity: 0; transform: translate(380px, 116px); } 39% { opacity: 1; transform: translate(380px, 116px); } 40% { opacity: 1; transform: translate(380px, 164px); } 41% { opacity: 1; transform: translate(380px, 259px); } 42% { opacity: 1; transform: translate(380px, 386px); } 42.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
   @keyframes stg-e6 { 0% { opacity: 0; transform: translate(380px, 116px); } 43.8% { opacity: 0; transform: translate(380px, 116px); } 44.1% { opacity: 1; transform: translate(380px, 116px); } 44.8% { opacity: 1; transform: translate(380px, 164px); } 45.6% { opacity: 1; transform: translate(380px, 259px); } 46.6% { opacity: 1; transform: translate(380px, 332px); } 48.6% { opacity: 1; transform: translate(380px, 332px); } 53% { opacity: 1; transform: translate(380px, 416px); } 53.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
   @keyframes stg-e7 { 0% { opacity: 0; transform: translate(380px, 116px); } 54.8% { opacity: 0; transform: translate(380px, 116px); } 55.1% { opacity: 1; transform: translate(380px, 116px); } 55.8% { opacity: 1; transform: translate(380px, 164px); } 56.5% { opacity: 1; transform: translate(380px, 259px); } 57.2% { opacity: 1; transform: translate(380px, 332px); } 58.6% { opacity: 1; transform: translate(380px, 332px); } 61% { opacity: 1; transform: translate(380px, 416px); } 61.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
-/* @F:ANIM-B9-FIN */
+  /* beats 9-10 and final frame: Recovery at the Receiver (62-74%), SQL change feed (74-84%), then slogan, transport chips and card (84-98.5%);
+     the shared Orders frame (stg-svc, stg-x-wire) stays visible through 84%, and the Storefront box is covered by the SQL Server box in beat 10;
+     the handler card sits at slot y430 for beats 7-8, drops to y520 during Recovery so it stays clear of the Recovery rows, then y400 for beat 10 */
+  .stg-b9 { animation: stg-b9 var(--loop) linear infinite; }
+  .stg-b10 { animation: stg-b10 var(--loop) linear infinite; }
+  .stg-x-c1 { animation: stg-x-c1 var(--loop) linear infinite; }
+  .stg-x-c2 { animation: stg-x-c2 var(--loop) linear infinite; }
+  .stg-x-c3 { animation: stg-x-c3 var(--loop) linear infinite; }
+  .stg-x-cbc { animation: stg-x-cbc var(--loop) linear infinite; }
+  .stg-x-cbo { animation: stg-x-cbo var(--loop) linear infinite; }
+  .stg-x-eq { animation: stg-x-eq var(--loop) linear infinite; }
+  .stg-x-rx { animation: stg-x-rx var(--loop) linear infinite; }
+  .stg-x-trg { animation: stg-x-trg var(--loop) linear infinite; }
+  .stg-rdot { animation: stg-rdot var(--loop) linear infinite; }
+  .stg-e8 { animation: stg-e8 var(--loop) ease-in-out infinite; }
+  .stg-fin { animation: stg-fin var(--loop) linear infinite; }
+  .stg-card { animation: stg-card var(--loop) ease-in-out infinite; }
+  @keyframes stg-b9 { 0% { opacity: 0; } 61.5% { opacity: 0; } 62% { opacity: 1; } 73.5% { opacity: 1; } 74% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-b10 { 0% { opacity: 0; } 73.5% { opacity: 0; } 74% { opacity: 1; } 83.5% { opacity: 1; } 84% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-c1 { 0% { opacity: 0; } 63.2% { opacity: 0; } 63.5% { opacity: 1; } 65% { opacity: 1; } 65.3% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-c2 { 0% { opacity: 0; } 65% { opacity: 0; } 65.3% { opacity: 1; } 66.8% { opacity: 1; } 67.1% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-c3 { 0% { opacity: 0; } 66.8% { opacity: 0; } 67.1% { opacity: 1; } 73.9% { opacity: 1; } 74.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-cbc { 0% { opacity: 1; } 67.7% { opacity: 1; } 68.1% { opacity: 0; } 74% { opacity: 0; } 74.3% { opacity: 1; } 100% { opacity: 1; } }
+  @keyframes stg-x-cbo { 0% { opacity: 0; } 67.7% { opacity: 0; } 68.1% { opacity: 1; } 73.9% { opacity: 1; } 74.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-eq { 0% { opacity: 0; } 68.8% { opacity: 0; } 69.2% { opacity: 1; } 73.9% { opacity: 1; } 74.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-rx { 0% { opacity: 0; } 63.2% { opacity: 0; } 63.5% { opacity: 1; } 73.9% { opacity: 1; } 74.2% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-x-trg { 0% { opacity: 0; } 76% { opacity: 0; } 76.3% { opacity: 1; } 78% { opacity: 1; } 78.4% { opacity: 0; } 100% { opacity: 0; } }
+  @keyframes stg-rdot { 0% { opacity: 0; transform: translate(570px, 290px); } 62.4% { opacity: 0; transform: translate(570px, 290px); } 62.7% { opacity: 1; transform: translate(570px, 290px); } 63.4% { opacity: 1; transform: translate(570px, 323px); } 64.4% { opacity: 1; transform: translate(570px, 296px); } 65.2% { opacity: 1; transform: translate(570px, 323px); } 66.2% { opacity: 1; transform: translate(570px, 296px); } 67% { opacity: 1; transform: translate(570px, 323px); } 68.4% { opacity: 1; transform: translate(570px, 323px); } 69.8% { opacity: 1; transform: translate(570px, 437px); } 72.8% { opacity: 1; transform: translate(570px, 437px); } 73.2% { opacity: 0; transform: translate(570px, 437px); } 73.3% { opacity: 0; transform: translate(570px, 290px); } 100% { opacity: 0; transform: translate(570px, 290px); } }
+  @keyframes stg-e8 { 0% { opacity: 0; transform: translate(380px, 116px); } 78.5% { opacity: 0; transform: translate(380px, 116px); } 78.8% { opacity: 1; transform: translate(380px, 116px); } 80% { opacity: 1; transform: translate(380px, 164px); } 81% { opacity: 1; transform: translate(380px, 259px); } 82% { opacity: 1; transform: translate(380px, 259px); } 83% { opacity: 1; transform: translate(380px, 386px); } 83.5% { opacity: 0; transform: translate(745px, 648px); } 100% { opacity: 0; transform: translate(380px, 116px); } }
+  @keyframes stg-fin { 0% { opacity: 0; } 84% { opacity: 0; } 85.5% { opacity: 1; } 98.5% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes stg-card { 0% { transform: translate(400px, 380px); } 9.5% { transform: translate(400px, 380px); } 10.5% { transform: translate(400px, 400px); } 42.5% { transform: translate(400px, 400px); } 43.5% { transform: translate(400px, 430px); } 61.5% { transform: translate(400px, 430px); } 62.5% { transform: translate(400px, 520px); } 73.5% { transform: translate(400px, 520px); } 74.5% { transform: translate(400px, 400px); } 83.5% { transform: translate(400px, 400px); } 85.5% { transform: translate(400px, 312px); } 98.5% { transform: translate(400px, 312px); } 100% { transform: translate(400px, 380px); } }
+  /* package list: a tick scales in as each package envelope is handled, and its row highlight sweeps across */
+  .lst-r0 .lst-tick { animation: lst-t0 var(--loop) ease-out infinite; }
+  .lst-r1 .lst-tick { animation: lst-t1 var(--loop) ease-out infinite; }
+  .lst-r2 .lst-tick { animation: lst-t2 var(--loop) ease-out infinite; }
+  .lst-r3 .lst-tick { animation: lst-t3 var(--loop) ease-out infinite; }
+  .lst-r4 .lst-tick { animation: lst-t4 var(--loop) ease-out infinite; }
+  .lst-r5 .lst-tick { animation: lst-t5 var(--loop) ease-out infinite; }
+  .lst-r6 .lst-tick { animation: lst-t6 var(--loop) ease-out infinite; }
+  .lst-r7 .lst-tick { animation: lst-t7 var(--loop) ease-out infinite; }
+  .lst-r8 .lst-tick { animation: lst-t8 var(--loop) ease-out infinite; }
+  .lst-r0 .lst-hl { animation: lst-h0 var(--loop) ease-in-out infinite; }
+  .lst-r1 .lst-hl { animation: lst-h1 var(--loop) ease-in-out infinite; }
+  .lst-r2 .lst-hl { animation: lst-h2 var(--loop) ease-in-out infinite; }
+  .lst-r3 .lst-hl { animation: lst-h3 var(--loop) ease-in-out infinite; }
+  .lst-r4 .lst-hl { animation: lst-h4 var(--loop) ease-in-out infinite; }
+  .lst-r5 .lst-hl { animation: lst-h5 var(--loop) ease-in-out infinite; }
+  .lst-r6 .lst-hl { animation: lst-h6 var(--loop) ease-in-out infinite; }
+  .lst-r7 .lst-hl { animation: lst-h7 var(--loop) ease-in-out infinite; }
+  .lst-r8 .lst-hl { animation: lst-h8 var(--loop) ease-in-out infinite; }
+  @keyframes lst-t0 { 0% { transform: scale(0); } 9% { transform: scale(0); } 9.5% { transform: scale(1.15); } 10.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t1 { 0% { transform: scale(0); } 16% { transform: scale(0); } 16.5% { transform: scale(1.15); } 17.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t2 { 0% { transform: scale(0); } 23% { transform: scale(0); } 23.5% { transform: scale(1.15); } 24.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t3 { 0% { transform: scale(0); } 28% { transform: scale(0); } 28.5% { transform: scale(1.15); } 29.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t4 { 0% { transform: scale(0); } 35% { transform: scale(0); } 35.5% { transform: scale(1.15); } 36.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t5 { 0% { transform: scale(0); } 42% { transform: scale(0); } 42.5% { transform: scale(1.15); } 43.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t6 { 0% { transform: scale(0); } 53% { transform: scale(0); } 53.5% { transform: scale(1.15); } 54.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t7 { 0% { transform: scale(0); } 61% { transform: scale(0); } 61.5% { transform: scale(1.15); } 62.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-t8 { 0% { transform: scale(0); } 83% { transform: scale(0); } 83.5% { transform: scale(1.15); } 84.2% { transform: scale(1); } 98.5% { transform: scale(1); } 100% { transform: scale(0); } }
+  @keyframes lst-h0 { 0% { transform: scaleX(0); } 8% { transform: scaleX(0); } 9.5% { transform: scaleX(1); } 11.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h1 { 0% { transform: scaleX(0); } 15% { transform: scaleX(0); } 16.5% { transform: scaleX(1); } 18.5% { transform: scaleX(0); } 70% { transform: scaleX(0); } 71.5% { transform: scaleX(1); } 73% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h2 { 0% { transform: scaleX(0); } 22% { transform: scaleX(0); } 23.5% { transform: scaleX(1); } 25.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h3 { 0% { transform: scaleX(0); } 27% { transform: scaleX(0); } 28.5% { transform: scaleX(1); } 30.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h4 { 0% { transform: scaleX(0); } 34% { transform: scaleX(0); } 35.5% { transform: scaleX(1); } 37.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h5 { 0% { transform: scaleX(0); } 41% { transform: scaleX(0); } 42.5% { transform: scaleX(1); } 44.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h6 { 0% { transform: scaleX(0); } 52% { transform: scaleX(0); } 53.5% { transform: scaleX(1); } 55.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h7 { 0% { transform: scaleX(0); } 60% { transform: scaleX(0); } 61.5% { transform: scaleX(1); } 63.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes lst-h8 { 0% { transform: scaleX(0); } 82% { transform: scaleX(0); } 83.5% { transform: scaleX(1); } 85.5% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
   #pause:checked ~ .stg-stage, #pause:checked ~ .stg-stage *, #pause:checked ~ .lst-list, #pause:checked ~ .lst-list * { animation-play-state: paused; }
   .lst-list:focus-within, .lst-list:focus-within *, .lst-list:focus-within ~ .stg-stage, .lst-list:focus-within ~ .stg-stage * { animation-play-state: paused; }
   @media (hover: hover) {
@@ -379,8 +446,40 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <text class="stg-code stg-sec" x="722" y="322" text-anchor="end">.WithCosmosDocumentReliability&lt;PlaceOrder&gt;(...)</text>
 <g class="stg-mv stg-e7"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-161" y="2" width="157" height="24" rx="12"/><text class="stg-chipc" x="-82.5" y="19" text-anchor="middle">Reliability.Cosmos</text></g>
 </g></g>
-<g class="stg-sc stg-b9"><!-- @F:SVG-B9 --></g>
-<g class="stg-sc stg-b10"><!-- @F:SVG-B10 --></g>
+<g class="stg-sc stg-b9"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">Recovery</text>
+<rect class="stg-pill" x="200" y="306" width="400" height="34" rx="17"/>
+<text class="stg-nm" x="220" y="329">Retry</text>
+<text class="stg-code stg-x-c1" x="300" y="329">1</text>
+<text class="stg-code stg-x-c2" x="300" y="329">2</text>
+<text class="stg-code stg-x-c3" x="300" y="329">3</text>
+<line class="stg-ln" x1="400" y1="340" x2="400" y2="352"/>
+<rect class="stg-pill" x="200" y="352" width="400" height="34" rx="17"/>
+<circle class="stg-swc" cx="222" cy="369" r="4"/>
+<circle class="stg-swc" cx="254" cy="369" r="4"/>
+<g class="stg-x-cbc"><line class="stg-sw" x1="222" y1="369" x2="254" y2="369"/><text class="stg-lbl" x="520" y="375" text-anchor="end">closed</text></g>
+<g class="stg-x-cbo"><line class="stg-sw" x1="222" y1="369" x2="246" y2="357"/><text class="stg-nm" x="520" y="375" text-anchor="end">open</text></g>
+<text class="stg-nm" x="276" y="375">Circuit Breaker</text>
+<g class="stg-x-eq"><line class="stg-ln" x1="400" y1="386" x2="400" y2="418" marker-end="url(#stg-ah)"/><text class="stg-nm" x="416" y="408">max receives exceeded</text></g>
+<rect class="stg-pill" x="200" y="420" width="400" height="34" rx="17"/>
+<text class="stg-nm" x="220" y="443">Error Queue</text>
+<path class="stg-x stg-x-rx" d="M520 313L540 333M540 313L520 333"/>
+<circle class="stg-dot-fail stg-mv stg-rdot" cx="0" cy="0" r="7"/>
+</g></g>
+<g class="stg-sc stg-b10"><g aria-hidden="true">
+<text class="stg-cap" x="400" y="26" text-anchor="middle">SQL change feed</text>
+<rect class="stg-box" x="40" y="40" width="720" height="112" rx="14"/>
+<text class="stg-lbl" x="60" y="68">SQL Server &#183; Orders table</text>
+<rect class="stg-pill" x="60" y="80" width="110" height="32" rx="16"/>
+<text class="stg-nm" x="115" y="102" text-anchor="middle">Trigger</text>
+<rect class="stg-ring stg-x-trg" x="60" y="80" width="110" height="32" rx="16"/>
+<text class="stg-code" x="190" y="102">INSERT INTO dbo.Orders (...)</text>
+<text class="stg-nm" x="416" y="192">SQL Server Service Broker</text>
+<text class="stg-lbl" x="740" y="246" text-anchor="end">Event</text>
+<text class="stg-code" x="400" y="476" text-anchor="middle">IMessageHandler&lt;RowInsertedEvent&lt;OrderRow&gt;&gt;</text>
+<text class="stg-code" x="400" y="510" text-anchor="middle">.AddSqlChangeFeed&lt;OrderRow&gt;(...)</text>
+<g class="stg-mv stg-e8"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-121" y="2" width="117" height="24" rx="12"/><text class="stg-chipc" x="-62.5" y="19" text-anchor="middle">SqlChangeFeed</text></g>
+</g></g>
 <g class="stg-fin" aria-hidden="true">
 <text class="stg-slogan" x="400" y="187" text-anchor="middle">Same handlers. Any broker.</text>
 <path class="stg-ln-acc" d="M400 362V397M140 397H660M140 397V427M400 397V427M660 397V427"/>
