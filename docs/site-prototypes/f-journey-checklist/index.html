@@ -467,29 +467,47 @@ footer a { display: inline-flex; align-items: center; min-height: 44px; font-siz
 <g class="stg-mv stg-e6"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-350" y="2" width="344" height="30" rx="15"/><text class="stg-chipc" x="-178" y="24" text-anchor="middle">Reliability.EntityFramework</text></g>
 </g></g>
 <g class="stg-sc stg-b8"><g aria-hidden="true">
-<text class="stg-lbl" x="88" y="322">Azure Cosmos DB</text>
-<text class="stg-nm" x="400" y="569" text-anchor="middle">Outbox Relay</text>
-<text class="stg-code stg-sec" x="722" y="322" text-anchor="end">.WithCosmosDocumentReliability&lt;PlaceOrder&gt;(...)</text>
-<g class="stg-mv stg-e7"><g class="stg-env"><rect width="40" height="28" rx="4"/><path d="M3 4l17 13L37 4"/></g><rect class="stg-pill" x="-161" y="2" width="157" height="24" rx="12"/><text class="stg-chipc" x="-82.5" y="19" text-anchor="middle">Reliability.Cosmos</text></g>
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Reliability</text>
+<text class="stg-lbl" x="740" y="286" text-anchor="end">Cosmos DB &#183; your container</text>
+<text class="stg-code stg-sec" x="400" y="318" text-anchor="middle">.WithCosmosDocumentReliability&lt;PlaceOrder&gt;(...)</text>
+<rect class="stg-outline" x="60" y="392" width="680" height="450" rx="12"/>
+<line class="stg-ln-acc" x1="430" y1="437" x2="458" y2="437" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="464" y="410" width="268" height="48" rx="24"/>
+<text class="stg-nm" x="598" y="441" text-anchor="middle">Inbox</text>
+<rect class="stg-ring stg-x-inc" x="464" y="410" width="268" height="48" rx="24"/>
+<line class="stg-ln-acc" x1="400" y1="458" x2="400" y2="580" marker-end="url(#stg-ah)"/>
+<rect class="stg-pill" x="300" y="732" width="200" height="40" rx="20"/>
+<text class="stg-nm" x="400" y="758" text-anchor="middle">Outbox</text>
+<path class="stg-ok stg-x-cmt" d="M512 750l9 9 18-20" stroke-dasharray="40"/>
+<text class="stg-lbl" x="546" y="760">commit</text>
+<rect class="stg-pill" x="240" y="786" width="320" height="42" rx="21"/>
+<rect class="stg-ring stg-x-prc" x="240" y="786" width="320" height="42" rx="21"/>
+<text class="stg-nm" x="400" y="813" text-anchor="middle">Outbox Relay</text>
+<line class="stg-ln-acc" x1="400" y1="828" x2="400" y2="904" marker-end="url(#stg-ah)"/>
+<circle class="stg-dot-evt stg-x-dot" cx="400" cy="828" r="5"/>
+<text class="stg-nm" x="414" y="872">OrderPlaced Event</text>
+<rect class="stg-stub" x="250" y="910" width="300" height="56" rx="10"/>
+<text class="stg-nm" x="400" y="944" text-anchor="middle">Billing service</text>
+<g class="stg-mv stg-e7"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-242" y="2" width="236" height="30" rx="15"/><text class="stg-chipc" x="-124" y="24" text-anchor="middle">Reliability.Cosmos</text></g>
 </g></g>
 <g class="stg-sc stg-b9"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="26" text-anchor="middle">Recovery</text>
-<rect class="stg-pill" x="200" y="306" width="400" height="34" rx="17"/>
-<text class="stg-nm" x="220" y="329">Retry</text>
-<text class="stg-code stg-x-c1" x="300" y="329">1</text>
-<text class="stg-code stg-x-c2" x="300" y="329">2</text>
-<text class="stg-code stg-x-c3" x="300" y="329">3</text>
-<line class="stg-ln" x1="400" y1="340" x2="400" y2="352"/>
-<rect class="stg-pill" x="200" y="352" width="400" height="34" rx="17"/>
-<circle class="stg-swc" cx="222" cy="369" r="4"/>
-<circle class="stg-swc" cx="254" cy="369" r="4"/>
-<g class="stg-x-cbc"><line class="stg-sw" x1="222" y1="369" x2="254" y2="369"/><text class="stg-lbl" x="520" y="375" text-anchor="end">closed</text></g>
-<g class="stg-x-cbo"><line class="stg-sw" x1="222" y1="369" x2="246" y2="357"/><text class="stg-nm" x="520" y="375" text-anchor="end">open</text></g>
-<text class="stg-nm" x="276" y="375">Circuit Breaker</text>
-<g class="stg-x-eq"><line class="stg-ln" x1="400" y1="386" x2="400" y2="418" marker-end="url(#stg-ah)"/><text class="stg-nm" x="416" y="408">max receives exceeded</text></g>
-<rect class="stg-pill" x="200" y="420" width="400" height="34" rx="17"/>
-<text class="stg-nm" x="220" y="443">Error Queue</text>
-<path class="stg-x stg-x-rx" d="M520 313L540 333M540 313L520 333"/>
+<text class="stg-cap" x="400" y="34" text-anchor="middle">Recovery</text>
+<rect class="stg-pill" x="160" y="396" width="480" height="44" rx="22"/>
+<text class="stg-nm" x="184" y="425">Retry</text>
+<text class="stg-code stg-x-c1" x="290" y="425">1</text>
+<text class="stg-code stg-x-c2" x="290" y="425">2</text>
+<text class="stg-code stg-x-c3" x="290" y="425">3</text>
+<line class="stg-ln" x1="400" y1="440" x2="400" y2="456"/>
+<rect class="stg-pill" x="160" y="456" width="480" height="44" rx="22"/>
+<circle class="stg-swc" cx="400" cy="478" r="4"/>
+<circle class="stg-swc" cx="436" cy="478" r="4"/>
+<g class="stg-x-cbc"><line class="stg-sw" x1="400" y1="478" x2="436" y2="478"/><text class="stg-lbl" x="600" y="485" text-anchor="end">closed</text></g>
+<g class="stg-x-cbo"><line class="stg-sw" x1="400" y1="478" x2="424" y2="464"/><text class="stg-nm" x="600" y="485" text-anchor="end">open</text></g>
+<text class="stg-nm" x="184" y="485">Circuit Breaker</text>
+<g class="stg-x-eq"><line class="stg-ln" x1="400" y1="500" x2="400" y2="560" marker-end="url(#stg-ah)"/><text class="stg-nm" x="416" y="536">max receives exceeded</text></g>
+<rect class="stg-pill" x="160" y="562" width="480" height="44" rx="22"/>
+<text class="stg-nm" x="184" y="591">Error Queue</text>
+<path class="stg-x stg-x-rx" d="M576 346L596 366M596 346L576 366"/>
 <circle class="stg-dot-fail stg-mv stg-rdot" cx="0" cy="0" r="7"/>
 </g></g>
 <g class="stg-sc stg-b10"><g aria-hidden="true">
