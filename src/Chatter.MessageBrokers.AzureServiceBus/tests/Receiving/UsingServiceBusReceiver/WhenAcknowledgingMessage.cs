@@ -233,6 +233,33 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             result.Reason.Should().Contain("could no longer be reached");
         }
 
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustReportFailedWhenTheSessionMultiplexerNoLongerHoldsTheDelivery(string operation)
+        {
+            var child = new InMemorySessionMessageReceiver();
+            var sut = CreateSutOver(new SessionReceiverMultiplexer(1, () => child, "receiver", Mock.Of<ILogger>()));
+            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
+            var transactionContext = new TransactionContext("receiver");
+
+            var receive = sut.ReceiveMessageAsync(transactionContext, CancellationToken.None);
+            await child.WaitForReceiveCountAsync(1, TimeSpan.FromSeconds(10));
+            child.YieldMessage(ServiceBusMessageFactory.ReceivedMessage(sessionId: "session-a"));
+            var context = await receive;
+            await sut.StopReceiver();
+
+            var result = await CreateSettlementCall(sut, operation, context, transactionContext)();
+
+            result.Outcome.Should().Be(SettlementOutcome.Failed);
+            result.IsSettled.Should().BeFalse();
+            result.Reason.Should().Contain("could no longer be reached");
+            child.CompletedMessages.Should().BeEmpty();
+            child.AbandonedMessages.Should().BeEmpty();
+            child.DeadLetteredMessages.Should().BeEmpty();
+        }
+
         // ReceiveAndDelete reaching the infrastructure is not the same absence: Azure Service Bus removed the
         // delivery on receipt, so nothing was owed. The receiver must not report that as a failure.
         [Theory]

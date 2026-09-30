@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-09-29
+
+### Fixed
+
+- A settlement that targets a delivery no held session receiver can still reach now reports a `Failed` settlement instead of throwing `InvalidOperationException`. This is only reachable on a session receiver holding more than one session at a time (`MaxConcurrentCalls` above 1 on a session-enabled receiver), when a settlement runs after the receiver has stopped holding the session it targeted. Upgraders relying on the previous exception should note: the error log no longer carries an exception, the receive span's and metric's `error.type` is now `settlement_failed` instead of the exception type with no exception event recorded, and a custom retry or circuit-breaker predicate matching `InvalidOperationException` on this path no longer retries or counts it (#487).
+
 ## [3.0.1] - 2026-09-24
 
 ### Removed

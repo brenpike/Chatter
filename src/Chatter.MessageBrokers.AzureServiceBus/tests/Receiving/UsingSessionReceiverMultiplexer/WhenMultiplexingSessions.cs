@@ -243,40 +243,49 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionRec
         }
 
         [Fact]
-        public async Task MustThrowWhenCompletingAMessageNoChildHolds()
+        public async Task MustReportAnUnreachableDeliveryWhenCompletingAMessageNoChildHolds()
         {
             var sut = CreateSut(maxConcurrentSessions: 2);
+            await ArrangeBusyFirstChildAsync(sut);
 
-            Func<Task> act = () => sut.CompleteAsync(UnknownMessage());
+            var completion = await sut.CompleteAsync(UnknownMessage());
 
-            // An answered outcome would have the receiver report a settlement that never happened.
-            await act.Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage($"*{_receiverPath}*")
-                .WithMessage("*unknown-message*");
+            completion.Should().Be(ServiceBusSettlementOutcome.DeliveryUnreachable);
+            AssertNoChildSettledAnything();
         }
 
         [Fact]
-        public async Task MustThrowWhenAbandoningAMessageNoChildHolds()
+        public async Task MustReportAnUnreachableDeliveryWhenAbandoningAMessageNoChildHolds()
         {
             var sut = CreateSut(maxConcurrentSessions: 2);
+            await ArrangeBusyFirstChildAsync(sut);
 
-            Func<Task> act = () => sut.AbandonAsync(UnknownMessage(), new Dictionary<string, object>());
+            var abandonment = await sut.AbandonAsync(UnknownMessage(), new Dictionary<string, object>());
 
-            await act.Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage($"*{_receiverPath}*")
-                .WithMessage("*unknown-message*");
+            abandonment.Should().Be(ServiceBusSettlementOutcome.DeliveryUnreachable);
+            AssertNoChildSettledAnything();
         }
 
         [Fact]
-        public async Task MustThrowWhenDeadLetteringAMessageNoChildHolds()
+        public async Task MustReportAnUnreachableDeliveryWhenDeadLetteringAMessageNoChildHolds()
         {
             var sut = CreateSut(maxConcurrentSessions: 2);
+            await ArrangeBusyFirstChildAsync(sut);
 
-            Func<Task> act = () => sut.DeadLetterAsync(UnknownMessage(), "reason", "description");
+            var deadLettering = await sut.DeadLetterAsync(UnknownMessage(), "reason", "description");
 
-            await act.Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage($"*{_receiverPath}*")
-                .WithMessage("*unknown-message*");
+            deadLettering.Should().Be(ServiceBusSettlementOutcome.DeliveryUnreachable);
+            AssertNoChildSettledAnything();
+        }
+
+        private void AssertNoChildSettledAnything()
+        {
+            foreach (var child in _children)
+            {
+                child.CompletedMessages.Should().BeEmpty();
+                child.AbandonedMessages.Should().BeEmpty();
+                child.DeadLetteredMessages.Should().BeEmpty();
+            }
         }
 
         [Fact]

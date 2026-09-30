@@ -211,7 +211,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// <remarks>
         /// A message this multiplexer does not hold is a SILENT no-op, not a fault: a cancelled worker still runs the
         /// finally that raises this signal, so throwing here would report an error on every shutdown. Contrast with
-        /// settlement, where an unroutable message MUST throw.
+        /// settlement, where an unroutable message answers <see cref="ServiceBusSettlementOutcome.DeliveryUnreachable"/>.
         /// </remarks>
         public void DeliveryReleased(ServiceBusReceivedMessage message)
         {
@@ -236,13 +236,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // The delivering child owns the session the delivery is locked against, so its answer is FORWARDED
         // unchanged — the multiplexer never upgrades a child's unreachable delivery into a settlement.
         public Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
-            => DeliveringChildFor(message).CompleteAsync(message);
+            => DeliveringChildFor(message) is { } child
+                ? child.CompleteAsync(message)
+                : Task.FromResult(ServiceBusSettlementOutcome.DeliveryUnreachable);
 
         public Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
-            => DeliveringChildFor(message).AbandonAsync(message, propertiesToModify);
+            => DeliveringChildFor(message) is { } child
+                ? child.AbandonAsync(message, propertiesToModify)
+                : Task.FromResult(ServiceBusSettlementOutcome.DeliveryUnreachable);
 
         public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
-            => DeliveringChildFor(message).DeadLetterAsync(message, deadLetterReason, deadLetterErrorDescription);
+            => DeliveringChildFor(message) is { } child
+                ? child.DeadLetterAsync(message, deadLetterReason, deadLetterErrorDescription)
+                : Task.FromResult(ServiceBusSettlementOutcome.DeliveryUnreachable);
 
         /// <summary>
         /// Closes every child, cancels the receives armed on them, observes their pending receives and wakes a parked
@@ -386,26 +392,37 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             return _slotsByDeliveredMessage.TryGetValue(message, out slot);
         }
 
+        /// <summary>
+        /// Answers the child that delivered <paramref name="message"/>, or null when no held child delivered it.
+        /// </summary>
         /// <remarks>
-        /// A message no child holds THROWS rather than answering an outcome, so the receiver never records an
-        /// acknowledgement that never happened and never commits the local transaction for a delivery the broker
-        /// will redeliver. <see cref="InvalidOperationException"/> is deliberate: the module's retry and circuit
-        /// breaker predicates match only <see cref="ServiceBusException"/>, so this is neither retried nor counted
-        /// against the breaker, and the receiver's settlement recovery reports it as a failed settlement.
+        /// INVARIANT: settling a message no held child delivered answers
+        /// <see cref="ServiceBusSettlementOutcome.DeliveryUnreachable"/>, never
+        /// <see cref="ServiceBusSettlementOutcome.Settled"/> and never a throw. Pinned by
+        /// WhenMultiplexingSessions.MustReportAnUnreachableDeliveryWhenCompletingAMessageNoChildHolds,
+        /// MustReportAnUnreachableDeliveryWhenAbandoningAMessageNoChildHolds and
+        /// MustReportAnUnreachableDeliveryWhenDeadLetteringAMessageNoChildHolds, and end to end through the receiver
+        /// by WhenAcknowledgingMessage.MustReportFailedWhenTheSessionMultiplexerNoLongerHoldsTheDelivery; answering
+        /// Settled in the unroutable branch turns all six cases red, as does restoring a throw there.
         /// </remarks>
         private IServiceBusSessionChildReceiver DeliveringChildFor(ServiceBusReceivedMessage message)
         {
             lock (_syncLock)
             {
-                if (TryFindSlotFor(message, out var slot))
-                {
-                    return slot.Child;
-                }
+                return TryFindSlotFor(message, out var slot) ? slot.Child : null;
             }
-
-            throw new InvalidOperationException($"No held Azure Service Bus session on '{_receiverPath}' delivered message '{message?.MessageId}' (session '{message?.SessionId}'), so the delivery cannot be settled");
         }
 
+        // INVARIANT: the slot being replaced serves no delivery — its BusyMessage is null and no
+        // _slotsByDeliveredMessage entry names it — so there is nothing to retire and no settlement can route to the
+        // replacement child. Replacement runs only when the slot's own armed receive faults, a slot is armed only
+        // while BusyMessage is null, and BusyMessage and its mapping entry are set and cleared together, so the slot
+        // is still unmapped when that receive faults. The arming half is pinned by
+        // WhenMultiplexingSessions.MustNotRearmAChildWhileItIsServingADelivery: dropping the BusyMessage check in
+        // ArmIdleChildren turns it red. No test pins the other half, that ReceiveAsync has one caller at a time; it
+        // holds because BrokeredMessageReceiver.MessageReceiverLoopAsync awaits each receive before the next. A
+        // concurrent second caller could re-arm the slot after the first clears its PendingReceive but before it marks
+        // the slot busy.
         private async Task ReplaceDisposedChildAsync(SessionSlot slot, ObjectDisposedException disposed)
         {
             var disposedChild = slot.Child;
