@@ -413,6 +413,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
+        // INVARIANT: the slot being replaced serves no delivery — its BusyMessage is null and no
+        // _slotsByDeliveredMessage entry names it — so there is nothing to retire and no settlement can route to the
+        // replacement child. Replacement runs only when the slot's own armed receive faults, a slot is armed only
+        // while BusyMessage is null, and BusyMessage and its mapping entry are set and cleared together, so the slot
+        // is still unmapped when that receive faults. The arming half is pinned by
+        // WhenMultiplexingSessions.MustNotRearmAChildWhileItIsServingADelivery: dropping the BusyMessage check in
+        // ArmIdleChildren turns it red. No test pins the other half, that ReceiveAsync has one caller at a time; it
+        // holds because BrokeredMessageReceiver.MessageReceiverLoopAsync awaits each receive before the next. A
+        // concurrent second caller could re-arm the slot after the first clears its PendingReceive but before it marks
+        // the slot busy.
         private async Task ReplaceDisposedChildAsync(SessionSlot slot, ObjectDisposedException disposed)
         {
             var disposedChild = slot.Child;
