@@ -578,7 +578,7 @@ function frame(ts){
     if(p>=1){anims.splice(i,1);a.r(true)}}
   for(i=timers.length-1;i>=0;i--){a=timers[i];if(a.g!==gen){timers.splice(i,1);a.r(false);continue}if(simT>=a.at){timers.splice(i,1);a.r(true)}}
   tickBreaker();tickMetrics();
-  if(docVis&&stageVis)requestAnimationFrame(frame);else{running=false;last=0}
+  if(docVis&&stageVis&&!paused)requestAnimationFrame(frame);else{running=false;last=0}
 }
 function kick(){if(!running&&docVis&&stageVis){running=true;last=0;requestAnimationFrame(frame)}}
 function abortAll(){gen++;var t=timers.splice(0),a=anims.splice(0);t.forEach(function(x){x.r(false)});a.forEach(function(x){x.r(false)});tokL.textContent='';fxL.textContent=''}
