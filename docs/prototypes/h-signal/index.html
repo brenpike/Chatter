@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chatter · Signal</title>
+<meta name="description" content="Chatter: modular .NET libraries for domain-driven Web APIs and microservices. An in-process CQRS core with technology-agnostic brokered messaging. Follow one message from birth to broker.">
+<meta name="theme-color" content="#03090b">
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,300;1,9..144,400&family=Hanken+Grotesk:wght@400;500;600&family=Martian+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme: dark;
+  --abyss:#03090b; --deep:#061517; --ink:#ecf4f0; --soft:#b4c7bf; --mute:#86a097;
+  --gold:#ffe3a1; --amber:#ff9f43; --green:#7cf5b0; --coral:#ff6f7d; --blue:#a9c8ff;
+  --glass:rgba(7,21,23,.66); --edge:rgba(150,240,200,.16);
+  --display:"Fraunces", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --body:"Hanken Grotesk", "Avenir Next", "Segoe UI", Roboto, system-ui, sans-serif;
+  --mono:"Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --gut-l:max(16px, env(safe-area-inset-left, 0px));
+  --gut-r:max(16px, env(safe-area-inset-right, 0px));
+}
+*{box-sizing:border-box}
+html{background:var(--abyss);color:var(--ink);-webkit-text-size-adjust:100%;scroll-behavior:auto}
+body{margin:0;background:var(--abyss);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.55;overflow-x:hidden}
+a{color:var(--green);text-underline-offset:3px}
+a:hover{color:var(--gold)}
+:focus-visible{outline:2px solid var(--gold);outline-offset:3px;border-radius:6px}
+code{font-family:var(--mono);font-size:.82em}
+.skip{position:absolute;left:-999px;top:8px;z-index:50;background:var(--gold);color:#111;padding:10px 14px;border-radius:10px}
+.skip:focus{left:16px}
+
+/* backdrop */
+.abyss{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+   radial-gradient(120% 70% at 75% 0%, rgba(32,92,78,.42), transparent 60%),
+   radial-gradient(90% 60% at 10% 100%, rgba(120,70,20,.22), transparent 65%),
+   linear-gradient(180deg,#041012 0%, #03090b 55%, #020607 100%)}
+#scene{position:fixed;left:0;top:0;width:100%;height:100vh;height:100lvh;z-index:1;pointer-events:none;display:block}
+.grain{position:fixed;inset:0;z-index:2;pointer-events:none;background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%)}
+
+/* top bar */
+.bar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;justify-content:space-between;
+  padding:max(6px, env(safe-area-inset-top,0px)) var(--gut-r) 6px var(--gut-l);
+  background:linear-gradient(180deg, rgba(3,9,11,.92) 40%, rgba(3,9,11,0))}
+.brand{font-family:var(--display);font-style:italic;font-weight:400;font-size:20px;color:var(--ink);text-decoration:none;display:inline-flex;align-items:center;gap:8px;min-height:44px}
+.brand i{width:9px;height:9px;border-radius:50%;background:var(--gold);box-shadow:0 0 12px 3px rgba(255,210,127,.7)}
+.bar-r{display:flex;gap:6px;align-items:center}
+.ibtn{appearance:none;border:1px solid var(--edge);background:rgba(7,21,23,.6);color:var(--ink);font:500 12px/1 var(--mono);
+  min-height:44px;min-width:44px;padding:0 12px;border-radius:999px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;text-decoration:none;
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.ibtn:hover{border-color:rgba(255,227,161,.5);color:var(--gold)}
+.ibtn svg{width:14px;height:14px;fill:currentColor}
+.prog{position:fixed;top:0;left:0;height:2px;width:100%;transform-origin:0 0;transform:scaleX(0);z-index:21;
+  background:linear-gradient(90deg,var(--green),var(--gold))}
+
+main{position:relative;z-index:5}
+
+/* hero */
+.hero{position:relative;min-height:175vh;min-height:175svh}
+.hero-in{position:sticky;top:0;min-height:100vh;min-height:100svh;display:flex;flex-direction:column;justify-content:flex-end;
+  padding:90px var(--gut-r) calc(28px + env(safe-area-inset-bottom,0px)) var(--gut-l)}
+.kicker{font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--green);margin:0 0 10px}
+h1{font-family:var(--display);font-weight:300;font-style:italic;font-size:clamp(68px, 22vw, 176px);line-height:.86;letter-spacing:-.035em;margin:0 0 14px;
+  background:linear-gradient(180deg,#fff7e0 10%, #ffd98c 60%, #e59a4a 100%);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 28px rgba(255,190,100,.25))}
+.tag{font-family:var(--display);font-weight:300;font-size:clamp(25px,6.6vw,40px);line-height:1.12;margin:0 0 12px;color:var(--ink);letter-spacing:-.01em}
+.tag em{color:var(--gold);font-style:italic}
+.lede{color:var(--soft);margin:0 0 18px;max-width:34em;font-size:16px}
+.pill{display:flex;align-items:center;gap:8px;max-width:100%;width:max-content;border:1px solid rgba(255,227,161,.35);border-radius:999px;
+  background:rgba(7,21,23,.72);padding:4px 4px 4px 14px;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.pill code{font-size:clamp(11px,3.1vw,13px);color:var(--gold);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.pill code b{color:var(--mute);font-weight:400}
+.pill button{appearance:none;border:0;background:var(--gold);color:#1a1405;font:600 13px/1 var(--body);min-height:44px;min-width:58px;padding:0 14px;border-radius:999px;cursor:pointer;flex:none}
+.cue{display:flex;gap:10px;align-items:center;margin-top:20px;flex-wrap:wrap}
+.cue a{min-height:44px;display:inline-flex;align-items:center;gap:8px;padding:0 4px;font:500 12px var(--mono);color:var(--soft);text-decoration:none}
+.cue a:hover{color:var(--gold)}
+.cue .down{width:22px;height:34px;border:1px solid rgba(236,244,240,.35);border-radius:12px;position:relative}
+.cue .down::after{content:"";position:absolute;left:50%;top:7px;width:4px;height:8px;margin-left:-2px;border-radius:2px;background:var(--gold);animation:cue 1.8s ease-in-out infinite}
+@keyframes cue{0%{transform:translateY(0);opacity:1}70%{transform:translateY(12px);opacity:0}100%{opacity:0}}
+
+/* chapters */
+.ch{position:relative;min-height:250vh;min-height:250svh;display:flex;flex-direction:column;justify-content:flex-end;
+  padding:34svh var(--gut-r) 0 var(--gut-l)}
+.ch.long{min-height:330vh;min-height:330svh}
+.panel{position:sticky;bottom:calc(12px + env(safe-area-inset-bottom,0px));width:100%;max-width:460px;margin:0 auto 12px;
+  background:linear-gradient(180deg, rgba(9,26,28,.74), rgba(5,15,17,.80));
+  border:1px solid var(--edge);border-radius:20px;padding:16px 16px 15px;
+  -webkit-backdrop-filter:blur(16px) saturate(1.25);backdrop-filter:blur(16px) saturate(1.25);
+  box-shadow:0 20px 50px -20px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05)}
+.eyebrow,.panel .eyebrow{display:block;font:500 10.5px/1.3 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--green);margin:0 0 6px}
+.eyebrow span{color:var(--mute)}
+h2{font-family:var(--display);font-weight:400;font-size:clamp(25px,6.4vw,36px);line-height:1.06;letter-spacing:-.015em;margin:0 0 8px;color:#fff8ea}
+h2 em{color:var(--gold);font-style:italic;font-weight:300}
+.panel p{margin:0 0 9px;color:var(--soft);font-size:15px;line-height:1.5}
+.panel p:last-child{margin-bottom:0}
+.panel strong{color:var(--ink);font-weight:600}
+pre{margin:10px 0 0;padding:10px 12px;border-radius:12px;background:rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.06);overflow-x:auto;
+  font:400 11px/1.6 var(--mono);color:#d8e6df;-webkit-overflow-scrolling:touch}
+pre .k{color:var(--amber)} pre .t{color:var(--green)} pre .s{color:var(--gold)} pre .c{color:#6f8a80}
+.steps{list-style:none;margin:6px 0 2px;padding:0;display:grid;gap:4px}
+.steps li{display:grid;grid-template-columns:14px 1fr;gap:10px;align-items:baseline;padding:6px 8px;border-radius:10px;color:var(--soft);font-size:14.5px;line-height:1.4;transition:background .35s,color .35s}
+.steps li i{width:9px;height:9px;border-radius:50%;opacity:.5;transform:translateY(1px);transition:opacity .3s, box-shadow .3s}
+.steps li b{color:var(--ink);font-weight:600}
+.steps li.on{background:rgba(255,255,255,.06);color:var(--ink)}
+.steps li.on i{opacity:1;box-shadow:0 0 10px 2px currentColor}
+.steps .cg i{background:var(--gold);color:var(--gold)} .steps .ca i{background:var(--amber);color:var(--amber)} .steps .cb i{background:var(--blue);color:var(--blue)} .steps .cc i{background:var(--coral);color:var(--coral)} .steps .cn i{background:var(--green);color:var(--green)}
+
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;margin:8px 0 10px;border-radius:14px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06)}
+.seg button{appearance:none;border:0;background:transparent;color:var(--soft);font:600 13px/1.15 var(--body);min-height:44px;padding:4px 6px;border-radius:10px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:linear-gradient(180deg,rgba(255,227,161,.22),rgba(255,227,161,.10));color:var(--gold);box-shadow:inset 0 0 0 1px rgba(255,227,161,.35)}
+.seg.two{grid-template-columns:repeat(2,1fr)}
+.toggle{appearance:none;display:flex;width:100%;align-items:center;gap:12px;text-align:left;border:1px solid var(--edge);background:rgba(0,0,0,.3);color:var(--ink);
+  border-radius:14px;min-height:48px;padding:8px 12px;font:500 14px/1.3 var(--body);cursor:pointer;margin-top:8px}
+.toggle .sw{flex:none;width:40px;height:24px;border-radius:12px;background:rgba(255,255,255,.12);position:relative;transition:background .3s}
+.toggle .sw::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#cfdcd6;transition:transform .3s, background .3s}
+.toggle[aria-pressed="true"] .sw{background:rgba(124,245,176,.35)}
+.toggle[aria-pressed="true"] .sw::after{transform:translateX(16px);background:var(--green);box-shadow:0 0 10px var(--green)}
+.alt[hidden]{display:none}
+.js .alt:not(.on){display:none}
+.panel .inst{margin-top:8px;font:400 11px/1.5 var(--mono);color:var(--gold);word-break:break-all}
+.panel .inst b{color:var(--mute);font-weight:400}
+
+/* finale */
+.finale{position:relative;padding:22vh var(--gut-r) 40px var(--gut-l)}
+.finale-head{max-width:640px;margin:0 auto 18px;text-align:center}
+.finale-head p{color:var(--soft);margin:0 auto;max-width:32em}
+.finale h2{font-size:clamp(30px,8vw,52px)}
+.sky{display:grid;gap:18px;max-width:1080px;margin:0 auto;grid-template-columns:minmax(0,1fr)}
+.stage{position:relative;width:100%;max-width:600px;margin:0 auto;aspect-ratio:1/1.08}
+.stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.stage line{stroke:rgba(255,227,161,.28);stroke-width:1.2;vector-effect:non-scaling-stroke}
+.stage line.hot{stroke:rgba(255,227,161,.9);stroke-width:1.8;stroke-dasharray:3 5;animation:flow 1s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-8}}
+.paused .stage line.hot,.paused .cue .down::after{animation-play-state:paused}
+.star{position:absolute;transform:translate(-50%,-50%);appearance:none;border:0;background:transparent;color:var(--ink);cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:5px;min-width:56px;min-height:56px;padding:4px;max-width:104px;font:500 11px/1.2 var(--body);text-align:center}
+.star .dot{width:14px;height:14px;border-radius:50%;background:#fff3d2;box-shadow:0 0 14px 4px rgba(255,210,127,.55);transition:transform .3s, box-shadow .3s}
+.star.core .dot{width:20px;height:20px}
+.star .nm{color:var(--soft);text-shadow:0 1px 6px #000}
+.star[aria-pressed="true"] .dot{transform:scale(1.35);box-shadow:0 0 22px 8px rgba(255,210,127,.8)}
+.star[aria-pressed="true"] .nm{color:var(--gold)}
+.star.dep .dot{background:#d9fff0;box-shadow:0 0 16px 5px rgba(124,245,176,.55)}
+.card{background:var(--glass);border:1px solid var(--edge);border-radius:20px;padding:18px;-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);align-self:center}
+.card h3{font-family:var(--display);font-weight:400;font-size:24px;line-height:1.1;margin:0 0 4px;color:#fff8ea;word-break:break-word}
+.card .id{font:400 11px/1.4 var(--mono);color:var(--mute);margin:0 0 12px;word-break:break-all}
+.card dl{margin:0;display:grid;gap:8px}
+.card dt{font:500 10px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--green)}
+.card dd{margin:0;color:var(--soft);font-size:15px}
+.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.links a{min-height:44px;display:inline-flex;align-items:center;padding:0 14px;border-radius:999px;border:1px solid var(--edge);text-decoration:none;font:500 13px var(--body);color:var(--ink);background:rgba(0,0,0,.25)}
+.links a:hover{border-color:var(--gold);color:var(--gold)}
+.start{max-width:880px;margin:56px auto 0;display:grid;gap:12px}
+.start h2{text-align:center;margin-bottom:6px}
+.start ol{list-style:none;margin:0;padding:0;display:grid;gap:10px;counter-reset:s}
+.start li{counter-increment:s;background:var(--glass);border:1px solid var(--edge);border-radius:16px;padding:14px 14px 14px 52px;position:relative;color:var(--soft);
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+.start li::before{content:counter(s);position:absolute;left:14px;top:13px;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--gold);color:#1a1405;font:600 13px/1 var(--mono)}
+.start li strong{color:var(--ink);display:block;margin-bottom:2px}
+.start pre{margin-top:8px}
+.cta{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:18px}
+.cta a{min-height:48px;display:inline-flex;align-items:center;padding:0 20px;border-radius:999px;text-decoration:none;font:600 15px var(--body);border:1px solid var(--edge);color:var(--ink);background:rgba(7,21,23,.7)}
+.cta a.pri{background:var(--gold);color:#1a1405;border-color:var(--gold)}
+footer{position:relative;z-index:5;padding:30px var(--gut-r) calc(26px + env(safe-area-inset-bottom,0px)) var(--gut-l);text-align:center;color:var(--mute);font-size:13px}
+footer p{margin:6px 0}
+footer a{color:var(--soft)}
+.proto{display:inline-flex;align-items:center;min-height:44px;gap:8px;font:400 11px var(--mono);color:var(--mute)}
+.proto a{color:var(--mute)}
+
+@media (min-width:900px){
+  .hero-in{justify-content:center;padding-left:max(6vw,var(--gut-l));padding-bottom:40px}
+  .hero-in>*{max-width:560px}
+  .ch{justify-content:flex-start;padding:0 var(--gut-r) 0 max(6vw,var(--gut-l))}
+  .panel{position:sticky;top:max(90px, calc(50vh - 230px));bottom:auto;margin:34vh 0 30vh;max-width:430px;padding:22px 22px 20px}
+  .panel p{font-size:15.5px}
+  pre{font-size:11.5px}
+  .sky{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-items:center}
+  .start ol{grid-template-columns:repeat(3,1fr)}
+  .start li{padding-top:50px;padding-left:16px}
+  .star{font-size:13px;max-width:130px}
+  .start li::before{top:14px;left:16px}
+}
+@media (max-width:899px) and (max-height:700px){
+  .panel p{font-size:14px} h2{font-size:24px} .panel pre{display:none}
+  .steps li{padding:4px 8px;font-size:14px}
+}
+@media (prefers-reduced-motion: reduce){
+  .cue .down::after,.stage line.hot{animation:none}
+  .steps li,.toggle .sw,.toggle .sw::after{transition:none}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#start">Skip to getting started</a>
+<div class="abyss" aria-hidden="true"></div>
+<canvas id="scene" aria-hidden="true"></canvas>
+<div class="grain" aria-hidden="true"></div>
+<div class="prog" aria-hidden="true"></div>
+
+<header class="bar">
+  <a class="brand" href="#top" aria-label="Chatter, back to top"><i aria-hidden="true"></i>Chatter</a>
+  <div class="bar-r">
+    <button class="ibtn" id="pause" type="button" aria-pressed="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path id="pauseIcon" d="M4 3h3v10H4zM9 3h3v10H9z"/></svg><span id="pauseLbl">Pause</span>
+    </button>
+    <a class="ibtn" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener" aria-label="Chatter on GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.5 15.6c.4 0 .5-.2.5-.4v-1.5c-2.2.5-2.7-1-2.7-1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8.1 1.2.8 1.2.8.7 1.3 1.9.9 2.3.7.1-.5.3-.9.5-1.1-1.8-.2-3.6-.9-3.6-4 0-.9.3-1.6.8-2.1-.1-.2-.4-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.6.8 1.3.8 2.1 0 3.1-1.9 3.8-3.6 4 .3.3.6.8.6 1.5v2.2c0 .2.1.5.6.4A8 8 0 0 0 8 0z"/></svg>GitHub
+    </a>
+  </div>
+</header>
+
+<main id="top">
+  <!-- 0 · hero -->
+  <section class="hero" data-scene="0" aria-labelledby="h-hero">
+    <div class="hero-in">
+      <p class="kicker">.NET · CQRS · brokered messaging</p>
+      <h1 id="h-hero">Chatter</h1>
+      <p class="tag">Write the handler once.<br><em>Let it travel.</em></p>
+      <p class="lede">Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging.</p>
+      <div class="pill"><code>dotnet add package Chatter.CQRS</code><button type="button" id="copy" data-copy="dotnet add package Chatter.CQRS">Copy</button></div>
+      <div class="cue"><a href="#noise"><span class="down" aria-hidden="true"></span>Follow one message</a></div>
+    </div>
+  </section>
+
+  <!-- 1 · noise -->
+  <section class="ch" id="noise" data-scene="1" aria-labelledby="h1n">
+    <div class="panel">
+      <p class="eyebrow">01 <span>· The noise</span></p>
+      <h2 id="h1n">Every call <em>knows too much.</em></h2>
+      <p>Controllers swell with orchestration. Logging, transactions and retries are copy-pasted into every path.</p>
+      <p>Broker SDK calls leak into domain code, so changing brokers means rewriting the business logic that never cared which broker it was.</p>
+    </div>
+  </section>
+
+  <!-- 2 · order -->
+  <section class="ch long" id="cqrs" data-scene="2" aria-labelledby="h2o">
+    <div class="panel">
+      <p class="eyebrow">02 <span>· Chatter.CQRS</span></p>
+      <h2 id="h2o">Three shapes. <em>One dispatcher.</em></h2>
+      <p>Send a message to <code>IMessageDispatcher</code>; its shape decides where it goes.</p>
+      <ol class="steps" data-steps>
+        <li class="cg" data-a="0" data-b=".34"><i></i><span><b>Command</b> — handled by exactly one handler.</span></li>
+        <li class="ca" data-a=".34" data-b=".66"><i></i><span><b>Event</b> — zero or many handlers react.</span></li>
+        <li class="cb" data-a=".66" data-b="1.01"><i></i><span><b>Query</b> — the Query Dispatcher returns a Read Model.</span></li>
+      </ol>
+<pre><span class="k">public class</span> <span class="t">PlaceOrderHandler</span>
+  : <span class="t">IMessageHandler</span>&lt;<span class="t">PlaceOrder</span>&gt;
+{
+  <span class="k">public</span> Task Handle(<span class="t">PlaceOrder</span> message,
+    <span class="t">IMessageHandlerContext</span> context) <span class="c">…</span>
+}</pre>
+    </div>
+  </section>
+
+  <!-- 3 · pipeline -->
+  <section class="ch" id="pipeline" data-scene="3" aria-labelledby="h3p">
+    <div class="panel">
+      <p class="eyebrow">03 <span>· Command Pipeline</span></p>
+      <h2 id="h3p">Cross-cutting, <em>written once.</em></h2>
+      <p>Ordered behaviors wrap every Command handler — logging, unit of work, an inbox check — so the handler keeps only the business decision. A Message Context travels with each dispatch.</p>
+      <p>Assembly scanning finds and registers your handlers:</p>
+<pre>builder.Services.<span class="t">AddChatterCqrs</span>(
+  builder.Configuration,
+  <span class="k">typeof</span>(<span class="t">Program</span>).Assembly);</pre>
+    </div>
+  </section>
+
+  <!-- 4 · brokers -->
+  <section class="ch long" id="brokers" data-scene="4" aria-labelledby="h4b">
+    <div class="panel">
+      <p class="eyebrow">04 <span>· Chatter.MessageBrokers</span></p>
+      <h2 id="h4b">Leave the process. <em>Keep the handler.</em></h2>
+      <p>A handler publishes; in another service a <strong>Brokered Message Receiver</strong> hands the message to an existing handler. Same interface on both sides.</p>
+<pre>[<span class="t">BrokeredMessage</span>(<span class="s">"order-placed"</span>,
+  <span class="s">"shipping-order-placed"</span>)]
+<span class="k">public class</span> <span class="t">OrderPlaced</span> : <span class="t">IEvent</span> { <span class="c">…</span> }
+
+<span class="k">await</span> context.<span class="t">Publish</span>(<span class="k">new</span> <span class="t">OrderPlaced</span> { <span class="c">…</span> });</pre>
+      <p style="margin-top:9px">The attribute names the send and receive paths, so handlers never name a queue or topic. Until <code>AddMessageBrokers()</code> replaces it, the External Dispatcher is a no-op.</p>
+    </div>
+  </section>
+
+  <!-- 5 · medium -->
+  <section class="ch" id="transports" data-scene="5" aria-labelledby="h5m">
+    <div class="panel">
+      <p class="eyebrow">05 <span>· Transports</span></p>
+      <h2 id="h5m">Swap the medium. <em>The handler stays.</em></h2>
+      <div class="seg" role="group" aria-label="Choose a transport">
+        <button type="button" data-medium="asb" aria-pressed="true" aria-label="Azure Service Bus">Service Bus</button>
+        <button type="button" data-medium="rmq" aria-pressed="false">RabbitMQ</button>
+        <button type="button" data-medium="ssb" aria-pressed="false" aria-label="SQL Server Service Broker">Service Broker</button>
+      </div>
+      <div class="alt on" data-for="asb">
+        <p><strong>Azure Service Bus</strong> — queues, topic subscriptions, sessions and cross-entity transactions.</p>
+        <button type="button" class="toggle" id="auth" aria-pressed="false"><span class="sw" aria-hidden="true"></span><span>Authenticate with Microsoft Entra ID</span></button>
+        <p class="alt" data-auth style="margin-top:8px"><strong>.Auth</strong>: Entra ID tokens, including managed identity — no connection-string secret.</p>
+        <p class="inst"><b>$</b> dotnet add package Chatter.MessageBrokers.AzureServiceBus</p>
+      </div>
+      <div class="alt" data-for="rmq">
+        <p><strong>RabbitMQ</strong> — publish and receive over the exchanges and queues you provision.</p>
+        <p class="inst"><b>$</b> dotnet add package Chatter.MessageBrokers.RabbitMQ</p>
+      </div>
+      <div class="alt" data-for="ssb">
+        <p><strong>SQL Server Service Broker</strong> — conversations and queues inside the database you already run.</p>
+        <p class="inst"><b>$</b> dotnet add package Chatter.MessageBrokers.SqlServiceBroker</p>
+      </div>
+      <p style="margin-top:6px;font-size:13px;line-height:1.4">Transports create no infrastructure; you provision queues, topics, exchanges and Service Broker objects.</p>
+    </div>
+  </section>
+
+  <!-- 6 · reliability -->
+  <section class="ch long" id="reliability" data-scene="6" aria-labelledby="h6r">
+    <div class="panel">
+      <p class="eyebrow">06 <span>· Reliability</span></p>
+      <h2 id="h6r">Store first. <em>Publish after commit.</em></h2>
+      <div class="seg two" role="group" aria-label="Choose a storage tier">
+        <button type="button" data-tier="ef" aria-pressed="true">EF Core</button>
+        <button type="button" data-tier="cosmos" aria-pressed="false">Cosmos DB</button>
+      </div>
+      <ol class="steps" data-steps>
+        <li class="cg" data-a="0" data-b=".5"><i></i><span><b>Outbox</b> —
+          <span class="alt on" data-tierc="ef">state change, Inbox record and Outbox record are saved in one database transaction in <em>your</em> DbContext; the message publishes after commit (optional polling Outbox Processor).</span>
+          <span class="alt" data-tierc="cosmos">the Document Tier writes the aggregate, an Outbox document and an Inbox marker in one TransactionalBatch; a change-feed Outbox Relay publishes pending outbox documents.</span></span></li>
+        <li class="cn" data-a=".5" data-b="1.01"><i></i><span><b>Inbox</b> — deduplicates redelivered commands: a message it has already recorded skips the handler.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 7 · recovery -->
+  <section class="ch" id="recovery" data-scene="7" aria-labelledby="h7r">
+    <div class="panel">
+      <p class="eyebrow">07 <span>· Recovery</span></p>
+      <h2 id="h7r">Bend, set aside, <em>then break.</em></h2>
+      <ol class="steps" data-steps>
+        <li class="cg" data-a="0" data-b=".42"><i></i><span><b>Retry</b> — transient failures get another attempt.</span></li>
+        <li class="cc" data-a=".42" data-b=".66"><i></i><span><b>Error Queue</b> — a message that exceeds its max receive attempts is moved aside for inspection.</span></li>
+        <li class="ca" data-a=".66" data-b="1.01"><i></i><span><b>Circuit Breaker</b> — after repeated failures it stops processing, then admits trial calls once it has cooled.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 8 · change feed -->
+  <section class="ch" id="changefeed" data-scene="8" aria-labelledby="h8c">
+    <div class="panel">
+      <p class="eyebrow">08 <span>· Chatter.SqlChangeFeed</span></p>
+      <h2 id="h8c">Tables <em>that speak.</em></h2>
+      <p>Watch a SQL Server table and receive strongly typed <code>RowInsertedEvent</code>, <code>RowUpdatedEvent</code> and <code>RowDeletedEvent</code> messages in ordinary handlers. Built on SQL Server Service Broker.</p>
+<pre><span class="k">public class</span> <span class="t">OrderRowChanged</span>
+  : <span class="t">IMessageHandler</span>&lt;
+      <span class="t">RowUpdatedEvent</span>&lt;<span class="t">OrderRow</span>&gt;&gt; { <span class="c">…</span> }</pre>
+    </div>
+  </section>
+
+  <!-- 9 · diagnostics -->
+  <section class="ch" id="diagnostics" data-scene="9" aria-labelledby="h9d">
+    <div class="panel">
+      <p class="eyebrow">09 <span>· Diagnostics</span></p>
+      <h2 id="h9d">Visible <em>when you ask.</em></h2>
+      <p>Opt-in tracing and metrics through <code>ActivitySource</code> and <code>Meter</code> from the .NET base class library. Nothing is emitted until you subscribe.</p>
+      <button type="button" class="toggle" id="traces" aria-pressed="false"><span class="sw" aria-hidden="true"></span><span>Subscribe to traces and metrics</span></button>
+    </div>
+  </section>
+
+  <!-- 10 · constellation -->
+  <section class="finale" id="packages" data-scene="10" aria-labelledby="h10">
+    <div class="finale-head">
+      <p class="eyebrow" style="justify-content:center">10 <span>· The packages</span></p>
+      <h2 id="h10">Chart your <em>constellation.</em></h2>
+      <p>Each package is independently versioned on NuGet; take only what you need. Lines follow dependencies. Tap a star.</p>
+    </div>
+    <div class="sky">
+      <div class="stage" id="stage">
+        <svg id="edges" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+      <article class="card" id="card" aria-live="polite">
+        <h3 id="c-name">CQRS</h3>
+        <p class="id" id="c-id">Chatter.CQRS</p>
+        <dl>
+          <dt>What it does</dt><dd id="c-what">Commands, Queries and Events dispatched in-process through IMessageDispatcher, with a Command Pipeline of ordered behaviors.</dd>
+          <dt>Problem it solves</dt><dd id="c-why">Controllers bloated with orchestration; cross-cutting concerns copy-pasted.</dd>
+          <dt>Depends on</dt><dd id="c-dep">Nothing else in Chatter.</dd>
+        </dl>
+        <div class="links">
+          <a id="c-nuget" href="https://www.nuget.org/packages/Chatter.CQRS" target="_blank" rel="noopener">NuGet</a>
+          <a id="c-docs" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Read the docs</a>
+        </div>
+      </article>
+    </div>
+
+    <div class="start" id="start">
+      <h2>Start with <em>one handler.</em></h2>
+      <ol>
+        <li><strong>Install the core</strong>
+<pre>dotnet add package Chatter.CQRS</pre></li>
+        <li><strong>Register your handlers</strong>
+<pre>builder.Services.<span class="t">AddChatterCqrs</span>(
+  builder.Configuration,
+  <span class="k">typeof</span>(<span class="t">Program</span>).Assembly);</pre></li>
+        <li><strong>Let it travel when you're ready</strong>Add Chatter.MessageBrokers and one transport. Your handlers stay as they are.</li>
+      </ol>
+      <div class="cta">
+        <a class="pri" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">View on GitHub</a>
+        <a href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Read the CQRS docs</a>
+        <a href="https://www.nuget.org/packages/Chatter.CQRS" target="_blank" rel="noopener">NuGet</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>Chatter is MIT licensed · <a href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">github.com/brenpike/Chatter</a></p>
+  <p class="proto">Prototype H · Signal · <a href="../index.html">All prototypes</a></p>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var root=document.documentElement; root.classList.add('js');
+var cv=document.getElementById('scene'), ctx=cv.getContext('2d');
+if(!ctx) return;
+var mq=window.matchMedia?matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
+var reduced=mq.matches, paused=reduced;
+var S={medium:'asb',auth:false,tier:'ef',traces:false};
+var traceA=0,authA=0;
+var TAU=Math.PI*2;
+/* palette: 0 gold 1 green 2 coral 3 pearl 4 amber 5 blue */
+var RGB=[[255,227,161],[124,245,176],[255,111,125],[236,246,242],[255,159,67],[169,200,255]];
+function rgba(i,a){var c=RGB[i];return 'rgba('+c[0]+','+c[1]+','+c[2]+','+a+')';}
+var SPR=RGB.map(function(c){
+  var s=document.createElement('canvas');s.width=s.height=64;var g=s.getContext('2d');
+  var gr=g.createRadialGradient(32,32,0,32,32,32);
+  gr.addColorStop(0,'rgba(255,255,255,1)');
+  gr.addColorStop(.12,'rgba('+c+',.95)');
+  gr.addColorStop(.35,'rgba('+c+',.32)');
+  gr.addColorStop(1,'rgba('+c+',0)');
+  g.fillStyle=gr;g.fillRect(0,0,64,64);return s;});
+
+var tcy=0,tR=0,W=0,H=0,VH=0,DPR=1,desk=false,cx=0,cy=0,R=100,FS=11;
+var secs=[].slice.call(document.querySelectorAll('[data-scene]'));
+var NS=secs.length, tops=[], hs=[];
+var FORM=['hero','chaos','orbits','rings','spheres','medium','dust','sink','grid','dust','stars'];
+var REST=[.55,.75,.2,.8,.62,.5,.4,.3,.5,.6,.5];
+var TINT=[0,2,1,0,1,4,0,2,1,5,3];
+
+var NMAX=(innerWidth<700?720:1600), NA=NMAX;
+var px=new Float32Array(NMAX),py=new Float32Array(NMAX),pa=new Float32Array(NMAX);
+var S1=new Float32Array(NMAX),S2=new Float32Array(NMAX),S3=new Float32Array(NMAX),S4=new Float32Array(NMAX);
+var seed=7;function rnd(){seed=(seed*16807)%2147483647;return (seed-1)/2147483646;}
+for(var k=0;k<NMAX;k++){S1[k]=rnd();S2[k]=rnd();S3[k]=rnd();S4[k]=rnd();px[k]=S1[k]*innerWidth;py[k]=S2[k]*innerHeight;pa[k]=0;}
+
+function resize(){
+  var w=cv.clientWidth||innerWidth, h=cv.clientHeight||innerHeight;
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  if(w!==W||Math.abs(h-H)>2){W=w;H=h;cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);}
+  VH=innerHeight; desk=W>=900;
+  if(desk){cx=W*0.665;cy=VH*0.5;R=Math.min(W*0.28,VH*0.4);FS=12;}
+  else{cx=W/2;cy=VH*0.29;R=Math.min(W*0.45,VH*0.235);FS=10;}
+  tcy=cy;tR=R;
+  measure();
+}
+function measure(){var y=window.scrollY||0;for(var i=0;i<NS;i++){var r=secs[i].getBoundingClientRect();tops[i]=r.top+y;hs[i]=r.height;}}
+function story(){
+  var an=desk?.5:.9,y=(window.scrollY||0)+VH*an, s=0;
+  for(var i=0;i<NS;i++){
+    if(i===0){s=Math.max(0,Math.min(1,(window.scrollY||0)/Math.max(1,hs[0]-VH*an)));continue;}
+    if(y>=tops[i]) s=i+Math.min(1,(y-tops[i])/Math.max(1,(i===NS-1?VH*0.8:hs[i])));
+  }
+  return s;
+}
+var F=0.07;
+function weight(j,s){var d=s-j;if(d<-F||d>1+F)return 0;if(j===0&&d<F)return 1;if(j===NS-1&&d>1-F)return 1;return Math.max(0,Math.min(1,(d+F)/(2*F),(1+F-d)/(2*F)));}
+
+/* helpers */
+function cl(x){return x<0?0:x>1?1:x;}
+function seg(p,a,b){return cl((p-a)/(b-a));}
+function ease(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;}
+function eo(t){return 1-Math.pow(1-t,3);}
+function bump(p,a,b){var x=seg(p,a,b);return Math.sin(x*Math.PI);}
+function U(u){return cx+u*R;} function V(v){return cy+v*R;}
+var A=1;
+function ga(a){ctx.globalAlpha=Math.max(0,Math.min(1,a*A));}
+function glow(x,y,r,ci,a){if(a*A<=.004||r<=0)return;ga(a);ctx.drawImage(SPR[ci],x-r,y-r,2*r,2*r);}
+function msg(x,y,ci,a,sc){sc=sc||1;a=a==null?1:a;glow(x,y,26*sc,ci,.85*a);glow(x,y,8*sc,3,a);}
+function stroke(ci,a,w,dash){ga(a);ctx.strokeStyle=rgba(ci,1);ctx.lineWidth=w||1;ctx.setLineDash(dash||[]);}
+function ln(u1,v1,u2,v2,ci,a,w,dash){stroke(ci,a,w,dash);ctx.beginPath();ctx.moveTo(U(u1),V(v1));ctx.lineTo(U(u2),V(v2));ctx.stroke();}
+function ring(u,v,r,ci,a,w,dash,off){stroke(ci,a,w,dash);ctx.lineDashOffset=off||0;ctx.beginPath();ctx.arc(U(u),V(v),r*R,0,TAU);ctx.stroke();ctx.lineDashOffset=0;}
+function txt(s,x,y,ci,a,al,sz,font){ga(a);ctx.fillStyle=rgba(ci,1);ctx.textAlign=al||'center';ctx.textBaseline='middle';ctx.font=(font||'500 ')+(sz||FS)+'px "Martian Mono", ui-monospace, monospace';ctx.fillText(s,x,y);}
+function hex(u,v,lit,label,ci){
+  ci=ci==null?1:ci;var x=U(u),y=V(v),r=Math.max(11,R*0.085);
+  glow(x,y,r*(2.6+2*lit),ci,.18+.55*lit);
+  ga(1);ctx.fillStyle='rgba(4,14,15,.85)';ctx.beginPath();
+  for(var i=0;i<6;i++){var an=i*TAU/6+Math.PI/6;ctx[i?'lineTo':'moveTo'](x+Math.cos(an)*r,y+Math.sin(an)*r);}ctx.closePath();ctx.fill();
+  stroke(ci,.45+.55*lit,1.4);ctx.stroke();
+  glow(x,y,r*.55,ci,.4+.6*lit);
+  if(label)txt(label,x,y+r+FS*1.1,ci,.55+.4*lit);
+}
+function plen(pts){var L=[0];for(var i=1;i<pts.length;i++)L.push(L[i-1]+Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]));return L;}
+function pat(pts,t){t=cl(t);var L=plen(pts),tot=L[L.length-1],d=t*tot;for(var i=1;i<pts.length;i++){if(d<=L[i]||i===pts.length-1){var f=(d-L[i-1])/Math.max(1e-6,L[i]-L[i-1]);f=cl(f);return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*f,pts[i-1][1]+(pts[i][1]-pts[i-1][1])*f];}}return pts[0];}
+function trail(pts,t,len,ci,a){for(var i=1;i<12;i++){var tt=t-len*i/12;if(tt<0)break;var q=pat(pts,tt);glow(U(q[0]),V(q[1]),(18-i*1.2)*(desk?1.1:1),ci,a*.5*(1-i/12));}}
+function mover(pts,t,ci,a,len,sc){if(a<=0)return;trail(pts,t,len||.18,ci,a);var q=pat(pts,t);msg(U(q[0]),V(q[1]),ci,a,sc);return q;}
+function bez(a,c,b,t){var m=1-t;return [m*m*a[0]+2*m*t*c[0]+t*t*b[0],m*m*a[1]+2*m*t*c[1]+t*t*b[1]];}
+function bezPts(a,c,b,n){var o=[];for(var i=0;i<=n;i++)o.push(bez(a,c,b,i/n));return o;}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+/* ambient formations */
+var fx,fy,fa,fs,fc,punchA=0,punchB=0;
+function sphere(k,side,sx,rs,t){
+  var a=S1[k],b=S2[k],c=S3[k];var mem=c<.75;
+  var an=b*TAU+t*.06*(side?-1:1);var r=mem?rs*(.93+.07*a):rs*Math.sqrt(a)*.82;
+  if(mem){var tgt=side?Math.PI:0;var dd=Math.atan2(Math.sin(an-tgt),Math.cos(an-tgt));var pu=side?punchB:punchA;r+=pu*Math.exp(-dd*dd*14)*rs*.45;}
+  fx=U(sx+Math.cos(an)*r);fy=V(Math.sin(an)*r);fa=mem?.3+.35*c:.12;fs=.8+S4[k];fc=mem?1:3;
+}
+function form(name,k,p,t){
+  var a=S1[k],b=S2[k],c=S3[k],d=S4[k],f,u,v;
+  switch(name){
+  case 'hero': case 'dust': case 'sink':
+    var sp=(name==='sink'?-16:7+12*c);
+    fx=a*W+Math.sin(t*.3+d*9)*14;
+    fy=((1-b)*(H+40)-t*sp)%(H+40);if(fy<0)fy+=H+40;fy=fy-20;
+    fa=(.06+.2*c)*(.55+.45*Math.sin(t*(.7+c)+d*TAU));
+    if(name==='hero')fa*=.35+.65*p;
+    fs=.7+1.5*d;fc=c>.88?0:(c>.82?4:(name==='sink'&&c<.2?2:1));break;
+  case 'chaos':
+    var vis=k/NA<.18+.82*p?1:0,j=.05+.09*p;
+    fx=U((a-.5)*2.5+j*Math.sin(t*(2+3*c)+d*20));fy=V((b-.5)*2.1+j*Math.cos(t*(2.3+3*d)+a*20));
+    fa=vis*(.22+.45*c);fs=.7+1.4*d;fc=c<.42?2:(c<.78?4:3);break;
+  case 'orbits':
+    var r=.3+a*1.05,an=b*TAU+t*.07/r;
+    fx=U(Math.cos(an)*r*1.12);fy=V(Math.sin(an)*r*.66);fa=.07+.15*c;fs=.6+d;fc=c>.9?0:1;break;
+  case 'rings':
+    var idx=k%4;
+    if(idx===3){var r2=1.15+a*.6,an2=b*TAU-t*.03;fx=U(Math.cos(an2)*r2);fy=V(Math.sin(an2)*r2*.8);fa=.05+.08*c;fs=.6+d;fc=1;break;}
+    var rr2=[.92,.67,.42][idx]+(a-.5)*.035,an3=b*TAU+t*.13*(idx%2?1:-1);
+    fx=U(Math.cos(an3)*rr2);fy=V(Math.sin(an3)*rr2);fa=.16+.26*c;fs=.6+.9*d;fc=[1,3,0][idx];break;
+  case 'spheres': sphere(k,k%2,k%2?.62:-.62,.36,t);break;
+  case 'medium':
+    if(k%3===0){sphere(k,(k/3|0)%2,(k/3|0)%2?.86:-.86,.17,t);break;}
+    fs=.6+d;
+    if(S.medium==='asb'){
+      var lane=k%4;v=-.36+lane*.24;f=(a+t*.1*(.5+c*.5))%1;u=-.6+f*1.2;
+      if(lane===3&&u>0)v+=(k&4?-.55:1)*u*.28;
+      fa=(.18+.32*c)*Math.sin(f*Math.PI);fc=lane===1?0:(lane===3?3:1);
+    }else if(S.medium==='rmq'){
+      if(k%5===0){var ae=b*TAU+t*.9;var re=.07+.05*a;u=-.15+Math.cos(ae)*re;v=Math.sin(ae)*re;fa=.4;fc=4;}
+      else{f=(a+t*.12)%1;var q=k%3;
+        if(f<.45){var g=eo(f/.45);u=-.6+(.45)*g;v=(b-.5)*.7*(1-g);}
+        else{var g2=(f-.45)/.55;u=-.15+.57*g2;v=(-.35+.35*q)*Math.min(1,g2*1.6)+(b-.5)*.03;}
+        fa=(.18+.3*c)*Math.sin(f*Math.PI);fc=q===1?4:1;}
+    }else{
+      if(k%7===0){f=(a+t*.08)%1;u=-.55+f*1.1;v=(b-.5)*.04;fa=.45*Math.sin(f*Math.PI);fc=0;}
+      else{var cell=k%45,col=cell%9,row=cell/9|0;u=-.52+col*.13+(a-.5)*.03;v=-.28+row*.14+(b-.5)*.03;fa=(.1+.3*c)*(.6+.4*Math.sin(t*1.5+k));fc=c>.7?3:1;}
+    }
+    fx=U(u);fy=V(v);break;
+  case 'grid':
+    var cell2=k%24,col2=cell2%4,row2=cell2/4|0,cw=1.12/4;
+    fx=U(-.95+col2*cw+a*cw*.92);fy=V(-.42+row2*.19+(b-.5)*.05);fa=.07+.12*c;fs=.6+.8*d;fc=3;break;
+  case 'stars':
+    fx=a*W;fy=b*H;fa=(.08+.55*c*c)*(.55+.45*Math.sin(t*(.4+d*1.6)+a*30));fs=.5+1.7*d*d;fc=d>.9?0:(d>.8?1:3);break;
+  }
+}
+
+/* foreground scenes */
+var SC=[];
+SC[0]=function(p,t){
+  var x=U(0),y=V(0),pu=.5+.5*Math.sin(t*2.2),born=.35+.65*cl(p*2.4+.25);
+  glow(x,y,R*1.6,0,.08+.06*pu);
+  for(var i=0;i<3;i++){var f=(t*.32+i/3)%1;stroke(0,(1-f)*.28*born,1);ctx.beginPath();ctx.arc(x,y,R*(.06+f*1.15),0,TAU);ctx.stroke();}
+  glow(x,y,(46+14*pu)*born,0,.9);glow(x,y,13,3,1);
+  var n=14,sp=seg(p,.45,1);
+  for(var k=0;k<n;k++){if(sp<=0)break;var an=k/n*TAU+k*.7+t*.08;var rad=sp*R*(.4+.7*((k*37)%10)/10);glow(x+Math.cos(an)*rad,y+Math.sin(an)*rad,7,k%3?0:2,.7*sp*(1-sp*.3));}
+  txt('IMessage',x,y+R*.34,0,.35*born,'center',FS,'400 ');
+};
+var SPOS=[[-.2,-.8],[.35,-.55],[-.45,-.3],[.4,-.05],[-.35,.18],[.3,.38],[-.25,.6],[.35,.8],[0,.95]];
+var SNIP=['new ServiceBusClient(…)','channel.BasicPublish(…)','SEND ON CONVERSATION …','try { … } catch { retry++; }','_logger.LogInformation(…)','using var tx = …','if (seen.Contains(id)) …','await http.PostAsync(…)','sender.SendMessageAsync(…)'];
+SC[1]=function(p,t){
+  var M=desk?90:55;ctx.lineWidth=.8;ctx.setLineDash([]);
+  for(var i=0;i<M;i++){var k1=(i*53)%NA,k2=(i*97+11)%NA;if(k1/NA>.18+.82*p||k2/NA>.18+.82*p)continue;
+    var fl=.5+.5*Math.sin(t*6+i*1.7);ga(.06+.16*fl);ctx.strokeStyle=rgba(i%3?2:4,1);ctx.beginPath();ctx.moveTo(px[k1],py[k1]);ctx.lineTo(px[k2],py[k2]);ctx.stroke();}
+  for(var s=0;s<SNIP.length;s++){if(s>p*SNIP.length+1)break;var sp=SPOS[s];
+    var x=U(sp[0]*(desk?1.1:.62)+Math.sin(t*.2+s)*.04),y=V(sp[1]+Math.cos(t*.23+s)*.03);
+    txt(SNIP[s],x,y,s%2?2:3,(.25+.35*(.5+.5*Math.sin(t*1.3+s*2)))*cl(p*SNIP.length+1-s),'center',FS-1,'400 ');}
+};
+SC[2]=function(p,t){
+  var Sx=[-.88,0],D=[-.2,0],Hs=[[.7,-.58],[.7,0],[.7,.58]];
+  ln(Sx[0],0,D[0],0,3,.14,1);for(var i=0;i<3;i++)ln(D[0],0,Hs[i][0],Hs[i][1],3,.1,1,[3,5]);
+  var lit=[0,0,0],c=seg(p,.03,.31),e=seg(p,.37,.63),q=seg(p,.69,.97),tag='',tci=0;
+  glow(U(Sx[0]),V(0),12,3,.6);txt('caller',U(Sx[0]),V(0)+FS*1.8,3,.5);
+  if(p<.34){tag='Command · PlaceOrder';tci=0;mover([Sx,D,Hs[1]],ease(c),0,cl(c*8));lit[1]=seg(c,.86,1);}
+  else if(p<.66){tag='Event · OrderPlaced';tci=4;
+    if(e<.42)mover([Sx,D],ease(e/.42),4,cl(e*8));
+    else{var g=ease((e-.42)/.58);for(var h=0;h<3;h++)mover([D,Hs[h]],g,4,1,.25,.8);var l=seg(e,.86,1);lit=[l,l,l];}}
+  else{tag='Query · GetOrder';tci=5;
+    if(q<.5){mover([Sx,D,Hs[0]],ease(q/.5),5,cl(q*8));lit[0]=seg(q,.42,.5);}
+    else{var g3=ease((q-.5)/.5),pt=mover([Hs[0],D,Sx],g3,5,1);lit[0]=1-seg(q,.5,.7);
+      var x=U(pt[0])+16,y=V(pt[1])-14;ga(.9);ctx.fillStyle=rgba(5,.9);rr(x-7,y-6,14,12,3);ctx.fill();glow(x,y,18,5,.5);
+      txt('Read Model',x+8,y-14,5,.8*cl((q-.5)*6),'center');}}
+  // dispatcher
+  var dx=U(D[0]),dy=V(0),act=(p<.34?bump(c,.25,.6):p<.66?bump(e,.25,.6):bump(q,.15,.4)+bump(q,.6,.85));
+  glow(dx,dy,R*.22,0,.15+.4*act);ring(D[0],0,.09,0,.5+.4*act,1.2);ring(D[0],0,.14,0,.2,1,[2,4],t*10);
+  txt(desk?'Message Dispatcher':'Dispatcher',dx,dy-R*.14-FS*1.3,0,.75);
+  for(var j=0;j<3;j++)hex(Hs[j][0],Hs[j][1],lit[j],'handler');
+  txt(tag,U(Sx[0])+(desk?0:R*.1),V(-.38),tci,.95,desk?'center':'left',FS+1,'500 ');
+};
+SC[3]=function(p,t){
+  var rs=[.92,.67,.42],nm=['logging','unit of work','inbox check'];
+  var pr=ease(seg(p,.04,.84)),rad=1.35-(1.35-.12)*pr,an=Math.PI+pr*TAU*.85;
+  for(var i=0;i<3;i++){var fl=Math.exp(-Math.abs(rad-rs[i])*16);
+    ring(0,0,rs[i],[1,3,0][i],.18+.75*fl,1+2*fl,[2,6],t*(i%2?14:-14));
+    var la=-Math.PI*.32-i*.08;txt(nm[i],U(Math.cos(la)*rs[i])+6,V(Math.sin(la)*rs[i])-8,[1,3,0][i],.55+.45*fl,'left');}
+  var lit=seg(p,.8,.9);
+  hex(0,0,lit,'PlaceOrderHandler',1);
+  if(p>.02&&p<.995){var pts=[];for(var s=0;s<=40;s++){var pp=s/40*pr;var r2=1.35-(1.35-.12)*pp,a2=Math.PI+pp*TAU*.85;pts.push([Math.cos(a2)*r2,Math.sin(a2)*r2]);}
+    if(pr<1){for(var k=pts.length-1,i2=0;k>=0&&i2<14;k-=2,i2++)glow(U(pts[k][0]),V(pts[k][1]),(16-i2)*(desk?1.1:1),0,.4*(1-i2/14));
+      msg(U(Math.cos(an)*rad),V(Math.sin(an)*rad),0,cl(p*20)*(1-lit));}}
+  if(lit>0){var b=seg(p,.84,1);ring(0,0,.12+b*.7,1,(1-b)*.6,1.5);}
+  txt('Command',U(-1.35)+(desk?0:R*.35),V(.02)-16,0,.7*(1-seg(p,.1,.25)),'center');
+};
+SC[4]=function(p,t){
+  ring(-.62,0,.37,1,.12,1);ring(.62,0,.37,1,.12,1);
+  txt(desk?'Ordering service':'Ordering',U(-.62),V(-.52),1,.75);txt(desk?'Shipping service':'Shipping',U(.62),V(-.52),1,.75);
+  var la=seg(p,.02,.18),lb=seg(p,.84,.94)*(1-seg(p,.985,1)*.3);
+  hex(-.62,0,la*(1-seg(p,.3,.45)*.6),null);hex(.62,0,lb,null);txt('IMessageHandler<T>',U(-.62),V(.5),1,.7);txt('IMessageHandler<T>',U(.62),V(.5),1,.7);
+  // receiver gate
+  var gl=bump(p,.68,.86);stroke(0,.35+.6*gl,2+2*gl);ctx.beginPath();ctx.arc(U(.62),V(0),.37*R+5,Math.PI-.45,Math.PI+.45);ctx.stroke();
+  txt('Receiver',U(.62-.37)-8,V(-.24),0,.55+.45*gl,'right');
+  var path=[[-.62,0],[-.25,0]].concat(bezPts([-.25,0],[0,-.55],[.25,0],24)).concat([[.62,0]]);
+  var pr=seg(p,.12,.93),ttt=pr<.15?ease(pr/.15)*.15:pr;
+  if(p>.1&&p<.99){var q=mover(path,ttt,4,cl((p-.1)*20),.22);}
+  var b1=seg(p,.28,.44);if(b1>0&&b1<1){stroke(4,(1-b1)*.8,1.5);ctx.beginPath();ctx.arc(U(-.25),V(0),b1*R*.35,0,TAU);ctx.stroke();}
+  if(p>.94){var b2=seg(p,.94,1);ring(.62,0,.1+b2*.4,1,(1-b2)*.6,1.5);}
+  txt('context.Publish(…)',U(-.62),V(.62),4,.9*bump(p,.05,.4),'center');
+  txt('the broker',U(0),V(-.62),3,.35+.3*bump(p,.35,.7),'center');
+};
+var MED={asb:'Azure Service Bus',rmq:'RabbitMQ',ssb:'SQL Server Service Broker'};
+SC[5]=function(p,t){
+  var m=S.medium,f=paused?(p*1.4)%1:((t*.16+p*.4)%1);
+  hex(-.86,0,.4,null);hex(.86,0,seg(f,.9,.97)*(1-seg(f,.97,1))+.2,null);
+  var path;
+  if(m==='asb'){for(var i=0;i<4;i++){ln(-.6,-.36+i*.24,.6,-.36+i*.24,3,.08,1);}
+    ln(0,.36,.6,.36+.6*.28*-.55,3,.07,1,[2,4]);ln(0,.36,.6,.36+.6*.28,3,.07,1,[2,4]);
+    txt('queue',U(-.6),V(-.36)-FS,3,.45,'left');txt('topic → subscriptions',U(-.6),V(.36)-FS,3,.45,'left');
+    path=[[-.86,0],[-.6,-.12],[.6,-.12],[.86,0]];
+  }else if(m==='rmq'){
+    var ex=U(-.15),ey=V(0),dr=R*.11;ga(.85);ctx.fillStyle='rgba(6,16,18,.9)';ctx.beginPath();ctx.moveTo(ex,ey-dr);ctx.lineTo(ex+dr,ey);ctx.lineTo(ex,ey+dr);ctx.lineTo(ex-dr,ey);ctx.closePath();ctx.fill();stroke(4,.8,1.4);ctx.stroke();
+    txt('exchange',ex,ey-dr-FS,4,.7);
+    for(var j=0;j<3;j++){var qy=-.35+.35*j;ln(-.15,0,.42,qy,4,.18,1,[3,4]);stroke(3,.5,1);rr(U(.42)-R*.07,V(qy)-R*.05,R*.14,R*.1,4);ctx.stroke();}
+    txt('queues',U(.42),V(-.35)-R*.05-FS,3,.55);
+    path=[[-.86,0],[-.6,0],[-.15,0],[.42,0],[.86,0]];
+  }else{
+    var x0=U(-.62),x1=U(.62),yt=V(-.4),yb=V(.4),ey2=R*.09;stroke(3,.35,1.2);
+    ctx.beginPath();ctx.ellipse((x0+x1)/2,yt,(x1-x0)/2,ey2,0,0,TAU);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x0,yt);ctx.lineTo(x0,yb);ctx.ellipse((x0+x1)/2,yb,(x1-x0)/2,ey2,0,Math.PI,0,true);ctx.lineTo(x1,yt);ctx.stroke();
+    ln(-.55,0,.55,0,0,.25,1,[4,4]);txt('conversation',U(0),V(0)-FS*1.2,0,.6);
+    txt('initiator',U(-.55),V(.3),3,.45,'left');txt('target',U(.55),V(.3),3,.45,'right');
+    path=[[-.86,0],[-.55,0],[.55,0],[.86,0]];
+  }
+  var a=cl(f*12)*cl((1-f)*12);var q=mover(path,f,0,a,.16);
+  authA+=((S.auth&&m==='asb'?1:0)-authA)*(reduced?1:.1);
+  if(authA>.01&&q){var x=U(q[0]),y=V(q[1]);for(var k=0;k<3;k++){stroke(k===1?3:0,authA*.7,1.3,[6,5]);ctx.lineDashOffset=-t*30*(k%2?1:-1);ctx.beginPath();ctx.arc(x,y,18+k*6+Math.sin(t*3+k)*2,0,TAU);ctx.stroke();}ctx.lineDashOffset=0;
+    glow(x,y,46,3,.25*authA);txt('Entra ID token',x,y-40,0,authA*a);txt('no secret',U(-.86),V(.3),3,authA*.6);}
+  txt(MED[m],U(0),V(-.66),0,.9,'center',FS+1);
+};
+SC[6]=function(p,t){
+  var o=1-seg(p,.47,.53),ib=seg(p,.47,.53),cos=S.tier==='cosmos';
+  if(o>0){var A0=A;A=A0*o;var q=seg(p,0,.47);
+    var Hx=-.68,Hy=-.45,Sx=-.12,Sy=.32,Bx=.72,By=-.4;
+    hex(Hx,Hy,seg(q,0,.08)*(1-seg(q,.25,.4)),'handler');
+    // store
+    var sx=U(Sx),sy=V(Sy),sw=R*.62,sh=R*.38;
+    if(!cos){stroke(3,.55,1.2);ctx.beginPath();ctx.ellipse(sx,sy-sh/2,sw/2,R*.07,0,0,TAU);ctx.stroke();ctx.beginPath();ctx.moveTo(sx-sw/2,sy-sh/2);ctx.lineTo(sx-sw/2,sy+sh/2);ctx.ellipse(sx,sy+sh/2,sw/2,R*.07,0,Math.PI,0,true);ctx.lineTo(sx+sw/2,sy-sh/2);ctx.stroke();
+      txt('your DbContext',sx,sy+sh/2+FS*2,3,.6);}
+    else{for(var d=2;d>=0;d--){stroke(3,.3+.2*(2-d),1.2);ctx.fillStyle='rgba(5,15,17,.85)';rr(sx-sw/2+d*6,sy-sh/2-d*6,sw,sh,8);ctx.fill();ctx.stroke();}
+      txt('Cosmos DB container',sx,sy+sh/2+FS*2,3,.6);}
+    var sl=[[Sx-.12,Sy+.02],[Sx+.12,Sy+.02]];
+    var g=ease(seg(q,.04,.3));
+    var st=bez([Hx,Hy],[Hx,Sy],sl[0],g),ms=bez([Hx,Hy],[Sx+.2,Hy-.1],sl[1],g);
+    if(q>.04){msg(U(st[0]),V(st[1]),1,1,.8);txt(cos?'aggregate':'state',U(st[0]),V(Sy+.16),1,.8*seg(q,.25,.35),'center',FS-1);}
+    var tx=seg(q,.3,.5),cm=bump(q,.48,.58);
+    if(tx>0){stroke(0,.5+.5*cm,1.4,[5,4]);ctx.lineDashOffset=-t*20;ctx.beginPath();ctx.ellipse(sx,sy+R*.02,R*.24,R*.09,0,-Math.PI/2,-Math.PI/2+tx*TAU);ctx.stroke();ctx.lineDashOffset=0;
+      txt(cos?'one TransactionalBatch':'one transaction',sx,sy-sh/2-FS*2.2,0,.85*tx);glow(sx,sy,R*.5,0,.35*cm);
+      if(cm>0)txt('commit',sx,sy-sh/2-FS*3.8,0,cm);}
+    var dep=seg(q,.6,.95);
+    var mp=dep>0?bez(sl[1],[Bx-.1,Sy+.1],[Bx,By],ease(dep)):ms;
+    if(q>.04&&dep<1){if(dep>0)trail(bezPts(sl[1],[Bx-.1,Sy+.1],[Bx,By],20),ease(dep),.2,0,1);msg(U(mp[0]),V(mp[1]),0,1,.85);}
+    txt('outbox',U(sl[1][0]),V(Sy+.16),0,.8*seg(q,.25,.35)*(1-dep),'center',FS-1);
+    ring(Bx,By,.13,0,.3+.6*seg(q,.92,1),1.2,[3,4],t*8);txt('broker',U(Bx),V(By)-R*.13-FS,0,.65);
+    var bl=.75*bump(q,.6,1.02);if(cos){txt('Outbox Relay',U(Bx),V(By)+R*.13+FS*1.3,0,bl);txt('(change feed)',U(Bx),V(By)+R*.13+FS*2.7,0,bl*.8);}else txt('after commit',U(Bx),V(By)+R*.13+FS*1.3,0,bl);
+    A=A0;}
+  if(ib>0){var A1=A;A=A1*ib;var r=seg(p,.53,1);
+    var path=[[-1.05,0],[-.42,0],[.02,0],[.62,0]];
+    hex(.62,0,0,'handler');
+    var gx=U(-.42);stroke(0,.6,2);ctx.beginPath();ctx.arc(gx+R*.14,V(0),R*.18,Math.PI-.6,Math.PI+.6);ctx.stroke();txt('Receiver',gx,V(.3),0,.6);
+    var seen=seg(r,.2,.26),ix=U(.02),iy=V(0),bw=R*.22;ga(1);ctx.fillStyle='rgba(5,15,17,.9)';rr(ix-bw/2,iy-bw/2,bw,bw,6);ctx.fill();stroke(1,.4+.5*seen,1.3);ctx.stroke();
+    txt('Inbox',ix,iy-bw/2-FS,1,.75);
+    if(seen>0){stroke(1,seen,2);ctx.beginPath();ctx.moveTo(ix-bw*.2,iy);ctx.lineTo(ix-bw*.04,iy+bw*.16);ctx.lineTo(ix+bw*.22,iy-bw*.16);ctx.stroke();}
+    var m1=seg(r,0,.42);if(m1>0&&m1<1)mover(path,ease(m1),0,1);
+    var hl=bump(r,.36,.6);if(hl>0)hex(.62,0,hl,'handler');
+    var m2=seg(r,.5,.82);if(m2>0&&m2<1){mover(path.slice(0,3),ease(m2),0,1);txt('redelivered',U(-.7),V(-.22),0,.8*bump(r,.5,.84));}
+    var ab=seg(r,.8,1);if(ab>0){for(var s=0;s<10;s++){var an=s/10*TAU+s;var d2=ab*R*.28;glow(ix+Math.cos(an)*d2,iy+Math.sin(an)*d2,6,0,(1-ab)*.8);}
+      glow(ix,iy,R*.3,1,.35*bump(ab,0,.7));txt('already seen · skipped',ix,V(.32),1,.9*ab);}
+    A=A1;}
+};
+SC[7]=function(p,t){
+  var Hx=.66,Bx=.2;
+  hex(Hx,0,0,'handler',1);
+  ga(1);var ex=U(-.2),ey=V(.68),ew=R*.62;stroke(2,.55,1.4);ctx.beginPath();ctx.ellipse(ex,ey,ew/2,R*.09,0,0,Math.PI);ctx.stroke();
+  stroke(2,.25,1,[2,4]);ctx.beginPath();ctx.ellipse(ex,ey,ew/2,R*.09,0,Math.PI,TAU);ctx.stroke();
+  txt('Error Queue',ex,ey+R*.09+FS*1.4,2,.75);
+  var x=-1.05,y=0,ci=0,arr=seg(p,0,.12);
+  if(p<.12){x=-1.05+.7*ease(arr);}
+  else if(p<.42){var at=Math.min(2,Math.floor((p-.12)/.1)),sub=((p-.12)-at*.1)/.1;
+    var st0=at===0?-.35:-.35-(at-1)*.08,back=-.35-at*.08;if(sub<.5)x=st0+(Hx-.12-st0)*ease(sub*2);else x=Hx-.12+(back-(Hx-.12))*ease((sub-.5)*2);
+    var hitf=bump(sub,.38,.66);if(hitf>0){glow(U(Hx-.1),V(0),R*.3,2,.6*hitf);txt('fail',U(Hx),V(-.25),2,hitf);}
+    ci=sub>.5?2:0;txt('attempt '+(at+1),U(-.35),V(-.25),0,.8,'center');txt('Retry',U(.15),V(-.42),0,.6);
+}
+  else{var dr=seg(p,.42,.62);var pt=bez([-.51,0],[-.6,.5],[-.2,.66],ease(dr));x=pt[0];y=pt[1];ci=2;
+    if(dr<1)txt('max receive attempts exceeded',U(-.2),V(-.25),2,.9*bump(dr,0,1.4));}
+  msg(U(x),V(y),ci,p>.62?.55+.2*Math.sin(t*2):1,p>.62?.7:1);
+  var cb=seg(p,.66,.82);
+  if(cb>0){for(var i=0;i<5;i++){var by=-.4+i*.2,h=.09*cb;ln(Bx,by-h,Bx,by+h,i%2?4:2,.9,3);}glow(U(Bx),V(0),R*.6,4,.25*cb);
+    txt('Circuit Breaker · open',U(Bx),V(-.56),4,cb);
+    for(var n=0;n<3;n++){var w=seg(p,.72+n*.06,.86+n*.05);if(w<=0)continue;var xx=-1.05+(Bx-.1-n*.09+1.05)*eo(w);msg(U(xx),V(.12*(n-1)),0,.8,.7);}
+    txt('processing stopped · cooling',U(Bx),V(.56),4,.7*seg(p,.82,.9));}
+};
+var EV=[[.04,1,'U'],[.17,5,'I'],[.3,3,'D'],[.43,0,'U'],[.56,3,'I'],[.69,4,'U'],[.82,2,'D']];
+var EVH={I:[-.52,'RowInsertedEvent',1],U:[0,'RowUpdatedEvent',0],D:[.52,'RowDeletedEvent',2]};
+SC[8]=function(p,t){
+  var x0=U(-.97),x1=U(.2),rowH=R*.19,top=V(-.52);
+  txt('dbo.Orders',x0,top-rowH*.7,3,.6,'left');
+  var live=[1,1,1,1,1,0],flash=[0,0,0,0,0,0],fc=[0,0,0,0,0,0];
+  for(var i=0;i<EV.length;i++){var e=EV[i];if(p>=e[0]){live[e[1]]=e[2]==='D'?0:1;var f=1-seg(p,e[0],e[0]+.08);if(f>flash[e[1]]){flash[e[1]]=f;fc[e[1]]=EVH[e[2]][2];}}}
+  for(var r=0;r<6;r++){var y=top+r*rowH+rowH*.5,w=x1-x0;
+    ga(1);ctx.fillStyle=live[r]?'rgba(236,246,242,.06)':'rgba(0,0,0,0)';rr(x0,y-rowH*.38,w,rowH*.76,5);ctx.fill();
+    stroke(live[r]?3:3,live[r]?.22:.18,1,live[r]?[]:[3,4]);ctx.stroke();
+    if(flash[r]>0){ga(.35*flash[r]);ctx.fillStyle=rgba(fc[r],1);rr(x0,y-rowH*.38,w,rowH*.76,5);ctx.fill();glow(x1,y,R*.25,fc[r],.6*flash[r]);}
+    if(live[r]){for(var c=0;c<3;c++){ga(.25);ctx.fillStyle=rgba(3,1);ctx.fillRect(x0+8+c*w*.3,y-1,w*.18,2);}}}
+  var lit={I:0,U:0,D:0};
+  for(var j=0;j<EV.length;j++){var ev=EV[j],h=EVH[ev[2]],g=seg(p,ev[0]+.01,ev[0]+.1);
+    if(g>0&&g<1){var ry=(-.52+ev[1]*.19+.095);mover(bezPts([.2,ry],[.45,ry],[.72,h[0]],16),ease(g),h[2],1,.25,.8);}
+    lit[ev[2]]=Math.max(lit[ev[2]],bump(p,ev[0]+.08,ev[0]+.16));}
+  ['I','U','D'].forEach(function(k){var h=EVH[k];hex(.72,h[0],lit[k],null,h[2]);txt(h[1],U(.72),V(h[0])+Math.max(11,R*.085)+FS*1.1,h[2],.6+.4*lit[k],'center',FS-1);});
+};
+var DN=[[-.85,-.35,'API'],[-.38,.25,'handler'],[.12,-.38,'broker'],[.5,.3,'Receiver'],[.86,-.25,'handler']];
+SC[9]=function(p,t){
+  traceA+=((S.traces?1:0)-traceA)*(reduced?1:.08);
+  var rev=seg(p,0,.3);
+  for(var i=0;i<DN.length;i++){var n=DN[i],a=cl(rev*6-i);hex(n[0],n[1],.15*a,null,i===2?3:1);txt(n[2],U(n[0]),V(n[1])+Math.max(11,R*.085)+FS*1.1,3,.55*a);}
+  var pts=DN.map(function(n){return [n[0],n[1]];});
+  if(traceA>.01){for(var j=0;j<DN.length-1;j++){ln(pts[j][0],pts[j][1],pts[j+1][0],pts[j+1][1],0,.55*traceA,1.2,[1,5]);}
+    for(var k=0;k<DN.length;k++){var tw=.5+.5*Math.sin(t*2+k);glow(U(pts[k][0]),V(pts[k][1]),R*.35,0,.18*traceA*tw);}
+    // span waterfall
+    var bx=U(-.85),bw=U(.86)-bx,by=V(.58);txt('trace',bx,by-FS,0,.7*traceA,'left');
+    for(var s=0;s<4;s++){var st=s*.18,len=.85-s*.17;ga(.55*traceA);ctx.fillStyle=rgba(s%2?1:0,1);rr(bx+bw*st,by+s*(FS*.9),bw*len,FS*.55,3);ctx.fill();}
+    var mtr=(Math.floor(t*3)%20)/20;txt('Meter · handled',U(.86),V(-.6),1,.8*traceA,'right');ga(.6*traceA);ctx.fillStyle=rgba(1,1);ctx.fillRect(U(.86)-R*.5,V(-.53),R*.5*(.2+.8*mtr),3);}
+  else txt('not subscribed · nothing emitted',U(0),V(.62),3,.45*(1-traceA));
+  for(var m=0;m<3;m++){var f=paused?((p*1.3+m*.33)%1):((t*.12+m*.33+p*.3)%1);mover(pts,f,m===1?4:0,rev*cl(f*12)*cl((1-f)*12),.12,.8);}
+};
+SC[10]=function(){};
+
+/* loop */
+var tm=0,last=0,raf=0,lastS=-1,frames=0,acc=0,settled=false;
+var steps=secs.map(function(s){return [].slice.call(s.querySelectorAll('[data-steps] li'));});
+var panels=secs.map(function(s){return s.querySelector('.panel');}),prog=document.querySelector('.prog'),heroIn=document.querySelector('.hero-in'),lastHo=-1;
+function frame(now){
+  raf=0;var dt=last?Math.min(.05,(now-last)/1000):.016;last=now;
+  if(!paused)tm+=dt;
+  if(!reduced&&frames<150){frames++;if(frames>30){acc+=dt;if(frames===150&&acc/120>.026&&NA>300){NA=Math.max(260,NA*.6|0);}}}
+  var s=story(),act=[],wsum=0;
+  for(var j=0;j<NS;j++){var w=weight(j,s);if(w>0){var p=reduced?REST[j]:cl(s-j);act.push([j,w,p]);wsum+=w;}}
+  if(!desk){var dj=-1,dw=0;for(var q=0;q<act.length;q++)if(act[q][1]>dw){dw=act[q][1];dj=act[q][0];}
+    var bot=VH*.53;if(dj>=0&&panels[dj]){var pt=panels[dj].getBoundingClientRect().top;bot=Math.max(VH*.4,Math.min(VH*.6,pt-8));}
+    var gcy=(58+bot)/2,gR=Math.min(W*.45,(bot-58)/2*.94);
+    if(!tcy||reduced){cy=gcy;R=gR;}else{var kk=1-Math.pow(.002,dt);cy+=(gcy-cy)*kk;R+=(gR-R)*kk;}
+    tcy=cy;}
+  ctx.setTransform(DPR,0,0,DPR,0,0);ctx.clearRect(0,0,W,H);
+  ctx.globalCompositeOperation='lighter';
+  for(var a=0;a<act.length;a++){A=act[a][1];glow(cx,cy,R*2.8,TINT[act[a][0]],.09);}
+  // punch for brokers
+  punchA=0;punchB=0;for(a=0;a<act.length;a++)if(act[a][0]===4){punchA=bump(act[a][2],.26,.46);punchB=bump(act[a][2],.66,.84);}
+  var L=reduced?1:1-Math.pow(.0006,dt),moved=0,dom=act.length?act[0]:null;
+  for(a=0;a<act.length;a++)if(act[a][1]>dom[1])dom=act[a];
+  for(var k=0;k<NA;k++){
+    var tx=0,ty=0,ta=0,ts=1,tc=1;
+    for(a=0;a<act.length;a++){var c=act[a];form(FORM[c[0]],k,c[2],tm);tx+=fx*c[1];ty+=fy*c[1];ta+=fa*c[1];if(c===dom){ts=fs;tc=fc;}}
+    if(wsum>0){tx/=wsum;ty/=wsum;ta/=Math.max(1,wsum);}
+    var dx=(tx-px[k])*L,dy=(ty-py[k])*L;px[k]+=dx;py[k]+=dy;pa[k]+=(ta-pa[k])*L;
+    var md=Math.abs(dx)+Math.abs(dy);if(md>moved)moved=md;
+    if(pa[k]<.012)continue;
+    var r=ts*(desk?3.4:3);ctx.globalAlpha=pa[k]>1?1:pa[k];ctx.drawImage(SPR[tc],px[k]-r,py[k]-r,2*r,2*r);
+  }
+  ctx.lineCap='round';
+  for(a=0;a<act.length;a++){A=act[a][1];var fn=SC[act[a][0]];if(fn)fn(act[a][2],tm);}
+  ctx.globalAlpha=1;ctx.setLineDash([]);
+  // steps
+  for(a=0;a<act.length;a++){var li=steps[act[a][0]];for(var i=0;i<li.length;i++){var pp=act[a][2],on=pp>=+li[i].dataset.a&&pp<+li[i].dataset.b;if(li[i].classList.contains('on')!==on)li[i].classList.toggle('on',on);}}
+  var sy=window.scrollY||0,ho=1-cl((sy-(hs[0]-VH))/(VH*.35));if(reduced)ho=1;if(Math.abs(ho-lastHo)>.005){heroIn.style.opacity=ho;lastHo=ho;}
+  var max=Math.max(1,document.documentElement.scrollHeight-VH);prog.style.transform='scaleX('+cl((window.scrollY||0)/max)+')';
+  var still=paused&&s===lastS&&moved<.05&&Math.abs(traceA-(S.traces?1:0))<.005&&Math.abs(authA-(S.auth&&S.medium==='asb'?1:0))<.005;
+  lastS=s;
+  if(!still&&!document.hidden)raf=requestAnimationFrame(frame);
+}
+function kick(){if(!raf&&!document.hidden){last=0;raf=requestAnimationFrame(frame);}}
+addEventListener('scroll',kick,{passive:true});
+var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(function(){resize();kick();},120);});
+document.addEventListener('visibilitychange',function(){if(!document.hidden)kick();});
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(function(){measure();kick();});
+addEventListener('load',function(){measure();kick();});
+if(mq.addEventListener)mq.addEventListener('change',function(e){reduced=e.matches;paused=reduced;syncPause();kick();});
+
+/* controls */
+var pb=document.getElementById('pause'),pl=document.getElementById('pauseLbl'),pi=document.getElementById('pauseIcon');
+function syncPause(){root.classList.toggle('paused',paused);pb.setAttribute('aria-pressed',String(paused));pl.textContent=paused?'Play':'Pause';pb.setAttribute('aria-label',paused?'Play motion':'Pause motion');pi.setAttribute('d',paused?'M4 2l10 6-10 6z':'M4 3h3v10H4zM9 3h3v10H9z');}
+pb.addEventListener('click',function(){paused=!paused;if(!paused)reduced=false;syncPause();kick();});
+syncPause();
+
+var cp=document.getElementById('copy');
+cp.addEventListener('click',function(){var txt=cp.getAttribute('data-copy');var done=function(){cp.textContent='Copied';setTimeout(function(){cp.textContent='Copy';},1600);};
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){sel();});}else sel();}catch(e){sel();}
+  function sel(){try{var r=document.createRange();r.selectNodeContents(cp.previousElementSibling);var s=getSelection();s.removeAllRanges();s.addRange(r);cp.textContent='Selected';setTimeout(function(){cp.textContent='Copy';},1600);}catch(e){}}});
+
+[].forEach.call(document.querySelectorAll('[data-medium]'),function(b){b.addEventListener('click',function(){S.medium=b.dataset.medium;
+  [].forEach.call(document.querySelectorAll('[data-medium]'),function(o){o.setAttribute('aria-pressed',String(o===b));});
+  [].forEach.call(document.querySelectorAll('[data-for]'),function(d){d.classList.toggle('on',d.dataset.for===S.medium);});kick();});});
+var au=document.getElementById('auth');au.addEventListener('click',function(){S.auth=!S.auth;au.setAttribute('aria-pressed',String(S.auth));document.querySelector('[data-auth]').classList.toggle('on',S.auth);kick();});
+[].forEach.call(document.querySelectorAll('[data-tier]'),function(b){b.addEventListener('click',function(){S.tier=b.dataset.tier;
+  [].forEach.call(document.querySelectorAll('[data-tier]'),function(o){o.setAttribute('aria-pressed',String(o===b));});
+  [].forEach.call(document.querySelectorAll('[data-tierc]'),function(d){d.classList.toggle('on',d.dataset.tierc===S.tier);});kick();});});
+var tr=document.getElementById('traces');tr.addEventListener('click',function(){S.traces=!S.traces;tr.setAttribute('aria-pressed',String(S.traces));kick();});
+
+/* constellation */
+var GH='https://github.com/brenpike/Chatter/blob/master/src/';
+var PK=[
+ {id:'Chatter.CQRS',n:'CQRS',x:50,y:9,core:1,dep:[],w:'Commands, Queries and Events dispatched in-process through IMessageDispatcher, with a Command Pipeline of ordered behaviors.',y2:'Controllers bloated with orchestration; cross-cutting concerns copy-pasted.'},
+ {id:'Chatter.MessageBrokers',n:'MessageBrokers',x:50,y:33,core:1,dep:[0],w:'Technology-agnostic brokered messaging: Receivers, routing and forwarding, Retry, Circuit Breaker, Error Queue, Inbox and Outbox ports. Ships no transport itself.',y2:'Broker SDK code leaking into domain code; vendor lock-in.'},
+ {id:'Chatter.MessageBrokers.AzureServiceBus',n:'Azure Service Bus',x:13,y:58,dep:[1],w:'Azure Service Bus transport: queues, topic subscriptions, sessions and cross-entity transactions.',y2:'Running your handlers on Azure Service Bus without Service Bus SDK code in the domain.'},
+ {id:'Chatter.MessageBrokers.AzureServiceBus.Auth',n:'Service Bus Auth',x:13,y:88,dep:[2],w:'Microsoft Entra ID token authentication for the Azure Service Bus transport, including managed identity.',y2:'Connection-string secrets in configuration.'},
+ {id:'Chatter.MessageBrokers.RabbitMQ',n:'RabbitMQ',x:37,y:64,dep:[1],w:'RabbitMQ transport over the exchanges and queues you provision.',y2:'Running the same handlers on RabbitMQ without RabbitMQ client code in the domain.'},
+ {id:'Chatter.MessageBrokers.SqlServiceBroker',n:'SQL Service Broker',x:63,y:58,dep:[1],w:'SQL Server Service Broker transport: conversations and queues you provision, inside the database you already run.',y2:'Adding a separate broker when SQL Server is already there.'},
+ {id:'Chatter.SqlChangeFeed',n:'SQL Change Feed',x:63,y:88,dep:[5],w:'Watches a SQL Server table and delivers strongly typed RowInsertedEvent, RowUpdatedEvent and RowDeletedEvent messages to handlers.',y2:'Polling tables or hand-rolling change notifications.'},
+ {id:'Chatter.MessageBrokers.Reliability.EntityFramework',n:'EF Core Reliability',x:88,y:50,dep:[1],w:'EF Core Inbox, Outbox and Unit of Work in your DbContext: state change, Inbox record and Outbox record saved in one database transaction; publishes after commit.',y2:'Publishing a message and saving state as two separate, unrelated operations.'},
+ {id:'Chatter.MessageBrokers.Reliability.Cosmos',n:'Cosmos DB Reliability',x:88,y:76,dep:[1],w:'Azure Cosmos DB Document Tier: aggregate, Outbox document and Inbox marker written in one TransactionalBatch; a change-feed Outbox Relay publishes pending documents.',y2:'The same state-and-message pairing problem, on Cosmos DB.'}
+];
+var stage=document.getElementById('stage'),svg=document.getElementById('edges'),NSV='http://www.w3.org/2000/svg',btns=[],lines=[];
+PK.forEach(function(pk,i){pk.dep.forEach(function(d){var l=document.createElementNS(NSV,'line');l.setAttribute('x1',pk.x);l.setAttribute('y1',pk.y);l.setAttribute('x2',PK[d].x);l.setAttribute('y2',PK[d].y);l.dataset.a=i;l.dataset.b=d;svg.appendChild(l);lines.push(l);});
+  var b=document.createElement('button');b.type='button';b.className='star'+(pk.core?' core':'');b.style.left=pk.x+'%';b.style.top=pk.y+'%';
+  b.setAttribute('aria-pressed','false');b.setAttribute('aria-label',pk.id);b.innerHTML='<span class="dot" aria-hidden="true"></span><span class="nm" aria-hidden="true">'+pk.n+'</span>';
+  b.addEventListener('click',function(){pick(i);});stage.appendChild(b);btns.push(b);});
+function chain(i,set){set[i]=1;PK[i].dep.forEach(function(d){chain(d,set);});return set;}
+function pick(i){var pk=PK[i],set=chain(i,{});
+  btns.forEach(function(b,j){b.setAttribute('aria-pressed',String(j===i));b.classList.toggle('dep',!!set[j]&&j!==i);});
+  lines.forEach(function(l){l.classList.toggle('hot',!!set[+l.dataset.a]&&!!set[+l.dataset.b]);});
+  document.getElementById('c-name').textContent=pk.n;document.getElementById('c-id').textContent=pk.id;
+  document.getElementById('c-what').textContent=pk.w;document.getElementById('c-why').textContent=pk.y2;
+  document.getElementById('c-dep').textContent=pk.dep.length?pk.dep.map(function(d){return PK[d].id;}).join(', '):'Nothing else in Chatter.';
+  document.getElementById('c-nuget').href='https://www.nuget.org/packages/'+pk.id;document.getElementById('c-docs').href=GH+pk.id+'/src/README.md';}
+pick(0);
+
+resize();kick();
+})();
+</script>
+</body>
+</html>

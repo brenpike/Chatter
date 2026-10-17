@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%23512BD4'/%3E%3Cpath d='M7 12.5l3.2 3.2L17 9' fill='none' stroke='%23EDEAF6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 29 10.5 16 18 3 10.5z' fill='%23ffd166'/%3E%3Cpath d='M3 10.5 16 18v11L3 21.5z' fill='%23ff7b5c'/%3E%3Cpath d='M29 10.5 16 18v11l13-7.5z' fill='%23c9583f'/%3E%3Cpath d='M16 7.5 21.5 10.6 16 13.7 10.5 10.6z' fill='%235fe0b0'/%3E%3C/svg%3E">
 <title>Chatter: Same handlers. Any broker.</title>
 <meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
 <link rel="canonical" href="https://brenpike.github.io/Chatter/">
@@ -13,549 +13,864 @@
 <meta property="og:url" content="https://brenpike.github.io/Chatter/">
 <meta property="og:title" content="Chatter: Same handlers. Any broker.">
 <meta property="og:description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
+<meta name="theme-color" content="#0d2231">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
-:root {
-  color-scheme: dark;
-  --bg: #0B0A12;
-  --surface: #16131F;
-  --line: #2A2540;
-  --ink: #EDEAF6;
-  --ink-muted: #A9A3BD;
-  --accent: #512BD4;
-  --accent-ink: #A78BFA;
-  --warn: #F0B429;
-  --fail: #F47067;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --loop: 30s;
+:root{
+  color-scheme:dark;
+  --ink:#0d2231;--ink2:#132f45;--ink3:#1b4060;--deep:#081823;
+  --cream:#fbf3e4;--muted:#a9bfcf;--line:rgba(251,243,228,.14);
+  --coral:#ff7b5c;--mint:#5fe0b0;--sky:#6cc8ff;--butter:#ffd166;--rose:#ff5d7a;
+  --disp:"Bricolage Grotesque","Avenir Next","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --gl:max(16px,env(safe-area-inset-left,0px));--gr:max(16px,env(safe-area-inset-right,0px));
 }
-*, *::before, *::after { box-sizing: border-box; }
-html { background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-text-size-adjust: 100%; }
-body { margin: 0; min-height: 100vh; }
-.page { max-width: 1160px; margin: 0 auto; padding: 20px 16px 40px; }
-a { color: var(--accent-ink); }
-a:focus-visible, #pause:focus-visible + label { outline: 2px solid var(--ink); outline-offset: 3px; }
+*{box-sizing:border-box}
+html{background:var(--ink);color:var(--cream);-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ink);color:var(--cream);font-family:var(--disp);font-size:17px;line-height:1.58;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+@supports (overflow:clip){body{overflow-x:clip}}
+a{color:var(--butter);text-underline-offset:3px}
+:focus-visible{outline:3px solid var(--butter);outline-offset:3px;border-radius:6px}
+.skip{position:absolute;left:-9999px;top:8px;z-index:20;background:var(--butter);color:#1a1a1a;padding:10px 14px;border-radius:10px;font-weight:700}
+.skip:focus{left:var(--gl)}
 
-.top { display: flex; align-items: center; gap: 10px; }
-.wordmark { font-weight: 700; font-size: 18px; letter-spacing: .02em; }
-.chip { font-family: var(--mono); font-size: 13px; color: var(--ink-muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+/* ---------- story layout */
+.story{position:relative}
+.stage{position:-webkit-sticky;position:sticky;top:0;height:55vh;height:55svh;min-height:300px;z-index:3;background:#173b55;overflow:hidden}
+.stage canvas{display:block;width:100%;height:100%;touch-action:pan-y}
+.stage::after{content:"";position:absolute;left:0;right:0;bottom:0;height:26px;background:linear-gradient(to bottom,rgba(13,34,49,0),var(--ink));pointer-events:none}
+.prog{position:absolute;left:var(--gl);right:var(--gr);bottom:10px;height:3px;border-radius:3px;background:rgba(251,243,228,.16);z-index:2;overflow:hidden}.prog i{display:block;height:100%;width:100%;background:linear-gradient(90deg,var(--mint),var(--butter),var(--coral));transform-origin:0 50%;transform:scaleX(0)}
+.hud{position:absolute;top:max(10px,env(safe-area-inset-top,0px));left:var(--gl);right:var(--gr);display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none;z-index:2}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 8px;border-radius:999px;background:rgba(8,24,35,.62);border:1px solid rgba(251,243,228,.16);font-size:12.5px;font-weight:600;letter-spacing:.01em;color:var(--cream);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);max-width:calc(100vw - 100px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip b{display:inline-grid;place-items:center;min-width:26px;height:22px;padding:0 6px;border-radius:999px;background:var(--butter);color:#1c2430;font-weight:800;font-size:11.5px}
+.hud button{pointer-events:auto}
+.iconbtn{width:44px;height:44px;border-radius:999px;border:1px solid rgba(251,243,228,.22);background:rgba(8,24,35,.62);color:var(--cream);display:grid;place-items:center;cursor:pointer;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.iconbtn svg{width:16px;height:16px}
 
-h1 { font-size: clamp(2.1rem, 7vw, 3.75rem); line-height: 1.08; margin: 28px 0 14px; letter-spacing: -.01em; }
-.lede { max-width: 62ch; margin: 0 0 24px; font-size: clamp(1rem, 2.6vw, 1.2rem); color: var(--ink-muted); }
+.ch{position:relative;padding:30px var(--gr) 72px var(--gl);min-height:84vh;min-height:84svh}
+.ch .inner{max-width:560px}
+html.js .ch .inner{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}
+html.js .ch.in .inner{opacity:1;transform:none}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.eyebrow i{width:10px;height:10px;border-radius:3px;background:var(--butter);display:inline-block;transform:rotate(45deg)}
+h1,h2,h3{font-family:var(--disp);line-height:1.08;margin:0}
+h1{font-size:clamp(52px,15vw,104px);font-weight:800;letter-spacing:-.035em;font-variation-settings:"opsz" 96}
+h2{font-size:clamp(28px,7.4vw,44px);font-weight:750;letter-spacing:-.02em;margin-bottom:14px;font-variation-settings:"opsz" 72}
+h3{font-size:19px;font-weight:700;margin-bottom:6px}
+p{margin:0 0 14px}
+.tag{font-size:clamp(22px,6vw,30px);font-weight:650;color:var(--butter);margin:6px 0 10px;letter-spacing:-.01em}
+.lede{color:#e3e9ee;font-size:17px}
+.muted{color:var(--muted)}
+code,.mono{font-family:var(--mono);font-size:.86em}
+p code,li code{background:rgba(251,243,228,.08);padding:1px 6px;border-radius:6px;white-space:nowrap}
 
-.cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px; margin-bottom: 32px; }
-.cta { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 0 24px; background: var(--accent); color: #fff; border: 1px solid var(--accent-ink); border-radius: 10px; font-weight: 600; font-size: 17px; text-decoration: none; }
-.cta svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
-.cta:hover { background: #5f3ce0; border-color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
-.cta:active { transform: translateY(1px); }
-.install { display: inline-block; max-width: 100%; font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+.pill{display:flex;align-items:center;gap:6px;max-width:100%;margin:16px 0 12px;padding:5px 5px 5px 14px;border-radius:999px;background:var(--deep);border:1px solid rgba(255,209,102,.35);box-shadow:0 8px 26px rgba(0,0,0,.25)}
+.pill code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;font-size:13.5px;color:var(--cream);scrollbar-width:none}
+.pill code::-webkit-scrollbar{display:none}
+.pill code::before{content:"$ ";color:var(--mint)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border-radius:999px;border:1px solid rgba(251,243,228,.22);background:transparent;color:var(--cream);font:inherit;font-size:15px;font-weight:650;text-decoration:none;cursor:pointer}
+.btn.solid{background:var(--butter);color:#1d2430;border-color:var(--butter)}
+.pill .btn{min-height:40px;padding:0 14px;font-size:14px;flex:none}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.hint{display:flex;align-items:center;gap:10px;margin-top:22px;color:var(--muted);font-size:14px}
+.hint span{width:22px;height:34px;border:2px solid rgba(251,243,228,.35);border-radius:12px;position:relative}
+.hint span::after{content:"";position:absolute;left:50%;top:6px;width:4px;height:8px;margin-left:-2px;border-radius:2px;background:var(--butter);animation:nudge 1.6s ease-in-out infinite}
+@keyframes nudge{0%,100%{transform:translateY(0);opacity:1}60%{transform:translateY(10px);opacity:.2}}
 
-/* scene: DOM order is pause control, list, stage, anchor; flex order sets the stacked visual order */
-.scene { position: relative; display: flex; flex-direction: column; gap: 18px; }
-#pause { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); }
-#pause + label { order: 1; align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; min-height: 44px; min-width: 44px; padding: 0 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; font-size: 15px; cursor: pointer; }
-#pause + label::before { content: ""; width: 18px; height: 18px; border: 2px solid var(--ink-muted); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1; flex: none; }
-#pause:checked + label::before { content: "\2713"; background: var(--accent); border-color: var(--accent-ink); color: var(--ink); }
+.legend{list-style:none;padding:0;margin:4px 0 16px;display:grid;gap:10px}
+.legend li{display:grid;grid-template-columns:22px 1fr;gap:10px;align-items:start}
+.sw{width:18px;height:18px;border-radius:5px;margin-top:4px;box-shadow:inset 0 -5px 0 rgba(0,0,0,.18)}
+.sw.c{background:var(--coral)}.sw.e{background:var(--mint)}.sw.q{background:var(--sky)}.sw.r{background:var(--butter)}
+.legend b{font-weight:700}
 
-.stg-stage { order: 2; width: 100%; min-width: 0; }
-.anchor { order: 3; margin: 0; text-align: center; font-family: var(--mono); font-size: 14px; color: var(--ink-muted); overflow-wrap: anywhere; }
-.anchor code { font-family: inherit; color: var(--ink); }
+pre{margin:6px 0 16px;padding:14px 14px;border-radius:14px;background:var(--deep);border:1px solid var(--line);overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:#dfe8ef}
+pre .k{color:#ff9f86}.pre .t,pre .t{color:var(--sky)}pre .s{color:var(--mint)}pre .c{color:#7f98aa;font-style:italic}pre .a{color:var(--butter)}
 
-/* package list: plain HTML, present and clickable in every frame; base state is the finished frame */
-.lst-list { order: 4; list-style: none; margin: 0; padding: 0; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
-.lst-row { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 12px; align-items: start; padding: 0 6px 0 14px; border-top: 1px solid var(--line); }
-.lst-row:first-child { border-top: 0; border-radius: 11px 11px 0 0; }
-.lst-row:last-child { border-radius: 0 0 11px 11px; }
-.lst-hl { position: absolute; inset: 0; background: rgba(81, 43, 212, .2); border-radius: inherit; transform: scaleX(0); transform-origin: 0 50%; pointer-events: none; }
-.lst-st, .lst-body, .lst-nuget { position: relative; z-index: 1; }
-.lst-st { width: 24px; height: 24px; margin-top: 10px; }
-.lst-ring { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
-.lst-tick { transform-box: fill-box; transform-origin: center; }
-.lst-tick circle { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1.5; }
-.lst-tick path { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.lst-pkg { display: block; min-height: 44px; padding: 12px 0; font-family: var(--mono); font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
-.lst-pkg:hover { color: var(--ink); }
-.lst-why { display: block; margin-top: -6px; padding-bottom: 12px; font-size: 14px; color: var(--ink-muted); }
-.lst-nuget { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 13px; color: var(--ink-muted); text-decoration: underline; text-underline-offset: 3px; }
-.lst-nuget:hover { color: var(--ink); }
+.seg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}
+.seg button{min-height:44px;padding:0 16px;border-radius:999px;border:1px solid rgba(251,243,228,.24);background:rgba(251,243,228,.04);color:var(--cream);font:inherit;font-size:14.5px;font-weight:650;cursor:pointer;transition:background .2s,color .2s,border-color .2s}
+.seg button[aria-pressed="true"]{background:var(--cream);color:#122535;border-color:var(--cream)}
+.seg button .d{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:1px}
+.card{overflow-wrap:anywhere;background:var(--ink2);border:1px solid var(--line);border-radius:18px;padding:16px 16px 4px;margin:14px 0}
+.card.live{min-height:96px}
+.note{font-size:15px;color:var(--muted);border-left:3px solid var(--butter);padding-left:12px}
+.steps{list-style:none;padding:0;margin:4px 0 14px;display:grid;gap:12px}
+.steps li{display:grid;grid-template-columns:40px 1fr;gap:12px;align-items:start}
+.ico{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:15px;color:#132433}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 16px;padding:0;list-style:none}
+.chips li{font-family:var(--mono);font-size:12.5px;padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:rgba(251,243,228,.05)}
+.chips li::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;background:var(--c)}
+.doclink{display:inline-flex;align-items:center;gap:6px;min-height:44px;font-weight:650}
 
-/* stage layout map (viewBox 0 0 800 1000; all coordinates are viewBox units)
-   caption: 400,34 middle (stg-cap)
-   envelope (stg-env): 48x34 glyph at translate(376px, Ypx), centre x 400; chip pill to its left: x -(w+6), y 2, h 30, w = 12 x label chars + 20; chip label x -(w/2+6), y 24
-   envelope Y: start 128 | wire 184 (b2 214) | receiver 339 | inbox pause 420 | handler slot S-17 | outlet translate(740px, 950px); b1: Message Dispatcher 175, Command Pipeline 305
-   handler card: 560x116 box, 576x132 glow, centred on slot S by translate(400px, Spx); S = 580 for b1-b6 and b10, 652 for b7-b8, 730 for b9, 384 for the final frame
-   b1: Orders service box x40 y48 w720 h652; label 60,78; Dispatch 400,114; Message Dispatcher pill 240,168 320x48; Command Pipeline ring 200,266 400x112; accent arrow 378-508
-   shared frame (stg-svc, b2-b10): Storefront box x40 y48 w720 h120, label 60,78, Dispatch 400,114; wire 400,168-256 (dash 88); Orders service box x40 y256 w720 h634, label 60,286; header row y318; Brokered Message Receiver pill x160 y334 w480 h44, text y364
-   beside the wire: transport tick 404-426 y199, label 432,206; b2 code 432,220; b4 Entra ID token pill 432,216 220x34; code under the card y700, second line y744/748
-   b7-b8: context label 740,286 end; code 400,318; outline x60 y392 w680 h450; inbox arrow 430-458 y437; Inbox card x464 y410 w268 h146 (header y438, divider y450, MessageId y476, ReceivedByInboxAtUtc y504, state y536; text x482, values end x716); Cosmos Inbox pill x464 y410 w268 h48; skip bar 372-428 y500, label end 360,508; flow 400,458-580; Outbox pill 300,732 200x40; commit check 512,740-758, label 546,760; processor pill 240,786 320x42; event arrow 400,828-904, dot travel 78; event label 414,872; Billing service stub 250,910 300x56
-   b9: rows x160 w480 h44 at y396 Retry, y456 Circuit Breaker, y562 Error Queue; text x184; receiver mark 576-596 y346-366; recovery dot x622 at y378 start, 418 Retry, 362 receiver, 584 Error Queue
-   b10: SQL Server box over the Storefront box; Trigger pill 60,90 124x36; INSERT 200,116; broker label 420,218; Event 740,286 end
-   final frame: slogan 400,230; card S384; Inbox pill 250,492 300x50; Receiver pill 160,592 480x46; connector 400,450-706; transport chips y706 h130 at x25, x285, x545 (w230) */
-.stg-stage svg { display: block; width: 100%; height: auto; }
-.stg-stage text { fill: var(--ink); font-family: var(--sans); font-size: 20px; }
-.stg-box { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
-.stg-pill { fill: var(--bg); stroke: var(--ink-muted); stroke-width: 1.5; }
-.stg-ring { fill: none; stroke: var(--accent-ink); stroke-width: 2.5; }
-.stg-outline { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-dasharray: 6 6; }
-.stg-stub { fill: none; stroke: var(--ink-muted); stroke-width: 1.5; stroke-dasharray: 6 6; }
-.stg-ln { fill: none; stroke: var(--ink-muted); stroke-width: 2; }
-.stg-ln-acc { fill: none; stroke: var(--accent-ink); stroke-width: 2; }
-.stg-ok { fill: none; stroke: var(--accent-ink); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
-.stg-x { fill: none; stroke: var(--fail); stroke-width: 4; stroke-linecap: round; }
-.stg-sw { fill: none; stroke: var(--warn); stroke-width: 3; stroke-linecap: round; }
-.stg-swc { fill: var(--warn); }
-.stg-glow { fill: var(--accent); }
-.stg-dot { fill: var(--accent-ink); }
-.stg-dot-evt { fill: var(--warn); }
-.stg-dot-fail { fill: var(--fail); }
-.stg-arrowhead { fill: var(--ink-muted); }
-.stg-cardbox { fill: var(--surface); stroke: var(--accent-ink); stroke-width: 2; }
-.stg-env rect { fill: var(--bg); stroke: var(--accent-ink); stroke-width: 1.5; }
-.stg-env path { fill: none; stroke: var(--accent-ink); stroke-width: 1.5; stroke-linejoin: round; }
-.stg-mu { fill: var(--ink-muted); }
-.stg-ac { fill: var(--accent-ink); }
-.stg-stage .stg-cap { font-size: 28px; font-weight: 600; fill: var(--ink-muted); }
-.stg-stage .stg-lbl { font-size: 21px; fill: var(--ink-muted); }
-.stg-stage .stg-nm { font-size: 22px; }
-.stg-stage .stg-code { font-family: var(--mono); font-size: 20px; }
-.stg-stage .stg-tick { font-family: var(--mono); font-size: 15px; fill: var(--accent-ink); }
-.stg-stage .stg-cardt { font-family: var(--mono); font-size: 24px; }
-.stg-stage .stg-slogan { font-size: 46px; font-weight: 700; }
-.stg-stage .stg-chipn { font-size: 24px; font-weight: 600; }
-.stg-stage .stg-chipc { font-family: var(--mono); font-size: 20px; fill: var(--ink-muted); }
-.stg-stage .stg-fin .stg-chipc { font-size: 15px; }
-.stg-stage .stg-cell { font-family: var(--mono); font-size: 18px; fill: var(--ink-muted); }
-.stg-stage .stg-cellv { font-family: var(--mono); font-size: 18px; fill: var(--ink); }
-.stg-stage .stg-tag { font-size: 21px; font-weight: 600; fill: var(--accent-ink); }
-.stg-stage .stg-hd { font-weight: 700; fill: var(--accent-ink); }
+.pkgs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 12px}
+.pkgs button{min-height:52px;text-align:left;padding:8px 12px;border-radius:14px;border:1px solid rgba(251,243,228,.18);background:rgba(251,243,228,.04);color:var(--cream);font:inherit;font-size:13.5px;font-weight:650;line-height:1.2;cursor:pointer;display:flex;gap:8px;align-items:center;overflow-wrap:anywhere}
+.pkgs button i{flex:none;width:12px;height:12px;border-radius:4px;transform:rotate(45deg)}
+.pkgs button[aria-pressed="true"]{background:var(--cream);color:#122535}
+.detail h3{font-family:var(--mono);font-size:15px;font-weight:600;overflow-wrap:anywhere}
+.detail .dep{font-size:13.5px;color:var(--muted)}
+.cta{margin-top:28px;padding:22px 18px;border-radius:22px;background:linear-gradient(160deg,#1d4767,#132f45);border:1px solid rgba(255,209,102,.3)}
+.cta h3{font-size:26px;letter-spacing:-.01em}
 
-/* static final frame: scene groups and moving parts hidden; slogan, Inbox, Receiver, chips and card shown */
-.stg-sc, .stg-mv { opacity: 0; }
-.stg-fin, .stg-card { opacity: 1; }
-.stg-card { transform: translate(400px, 384px); }
+footer{padding:36px var(--gr) calc(28px + env(safe-area-inset-bottom,0px)) var(--gl);border-top:1px solid var(--line);color:var(--muted);font-size:14px;background:var(--ink)}
+footer .row{gap:6px 18px}
+footer a{min-height:44px;display:inline-flex;align-items:center}
+.proto{margin-top:18px;font-size:12px;opacity:.75}
+.proto a{color:var(--muted)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
-@media (max-width: 700px) {
-  .stg-stage .stg-cap { font-size: 32px; }
-  .stg-stage .stg-lbl, .stg-stage .stg-nm, .stg-stage .stg-tag { font-size: 26px; }
-  .stg-stage .stg-code { font-size: 24px; }
-  .stg-stage .stg-cell, .stg-stage .stg-cellv { font-size: 20px; }
-  .stg-stage .stg-tick { font-size: 26px; }
-  .stg-stage .stg-cardt { font-size: 27px; }
-  .stg-stage .stg-slogan { font-size: 50px; }
-  .stg-stage .stg-chipn { font-size: 27px; }
-  .stg-sec { display: none; }
+@media (min-width:900px){
+  .story{display:grid;grid-template-columns:minmax(400px,42%) 1fr}
+  .stage{grid-column:2;grid-row:1 / span 10;height:100vh;height:100svh;align-self:start}
+  .stage::after{display:none}
+  .ch{grid-column:1;min-height:100vh;min-height:100svh;padding:22vh 44px 90px max(40px,4vw)}
+  .ch.first{padding-top:16vh}
+  .hud{top:18px;left:20px;right:20px}
+  .chip{font-size:13.5px}
+  pre{font-size:13px}
 }
-
-footer { margin-top: 32px; }
-footer a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--ink-muted); }
-
-@media (min-width: 960px) {
-  .scene { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "lbl lbl" "stg lst" "anc lst"; column-gap: 28px; row-gap: 18px; align-items: start; }
-  #pause + label { grid-area: lbl; }
-  .stg-stage { grid-area: stg; }
-  .anchor { grid-area: anc; }
-  .lst-list { grid-area: lst; }
-}
-@media (max-width: 480px) {
-  .page { padding-inline: 12px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  #pause, #pause + label { display: none; }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .stg-b1 { animation: stg-b1 var(--loop) linear infinite; }
-  .stg-svc { animation: stg-svc var(--loop) linear infinite; }
-  .stg-x-wire { animation: stg-x-wire var(--loop) linear infinite; }
-  .stg-b2 { animation: stg-b2 var(--loop) linear infinite; }
-  .stg-b3 { animation: stg-b3 var(--loop) linear infinite; }
-  .stg-b4 { animation: stg-b4 var(--loop) linear infinite; }
-  .stg-x-ring { animation: stg-x-ring var(--loop) linear infinite; }
-  .stg-x-tok { animation: stg-x-tok var(--loop) linear infinite; }
-  .stg-e0 { animation: stg-e0 var(--loop) ease-in-out infinite; }
-  .stg-e1 { animation: stg-e1 var(--loop) ease-in-out infinite; }
-  .stg-e2 { animation: stg-e2 var(--loop) ease-in-out infinite; }
-  .stg-e3 { animation: stg-e3 var(--loop) ease-in-out infinite; }
-  @keyframes stg-b1 { 0% { opacity: 0; } 0.4% { opacity: 1; } 7.6% { opacity: 1; } 8% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-svc { 0% { opacity: 0; } 7.6% { opacity: 0; } 8% { opacity: 1; } 87.2% { opacity: 1; } 87.6% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-wire { 0% { stroke-dashoffset: 88; } 8% { stroke-dashoffset: 88; } 9.6% { stroke-dashoffset: 0; } 87.6% { stroke-dashoffset: 0; } 88% { stroke-dashoffset: 88; } 100% { stroke-dashoffset: 88; } }
-  @keyframes stg-b2 { 0% { opacity: 0; } 8% { opacity: 0; } 8.4% { opacity: 1; } 13.28% { opacity: 1; } 13.68% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-b3 { 0% { opacity: 0; } 13.28% { opacity: 0; } 13.68% { opacity: 1; } 22.8% { opacity: 1; } 23.2% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-b4 { 0% { opacity: 0; } 19.2% { opacity: 0; } 19.6% { opacity: 1; } 22.8% { opacity: 1; } 23.2% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-ring { 0% { opacity: 1; } 4.4% { opacity: 1; } 4.8% { opacity: 0.4; } 5.6% { opacity: 1; } 100% { opacity: 1; } }
-  @keyframes stg-x-tok { 0% { opacity: 1; } 20% { opacity: 1; } 20.4% { opacity: 0.5; } 21.2% { opacity: 1; } 100% { opacity: 1; } }
-  @keyframes stg-e0 { 0% { opacity: 0; transform: translate(376px, 175px); } 2.8% { opacity: 0; transform: translate(376px, 175px); } 3.2% { opacity: 1; transform: translate(376px, 175px); } 4.8% { opacity: 1; transform: translate(376px, 305px); } 7.2% { opacity: 1; transform: translate(376px, 563px); } 7.6% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 175px); } }
-  @keyframes stg-e1 { 0% { opacity: 0; transform: translate(376px, 128px); } 8.4% { opacity: 0; transform: translate(376px, 128px); } 8.8% { opacity: 1; transform: translate(376px, 128px); } 10% { opacity: 1; transform: translate(376px, 214px); } 11.2% { opacity: 1; transform: translate(376px, 339px); } 12.8% { opacity: 1; transform: translate(376px, 563px); } 13.2% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-e2 { 0% { opacity: 0; transform: translate(376px, 128px); } 14.8% { opacity: 0; transform: translate(376px, 128px); } 15.2% { opacity: 1; transform: translate(376px, 128px); } 16.4% { opacity: 1; transform: translate(376px, 184px); } 17.36% { opacity: 1; transform: translate(376px, 339px); } 18.4% { opacity: 1; transform: translate(376px, 563px); } 18.8% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-e3 { 0% { opacity: 0; transform: translate(376px, 128px); } 20% { opacity: 0; transform: translate(376px, 128px); } 20.4% { opacity: 1; transform: translate(376px, 128px); } 21.04% { opacity: 1; transform: translate(376px, 184px); } 21.6% { opacity: 1; transform: translate(376px, 339px); } 22.4% { opacity: 1; transform: translate(376px, 563px); } 22.8% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  /* beats 5-8: stg-b7 (outline, Inbox arrow, Outbox, Outbox Processor / Relay pipeline, Billing) stays visible 34.8-69.2% and is shared by beat 7 (EF Core) and beat 8 (Cosmos);
-     stg-x-b7a holds the EF-only pieces (context label, code, Inbox card with its InboxMessages row, redelivery envelope stg-e6r, handler-skipped mark) and cross-fades with stg-b8 (Cosmos label, code, Inbox pill, Outbox Relay) at 63.2%;
-     EF: claim 39.6%, handler 43.6%, stamp 44.4%, commit 45.2%, Outbox Processor 46.8%, redelivery held at the Inbox 54.8-60.4%; Cosmos replays stg-x-inc / stg-x-cmt / stg-x-prc / stg-x-dot 65.6-69.2% */
-  .stg-b5 { animation: stg-b5 var(--loop) linear infinite; }
-  .stg-b6 { animation: stg-b6 var(--loop) linear infinite; }
-  .stg-b7 { animation: stg-b7 var(--loop) linear infinite; }
-  .stg-b8 { animation: stg-b8 var(--loop) linear infinite; }
-  .stg-x-b7a { animation: stg-x-b7a var(--loop) linear infinite; }
-  .stg-x-inb { animation: stg-x-inb var(--loop) linear infinite; }
-  .stg-x-cmt { animation: stg-x-cmt var(--loop) linear infinite; }
-  .stg-x-prc { animation: stg-x-prc var(--loop) linear infinite; }
-  .stg-x-dot { animation: stg-x-dot var(--loop) linear infinite; }
-  .stg-e4 { animation: stg-e4 var(--loop) ease-in-out infinite; }
-  .stg-e5 { animation: stg-e5 var(--loop) ease-in-out infinite; }
-  .stg-e6 { animation: stg-e6 var(--loop) ease-in-out infinite; }
-  .stg-e7 { animation: stg-e7 var(--loop) ease-in-out infinite; }
-  .stg-x-inc { animation: stg-x-inc var(--loop) linear infinite; }
-  .stg-x-iid { animation: stg-x-iid var(--loop) linear infinite; }
-  .stg-x-icl { animation: stg-x-icl var(--loop) linear infinite; }
-  .stg-x-ist { animation: stg-x-ist var(--loop) linear infinite; }
-  .stg-x-skp { animation: stg-x-skp var(--loop) linear infinite; }
-  .stg-e6r { animation: stg-e6r var(--loop) ease-in-out infinite; }
-  @keyframes stg-b5 { 0% { opacity: 0; } 23.2% { opacity: 0; } 23.6% { opacity: 1; } 28.4% { opacity: 1; } 28.8% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-b6 { 0% { opacity: 0; } 28.8% { opacity: 0; } 29.2% { opacity: 1; } 34% { opacity: 1; } 34.4% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-b7 { 0% { opacity: 0; } 34.4% { opacity: 0; } 34.8% { opacity: 1; } 69.2% { opacity: 1; } 69.6% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-b8 { 0% { opacity: 0; } 63.2% { opacity: 0; } 63.6% { opacity: 1; } 69.2% { opacity: 1; } 69.6% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-b7a { 0% { opacity: 0; } 34.4% { opacity: 0; } 34.8% { opacity: 1; } 63.2% { opacity: 1; } 63.6% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-inb { 0% { opacity: 0; } 39.2% { opacity: 0; } 39.5% { opacity: 1; } 42.4% { opacity: 1; } 42.8% { opacity: 0; } 54.8% { opacity: 0; } 55.1% { opacity: 1; } 60.4% { opacity: 1; } 60.8% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-cmt { 0% { stroke-dashoffset: 40; } 45.2% { stroke-dashoffset: 40; } 46.4% { stroke-dashoffset: 0; } 63.2% { stroke-dashoffset: 0; } 63.5% { stroke-dashoffset: 40; } 67.12% { stroke-dashoffset: 40; } 67.68% { stroke-dashoffset: 0; } 69.6% { stroke-dashoffset: 0; } 69.84% { stroke-dashoffset: 40; } 100% { stroke-dashoffset: 40; } }
-  @keyframes stg-x-prc { 0% { opacity: 0; } 46.8% { opacity: 0; } 47.1% { opacity: 1; } 48% { opacity: 1; } 48.4% { opacity: 0; } 67.68% { opacity: 0; } 67.92% { opacity: 1; } 68.16% { opacity: 1; } 68.4% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-dot { 0% { opacity: 0; transform: translate(0px, 0px); } 48.4% { opacity: 0; transform: translate(0px, 0px); } 48.6% { opacity: 1; transform: translate(0px, 0px); } 50% { opacity: 1; transform: translate(0px, 78px); } 50.2% { opacity: 0; transform: translate(0px, 78px); } 50.3% { opacity: 0; transform: translate(0px, 0px); } 68.24% { opacity: 0; transform: translate(0px, 0px); } 68.4% { opacity: 1; transform: translate(0px, 0px); } 68.8% { opacity: 1; transform: translate(0px, 78px); } 68.96% { opacity: 0; transform: translate(0px, 78px); } 69.04% { opacity: 0; transform: translate(0px, 0px); } 100% { opacity: 0; transform: translate(0px, 0px); } }
-  @keyframes stg-x-inc { 0% { opacity: 0; } 65.6% { opacity: 0; } 65.84% { opacity: 1; } 66.72% { opacity: 1; } 66.96% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-iid { 0% { opacity: 0; } 39.6% { opacity: 0; } 40% { opacity: 1; } 62.8% { opacity: 1; } 63.2% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-icl { 0% { opacity: 0; } 39.6% { opacity: 0; } 40% { opacity: 1; } 44.4% { opacity: 1; } 44.8% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-ist { 0% { opacity: 0; } 44.4% { opacity: 0; } 44.8% { opacity: 1; } 62.8% { opacity: 1; } 63.2% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-skp { 0% { opacity: 0; } 55.6% { opacity: 0; } 56% { opacity: 1; } 60.4% { opacity: 1; } 60.8% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-e4 { 0% { opacity: 0; transform: translate(376px, 128px); } 25.2% { opacity: 0; transform: translate(376px, 128px); } 25.6% { opacity: 1; transform: translate(376px, 128px); } 26.4% { opacity: 1; transform: translate(376px, 184px); } 27.2% { opacity: 1; transform: translate(376px, 339px); } 28% { opacity: 1; transform: translate(376px, 563px); } 28.4% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-e5 { 0% { opacity: 0; transform: translate(376px, 128px); } 30.8% { opacity: 0; transform: translate(376px, 128px); } 31.2% { opacity: 1; transform: translate(376px, 128px); } 32% { opacity: 1; transform: translate(376px, 184px); } 32.8% { opacity: 1; transform: translate(376px, 339px); } 33.6% { opacity: 1; transform: translate(376px, 563px); } 34% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-e6 { 0% { opacity: 0; transform: translate(376px, 128px); } 35.2% { opacity: 0; transform: translate(376px, 128px); } 35.6% { opacity: 1; transform: translate(376px, 128px); } 36.8% { opacity: 1; transform: translate(376px, 184px); } 38% { opacity: 1; transform: translate(376px, 339px); } 39.2% { opacity: 1; transform: translate(376px, 420px); } 42.4% { opacity: 1; transform: translate(376px, 420px); } 43.6% { opacity: 1; transform: translate(376px, 635px); } 44% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-e6r { 0% { opacity: 0; transform: translate(376px, 128px); } 50.8% { opacity: 0; transform: translate(376px, 128px); } 51.2% { opacity: 1; transform: translate(376px, 128px); } 52.4% { opacity: 1; transform: translate(376px, 184px); } 53.6% { opacity: 1; transform: translate(376px, 339px); } 54.8% { opacity: 1; transform: translate(376px, 420px); } 60.4% { opacity: 1; transform: translate(376px, 420px); } 61% { opacity: 0; transform: translate(376px, 420px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-e7 { 0% { opacity: 0; transform: translate(376px, 128px); } 63.84% { opacity: 0; transform: translate(376px, 128px); } 64.08% { opacity: 1; transform: translate(376px, 128px); } 64.64% { opacity: 1; transform: translate(376px, 184px); } 65.2% { opacity: 1; transform: translate(376px, 339px); } 65.76% { opacity: 1; transform: translate(376px, 420px); } 66.88% { opacity: 1; transform: translate(376px, 420px); } 68.8% { opacity: 1; transform: translate(376px, 635px); } 69.2% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  /* beats 9-10 and final frame: Recovery at the Receiver (69.6-79.2%), SQL change feed (79.2-87.2%), then slogan, Inbox, Receiver, transport chips and card (87.2-98.8%); the shared Orders frame (stg-svc, stg-x-wire) stays visible through 87.2%, and the Storefront box is covered by the SQL Server box in beat 10; the handler card sits at slot y652 for beats 7-8, drops to y730 during Recovery so it stays clear of the Recovery rows, then y580 for beat 10 */
-  .stg-b9 { animation: stg-b9 var(--loop) linear infinite; }
-  .stg-b10 { animation: stg-b10 var(--loop) linear infinite; }
-  .stg-x-c1 { animation: stg-x-c1 var(--loop) linear infinite; }
-  .stg-x-c2 { animation: stg-x-c2 var(--loop) linear infinite; }
-  .stg-x-c3 { animation: stg-x-c3 var(--loop) linear infinite; }
-  .stg-x-cbc { animation: stg-x-cbc var(--loop) linear infinite; }
-  .stg-x-cbo { animation: stg-x-cbo var(--loop) linear infinite; }
-  .stg-x-eq { animation: stg-x-eq var(--loop) linear infinite; }
-  .stg-x-rx { animation: stg-x-rx var(--loop) linear infinite; }
-  .stg-x-trg { animation: stg-x-trg var(--loop) linear infinite; }
-  .stg-rdot { animation: stg-rdot var(--loop) linear infinite; }
-  .stg-e8 { animation: stg-e8 var(--loop) ease-in-out infinite; }
-  .stg-fin { animation: stg-fin var(--loop) linear infinite; }
-  .stg-card { animation: stg-card var(--loop) ease-in-out infinite; }
-  @keyframes stg-b9 { 0% { opacity: 0; } 69.2% { opacity: 0; } 69.6% { opacity: 1; } 78.8% { opacity: 1; } 79.2% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-b10 { 0% { opacity: 0; } 78.8% { opacity: 0; } 79.2% { opacity: 1; } 86.8% { opacity: 1; } 87.2% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-c1 { 0% { opacity: 0; } 70.56% { opacity: 0; } 70.8% { opacity: 1; } 72% { opacity: 1; } 72.24% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-c2 { 0% { opacity: 0; } 72% { opacity: 0; } 72.24% { opacity: 1; } 73.44% { opacity: 1; } 73.68% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-c3 { 0% { opacity: 0; } 73.44% { opacity: 0; } 73.68% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-cbc { 0% { opacity: 1; } 74.16% { opacity: 1; } 74.48% { opacity: 0; } 79.2% { opacity: 0; } 79.44% { opacity: 1; } 100% { opacity: 1; } }
-  @keyframes stg-x-cbo { 0% { opacity: 0; } 74.16% { opacity: 0; } 74.48% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-eq { 0% { opacity: 0; } 75.04% { opacity: 0; } 75.36% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-rx { 0% { opacity: 0; } 70.56% { opacity: 0; } 70.8% { opacity: 1; } 79.12% { opacity: 1; } 79.36% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-x-trg { 0% { opacity: 0; } 80.8% { opacity: 0; } 81.04% { opacity: 1; } 82.4% { opacity: 1; } 82.72% { opacity: 0; } 100% { opacity: 0; } }
-  @keyframes stg-rdot { 0% { opacity: 0; transform: translate(622px, 378px); } 69.92% { opacity: 0; transform: translate(622px, 378px); } 70.16% { opacity: 1; transform: translate(622px, 378px); } 70.72% { opacity: 1; transform: translate(622px, 418px); } 71.52% { opacity: 1; transform: translate(622px, 362px); } 72.16% { opacity: 1; transform: translate(622px, 418px); } 72.96% { opacity: 1; transform: translate(622px, 362px); } 73.6% { opacity: 1; transform: translate(622px, 418px); } 74.72% { opacity: 1; transform: translate(622px, 418px); } 75.84% { opacity: 1; transform: translate(622px, 584px); } 78.24% { opacity: 1; transform: translate(622px, 584px); } 78.56% { opacity: 0; transform: translate(622px, 584px); } 78.64% { opacity: 0; transform: translate(622px, 378px); } 100% { opacity: 0; transform: translate(622px, 378px); } }
-  @keyframes stg-e8 { 0% { opacity: 0; transform: translate(376px, 128px); } 82.8% { opacity: 0; transform: translate(376px, 128px); } 83.04% { opacity: 1; transform: translate(376px, 128px); } 84% { opacity: 1; transform: translate(376px, 184px); } 84.8% { opacity: 1; transform: translate(376px, 339px); } 85.6% { opacity: 1; transform: translate(376px, 339px); } 86.4% { opacity: 1; transform: translate(376px, 563px); } 86.8% { opacity: 0; transform: translate(740px, 950px); } 100% { opacity: 0; transform: translate(376px, 128px); } }
-  @keyframes stg-fin { 0% { opacity: 0; } 87.2% { opacity: 0; } 88.4% { opacity: 1; } 98.8% { opacity: 1; } 100% { opacity: 0; } }
-  @keyframes stg-card { 0% { transform: translate(400px, 580px); } 34% { transform: translate(400px, 580px); } 34.8% { transform: translate(400px, 652px); } 69.2% { transform: translate(400px, 652px); } 70% { transform: translate(400px, 730px); } 78.8% { transform: translate(400px, 730px); } 79.6% { transform: translate(400px, 580px); } 86.8% { transform: translate(400px, 580px); } 88.4% { transform: translate(400px, 384px); } 98.8% { transform: translate(400px, 384px); } 100% { transform: translate(400px, 580px); } }
-  /* package list: a tick scales in as each package envelope is handled, and its row highlight sweeps across */
-  .lst-r0 .lst-tick { animation: lst-t0 var(--loop) ease-out infinite; }
-  .lst-r1 .lst-tick { animation: lst-t1 var(--loop) ease-out infinite; }
-  .lst-r2 .lst-tick { animation: lst-t2 var(--loop) ease-out infinite; }
-  .lst-r3 .lst-tick { animation: lst-t3 var(--loop) ease-out infinite; }
-  .lst-r4 .lst-tick { animation: lst-t4 var(--loop) ease-out infinite; }
-  .lst-r5 .lst-tick { animation: lst-t5 var(--loop) ease-out infinite; }
-  .lst-r6 .lst-tick { animation: lst-t6 var(--loop) ease-out infinite; }
-  .lst-r7 .lst-tick { animation: lst-t7 var(--loop) ease-out infinite; }
-  .lst-r8 .lst-tick { animation: lst-t8 var(--loop) ease-out infinite; }
-  .lst-r0 .lst-hl { animation: lst-h0 var(--loop) ease-in-out infinite; }
-  .lst-r1 .lst-hl { animation: lst-h1 var(--loop) ease-in-out infinite; }
-  .lst-r2 .lst-hl { animation: lst-h2 var(--loop) ease-in-out infinite; }
-  .lst-r3 .lst-hl { animation: lst-h3 var(--loop) ease-in-out infinite; }
-  .lst-r4 .lst-hl { animation: lst-h4 var(--loop) ease-in-out infinite; }
-  .lst-r5 .lst-hl { animation: lst-h5 var(--loop) ease-in-out infinite; }
-  .lst-r6 .lst-hl { animation: lst-h6 var(--loop) ease-in-out infinite; }
-  .lst-r7 .lst-hl { animation: lst-h7 var(--loop) ease-in-out infinite; }
-  .lst-r8 .lst-hl { animation: lst-h8 var(--loop) ease-in-out infinite; }
-  @keyframes lst-t0 { 0% { transform: scale(0); } 7.1% { transform: scale(0); } 7.6% { transform: scale(1.15); } 8.3% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t1 { 0% { transform: scale(0); } 12.7% { transform: scale(0); } 13.2% { transform: scale(1.15); } 13.9% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t2 { 0% { transform: scale(0); } 18.3% { transform: scale(0); } 18.8% { transform: scale(1.15); } 19.5% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t3 { 0% { transform: scale(0); } 22.3% { transform: scale(0); } 22.8% { transform: scale(1.15); } 23.5% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t4 { 0% { transform: scale(0); } 27.9% { transform: scale(0); } 28.4% { transform: scale(1.15); } 29.1% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t5 { 0% { transform: scale(0); } 33.5% { transform: scale(0); } 34% { transform: scale(1.15); } 34.7% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t6 { 0% { transform: scale(0); } 43.5% { transform: scale(0); } 44% { transform: scale(1.15); } 44.7% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t7 { 0% { transform: scale(0); } 68.7% { transform: scale(0); } 69.2% { transform: scale(1.15); } 69.9% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-t8 { 0% { transform: scale(0); } 86.3% { transform: scale(0); } 86.8% { transform: scale(1.15); } 87.5% { transform: scale(1); } 98.8% { transform: scale(1); } 100% { transform: scale(0); } }
-  @keyframes lst-h0 { 0% { transform: scaleX(0); } 6.1% { transform: scaleX(0); } 7.6% { transform: scaleX(1); } 9.6% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h1 { 0% { transform: scaleX(0); } 11.7% { transform: scaleX(0); } 13.2% { transform: scaleX(1); } 15.2% { transform: scaleX(0); } 70.8% { transform: scaleX(0); } 72.3% { transform: scaleX(1); } 74.3% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h2 { 0% { transform: scaleX(0); } 17.3% { transform: scaleX(0); } 18.8% { transform: scaleX(1); } 20.8% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h3 { 0% { transform: scaleX(0); } 21.3% { transform: scaleX(0); } 22.8% { transform: scaleX(1); } 24.8% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h4 { 0% { transform: scaleX(0); } 26.9% { transform: scaleX(0); } 28.4% { transform: scaleX(1); } 30.4% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h5 { 0% { transform: scaleX(0); } 32.5% { transform: scaleX(0); } 34.0% { transform: scaleX(1); } 36.0% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h6 { 0% { transform: scaleX(0); } 42.5% { transform: scaleX(0); } 44.0% { transform: scaleX(1); } 46.0% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h7 { 0% { transform: scaleX(0); } 67.7% { transform: scaleX(0); } 69.2% { transform: scaleX(1); } 71.2% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  @keyframes lst-h8 { 0% { transform: scaleX(0); } 85.3% { transform: scaleX(0); } 86.8% { transform: scaleX(1); } 88.8% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
-  #pause:checked ~ .stg-stage, #pause:checked ~ .stg-stage *, #pause:checked ~ .lst-list, #pause:checked ~ .lst-list * { animation-play-state: paused; }
-  .lst-list:focus-within, .lst-list:focus-within *, .lst-list:focus-within ~ .stg-stage, .lst-list:focus-within ~ .stg-stage * { animation-play-state: paused; }
-  @media (hover: hover) {
-    .lst-list:hover, .lst-list:hover *, .lst-list:hover ~ .stg-stage, .lst-list:hover ~ .stg-stage * { animation-play-state: paused; }
-  }
+@media (prefers-reduced-motion:reduce){
+  html.js .ch .inner{transition:opacity .3s ease;transform:none}
+  .hint span::after{animation:none}
 }
 </style>
 </head>
 <body>
-<div class="page">
-<header class="top"><span class="wordmark">Chatter</span><span class="chip">.NET 10</span></header>
+<a class="skip" href="#ch-hero">Skip to content</a>
 <main>
-<h1>Same handlers. Any broker.</h1>
-<p class="lede">Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.</p>
-<div class="cta-row">
-<a class="cta" href="https://github.com/brenpike/Chatter"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>View on GitHub</a>
-<code class="install">dotnet add package Chatter.CQRS</code>
-</div>
-<div class="scene">
-<input type="checkbox" id="pause">
-<label for="pause">Pause animation</label>
-<ol class="lst-list" role="list" aria-label="Chatter packages">
-<li class="lst-row lst-r0">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md">Chatter.CQRS</a><span class="lst-why">Dispatches Commands, Queries and Events in-process through the Message Dispatcher and a composable Command Pipeline.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.CQRS" aria-label="NuGet package Chatter.CQRS">NuGet</a>
-</li>
-<li class="lst-row lst-r1">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md">Chatter.MessageBrokers</a><span class="lst-why">Brokered Message Receivers, sending and routing, Inbox/Outbox reliability and Recovery: Retry, Circuit Breaker, Error Queue.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers" aria-label="NuGet package Chatter.MessageBrokers">NuGet</a>
-</li>
-<li class="lst-row lst-r2">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md">Chatter.MessageBrokers.AzureServiceBus</a><span class="lst-why">Azure Service Bus transport: queue receivers, topic subscriptions, sessions and cross-entity transactions.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus">NuGet</a>
-</li>
-<li class="lst-row lst-r3">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md">Chatter.MessageBrokers.AzureServiceBus.Auth</a><span class="lst-why">Microsoft Entra ID token authentication for the Azure Service Bus transport, including managed identity.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth" aria-label="NuGet package Chatter.MessageBrokers.AzureServiceBus.Auth">NuGet</a>
-</li>
-<li class="lst-row lst-r4">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/README.md">Chatter.MessageBrokers.RabbitMQ</a><span class="lst-why">RabbitMQ transport over externally provisioned exchanges and queues.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ" aria-label="NuGet package Chatter.MessageBrokers.RabbitMQ">NuGet</a>
-</li>
-<li class="lst-row lst-r5">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md">Chatter.MessageBrokers.SqlServiceBroker</a><span class="lst-why">SQL Server Service Broker transport over Service Broker conversations and queues you provision.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker" aria-label="NuGet package Chatter.MessageBrokers.SqlServiceBroker">NuGet</a>
-</li>
-<li class="lst-row lst-r6">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md">Chatter.MessageBrokers.Reliability.EntityFramework</a><span class="lst-why">EF Core Inbox, Outbox and Unit of Work, stored in your own DbContext.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework" aria-label="NuGet package Chatter.MessageBrokers.Reliability.EntityFramework">NuGet</a>
-</li>
-<li class="lst-row lst-r7">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md">Chatter.MessageBrokers.Reliability.Cosmos</a><span class="lst-why">Azure Cosmos DB Document Tier, Standalone Inbox Gate and change-feed Outbox Relay.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos" aria-label="NuGet package Chatter.MessageBrokers.Reliability.Cosmos">NuGet</a>
-</li>
-<li class="lst-row lst-r8">
-<span class="lst-hl" aria-hidden="true"></span>
-<svg class="lst-st" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle class="lst-ring" cx="12" cy="12" r="10"/><g class="lst-tick"><circle cx="12" cy="12" r="11"/><path d="M7 12.5l3.2 3.2L17 9"/></g></svg>
-<div class="lst-body"><a class="lst-pkg" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md">Chatter.SqlChangeFeed</a><span class="lst-why">Watched SQL Server table changes delivered as RowInsertedEvent, RowUpdatedEvent and RowDeletedEvent over SQL Server Service Broker.</span></div>
-<a class="lst-nuget" href="https://www.nuget.org/packages/Chatter.SqlChangeFeed" aria-label="NuGet package Chatter.SqlChangeFeed">NuGet</a>
-</li>
-</ol>
-<div class="stg-stage"><svg viewBox="0 0 800 1000" role="img" aria-labelledby="stg-title stg-desc" xmlns="http://www.w3.org/2000/svg">
-<title id="stg-title">One PlaceOrder handler, reached through every Chatter package</title>
-<desc id="stg-desc">A PlaceOrderHandler is reached in-process, then across services from a Storefront to an Orders service. Messages arrive over Azure Service Bus, RabbitMQ and SQL Server Service Broker, with Inbox and Outbox reliability, Recovery and a SQL change feed. Commands are checked against an Inbox in a Reliability.EntityFramework Receiver, and a duplicate delivery is skipped. Each message labelled with a package name checks that package off in the list beside the stage. The final frame shows the same handler behind all three transports and all 9 packages checked.</desc>
-<defs>
-<marker id="stg-ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="stg-arrowhead" d="M0 0L10 5L0 10z"/></marker>
-</defs>
-<g class="stg-sc stg-svc" aria-hidden="true">
-<rect class="stg-box" x="40" y="48" width="720" height="120" rx="14"/>
-<text class="stg-lbl" x="60" y="78">Storefront</text>
-<text class="stg-code" x="400" y="114" text-anchor="middle">Dispatch(PlaceOrder)</text>
-<line class="stg-ln stg-x-wire" x1="400" y1="168" x2="400" y2="256" stroke-dasharray="88"/>
-<rect class="stg-box" x="40" y="256" width="720" height="634" rx="14"/>
-<text class="stg-lbl" x="60" y="286">Orders service</text>
-<rect class="stg-pill" x="160" y="334" width="480" height="44" rx="22"/>
-<text class="stg-nm" x="400" y="364" text-anchor="middle">Brokered Message Receiver</text>
-</g>
-<g class="stg-sc stg-b1"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">In-process</text>
-<rect class="stg-box" x="40" y="48" width="720" height="652" rx="14"/>
-<text class="stg-lbl" x="60" y="78">Orders service</text>
-<text class="stg-code" x="400" y="114" text-anchor="middle">Dispatch(PlaceOrder)</text>
-<line class="stg-ln" x1="400" y1="124" x2="400" y2="164" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="240" y="168" width="320" height="48" rx="24"/>
-<text class="stg-nm" x="400" y="200" text-anchor="middle">Message Dispatcher</text>
-<line class="stg-ln" x1="400" y1="216" x2="400" y2="262" marker-end="url(#stg-ah)"/>
-<rect class="stg-ring stg-x-ring" x="200" y="266" width="400" height="112" rx="56"/>
-<text class="stg-nm" x="400" y="329" text-anchor="middle">Command Pipeline</text>
-<line class="stg-ln-acc" x1="400" y1="378" x2="400" y2="508" marker-end="url(#stg-ah)"/>
-<g class="stg-mv stg-e0"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-74" y="2" width="68" height="30" rx="15"/><text class="stg-chipc" x="-40" y="24" text-anchor="middle">CQRS</text></g>
-</g></g>
-<g class="stg-sc stg-b2"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
-<text class="stg-code" x="432" y="220">.AddMessageBrokers(...)</text>
-<g class="stg-mv stg-e1"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-194" y="2" width="188" height="30" rx="15"/><text class="stg-chipc" x="-100" y="24" text-anchor="middle">MessageBrokers</text></g>
-</g></g>
-<g class="stg-sc stg-b3"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
-<line class="stg-ln-acc" x1="404" y1="199" x2="426" y2="199"/>
-<text class="stg-nm" x="432" y="206">Azure Service Bus</text>
-<text class="stg-code" x="400" y="700" text-anchor="middle">.AddAzureServiceBus(...)</text>
-<g class="stg-mv stg-e2"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-206" y="2" width="200" height="30" rx="15"/><text class="stg-chipc" x="-106" y="24" text-anchor="middle">AzureServiceBus</text></g>
-</g></g>
-<g class="stg-sc stg-b4"><g aria-hidden="true">
-<rect class="stg-pill stg-x-tok" x="432" y="216" width="220" height="34" rx="17"/>
-<text class="stg-nm" x="542" y="240" text-anchor="middle">Entra ID token</text>
-<text class="stg-code" x="400" y="748" text-anchor="middle">.UseAadTokenProviderWithManagedIdentity(...)</text>
-<g class="stg-mv stg-e3"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-266" y="2" width="260" height="30" rx="15"/><text class="stg-chipc" x="-136" y="24" text-anchor="middle">AzureServiceBus.Auth</text></g>
-</g></g>
-<g class="stg-sc stg-b5"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
-<line class="stg-ln-acc" x1="404" y1="199" x2="426" y2="199"/>
-<text class="stg-nm" x="432" y="206">RabbitMQ</text>
-<text class="stg-code" x="400" y="700" text-anchor="middle">.AddRabbitMq(...)</text>
-<g class="stg-mv stg-e4"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-122" y="2" width="116" height="30" rx="15"/><text class="stg-chipc" x="-64" y="24" text-anchor="middle">RabbitMQ</text></g>
-</g></g>
-<g class="stg-sc stg-b6"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Across services</text>
-<line class="stg-ln-acc" x1="404" y1="199" x2="426" y2="199"/>
-<text class="stg-nm" x="432" y="206">SQL Server Service Broker</text>
-<text class="stg-code" x="400" y="700" text-anchor="middle">.AddSqlServiceBroker(...)</text>
-<g class="stg-mv stg-e5"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-218" y="2" width="212" height="30" rx="15"/><text class="stg-chipc" x="-112" y="24" text-anchor="middle">SqlServiceBroker</text></g>
-</g></g>
-<g class="stg-sc stg-b7"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Reliability</text>
-<rect class="stg-outline" x="60" y="392" width="680" height="450" rx="12"/>
-<line class="stg-ln-acc" x1="430" y1="437" x2="458" y2="437" marker-end="url(#stg-ah)"/>
-<line class="stg-ln-acc" x1="400" y1="458" x2="400" y2="580" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="300" y="732" width="200" height="40" rx="20"/>
-<text class="stg-nm" x="400" y="758" text-anchor="middle">Outbox</text>
-<path class="stg-ok stg-x-cmt" d="M512 750l9 9 18-20" stroke-dasharray="40"/>
-<text class="stg-lbl" x="546" y="760">commit</text>
-<rect class="stg-pill" x="240" y="786" width="320" height="42" rx="21"/>
-<rect class="stg-ring stg-x-prc" x="240" y="786" width="320" height="42" rx="21"/>
-<line class="stg-ln-acc" x1="400" y1="828" x2="400" y2="904" marker-end="url(#stg-ah)"/>
-<circle class="stg-dot-evt stg-x-dot" cx="400" cy="828" r="5"/>
-<text class="stg-nm" x="414" y="872">OrderPlaced Event</text>
-<rect class="stg-stub" x="250" y="910" width="300" height="56" rx="10"/>
-<text class="stg-nm" x="400" y="944" text-anchor="middle">Billing service</text>
-<g class="stg-x-b7a">
-<text class="stg-lbl" x="740" y="286" text-anchor="end">EF Core &#183; your DbContext</text>
-<text class="stg-code stg-sec" x="400" y="318" text-anchor="middle">.WithInboxBehavior&lt;OrdersDbContext&gt;()</text>
-<rect class="stg-box" x="464" y="410" width="268" height="146" rx="10"/>
-<text class="stg-hd" x="482" y="438">InboxMessages</text>
-<line class="stg-ln" x1="464" y1="450" x2="732" y2="450"/>
-<text class="stg-cell" x="482" y="476">MessageId</text>
-<text class="stg-cellv stg-x-iid" x="716" y="476" text-anchor="end">7f3a</text>
-<text class="stg-cell" x="482" y="504">ReceivedByInboxAtUtc</text>
-<text class="stg-cellv stg-x-icl" x="716" y="504" text-anchor="end">null</text>
-<text class="stg-cellv stg-x-ist" x="716" y="504" text-anchor="end">09:41:07</text>
-<text class="stg-tag stg-x-icl" x="482" y="536">claimed</text>
-<text class="stg-tag stg-x-ist" x="482" y="536">stamped</text>
-<rect class="stg-ring stg-x-inb" x="464" y="410" width="268" height="146" rx="10"/>
-<g class="stg-x-skp"><line class="stg-sw" x1="372" y1="500" x2="428" y2="500"/><text class="stg-lbl" x="360" y="508" text-anchor="end">handler skipped</text></g>
-<text class="stg-nm" x="400" y="813" text-anchor="middle">Outbox Processor</text>
-<g class="stg-mv stg-e6r"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-230" y="2" width="224" height="30" rx="15"/><text class="stg-chipc" x="-118" y="24" text-anchor="middle">redelivery &#183; 7f3a</text></g>
-</g>
-<g class="stg-mv stg-e6"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-350" y="2" width="344" height="30" rx="15"/><text class="stg-chipc" x="-178" y="24" text-anchor="middle">Reliability.EntityFramework</text></g>
-</g></g>
-<g class="stg-sc stg-b8"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Reliability</text>
-<text class="stg-lbl" x="740" y="286" text-anchor="end">Cosmos DB &#183; your container</text>
-<text class="stg-code stg-sec" x="400" y="318" text-anchor="middle">.WithCosmosDocumentReliability&lt;PlaceOrder&gt;(...)</text>
-<rect class="stg-outline" x="60" y="392" width="680" height="450" rx="12"/>
-<line class="stg-ln-acc" x1="430" y1="437" x2="458" y2="437" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="464" y="410" width="268" height="48" rx="24"/>
-<text class="stg-nm" x="598" y="441" text-anchor="middle">Inbox</text>
-<rect class="stg-ring stg-x-inc" x="464" y="410" width="268" height="48" rx="24"/>
-<line class="stg-ln-acc" x1="400" y1="458" x2="400" y2="580" marker-end="url(#stg-ah)"/>
-<rect class="stg-pill" x="300" y="732" width="200" height="40" rx="20"/>
-<text class="stg-nm" x="400" y="758" text-anchor="middle">Outbox</text>
-<path class="stg-ok stg-x-cmt" d="M512 750l9 9 18-20" stroke-dasharray="40"/>
-<text class="stg-lbl" x="546" y="760">commit</text>
-<rect class="stg-pill" x="240" y="786" width="320" height="42" rx="21"/>
-<rect class="stg-ring stg-x-prc" x="240" y="786" width="320" height="42" rx="21"/>
-<text class="stg-nm" x="400" y="813" text-anchor="middle">Outbox Relay</text>
-<line class="stg-ln-acc" x1="400" y1="828" x2="400" y2="904" marker-end="url(#stg-ah)"/>
-<circle class="stg-dot-evt stg-x-dot" cx="400" cy="828" r="5"/>
-<text class="stg-nm" x="414" y="872">OrderPlaced Event</text>
-<rect class="stg-stub" x="250" y="910" width="300" height="56" rx="10"/>
-<text class="stg-nm" x="400" y="944" text-anchor="middle">Billing service</text>
-<g class="stg-mv stg-e7"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-242" y="2" width="236" height="30" rx="15"/><text class="stg-chipc" x="-124" y="24" text-anchor="middle">Reliability.Cosmos</text></g>
-</g></g>
-<g class="stg-sc stg-b9"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">Recovery</text>
-<rect class="stg-pill" x="160" y="396" width="480" height="44" rx="22"/>
-<text class="stg-nm" x="184" y="425">Retry</text>
-<text class="stg-code stg-x-c1" x="290" y="425">1</text>
-<text class="stg-code stg-x-c2" x="290" y="425">2</text>
-<text class="stg-code stg-x-c3" x="290" y="425">3</text>
-<line class="stg-ln" x1="400" y1="440" x2="400" y2="456"/>
-<rect class="stg-pill" x="160" y="456" width="480" height="44" rx="22"/>
-<circle class="stg-swc" cx="400" cy="478" r="4"/>
-<circle class="stg-swc" cx="436" cy="478" r="4"/>
-<g class="stg-x-cbc"><line class="stg-sw" x1="400" y1="478" x2="436" y2="478"/><text class="stg-lbl" x="600" y="485" text-anchor="end">closed</text></g>
-<g class="stg-x-cbo"><line class="stg-sw" x1="400" y1="478" x2="424" y2="464"/><text class="stg-nm" x="600" y="485" text-anchor="end">open</text></g>
-<text class="stg-nm" x="184" y="485">Circuit Breaker</text>
-<g class="stg-x-eq"><line class="stg-ln" x1="400" y1="500" x2="400" y2="560" marker-end="url(#stg-ah)"/><text class="stg-nm" x="416" y="536">max receives exceeded</text></g>
-<rect class="stg-pill" x="160" y="562" width="480" height="44" rx="22"/>
-<text class="stg-nm" x="184" y="591">Error Queue</text>
-<path class="stg-x stg-x-rx" d="M576 346L596 366M596 346L576 366"/>
-<circle class="stg-dot-fail stg-mv stg-rdot" cx="0" cy="0" r="7"/>
-</g></g>
-<g class="stg-sc stg-b10"><g aria-hidden="true">
-<text class="stg-cap" x="400" y="34" text-anchor="middle">SQL change feed</text>
-<rect class="stg-box" x="40" y="48" width="720" height="120" rx="14"/>
-<text class="stg-lbl" x="60" y="78">SQL Server &#183; Orders table</text>
-<rect class="stg-pill" x="60" y="90" width="124" height="36" rx="18"/>
-<text class="stg-nm" x="122" y="114" text-anchor="middle">Trigger</text>
-<rect class="stg-ring stg-x-trg" x="60" y="90" width="124" height="36" rx="18"/>
-<text class="stg-code" x="200" y="116">INSERT INTO dbo.Orders (...)</text>
-<text class="stg-nm" x="420" y="218">SQL Server Service Broker</text>
-<text class="stg-lbl" x="740" y="286" text-anchor="end">Event</text>
-<text class="stg-code" x="400" y="700" text-anchor="middle">IMessageHandler&lt;RowInsertedEvent&lt;OrderRow&gt;&gt;</text>
-<text class="stg-code" x="400" y="744" text-anchor="middle">.AddSqlChangeFeed&lt;OrderRow&gt;(...)</text>
-<g class="stg-mv stg-e8"><g class="stg-env"><rect width="48" height="34" rx="5"/><path d="M4 5l20 16L44 5"/></g><rect class="stg-pill" x="-182" y="2" width="176" height="30" rx="15"/><text class="stg-chipc" x="-94" y="24" text-anchor="middle">SqlChangeFeed</text></g>
-</g></g>
-<g class="stg-fin" aria-hidden="true">
-<text class="stg-slogan" x="400" y="230" text-anchor="middle">Same handlers. Any broker.</text>
-<path class="stg-ln-acc" d="M400 450V706M140 690H660M140 690V706M660 690V706"/>
-<rect class="stg-pill" x="250" y="492" width="300" height="50" rx="25"/>
-<text class="stg-nm" x="400" y="524" text-anchor="middle">Inbox</text>
-<rect class="stg-pill" x="160" y="592" width="480" height="46" rx="23"/>
-<text class="stg-nm" x="400" y="622" text-anchor="middle">Brokered Message Receiver</text>
-<rect class="stg-pill" x="25" y="706" width="230" height="130" rx="12"/>
-<text class="stg-chipn" x="140" y="750" text-anchor="middle"><tspan x="140">Azure </tspan><tspan x="140" dy="28">Service Bus</tspan></text>
-<text class="stg-chipc stg-sec" x="140" y="806" text-anchor="middle">.AddAzureServiceBus(...)</text>
-<rect class="stg-pill" x="285" y="706" width="230" height="130" rx="12"/>
-<text class="stg-chipn" x="400" y="764" text-anchor="middle">RabbitMQ</text>
-<text class="stg-chipc stg-sec" x="400" y="806" text-anchor="middle">.AddRabbitMq(...)</text>
-<rect class="stg-pill" x="545" y="706" width="230" height="130" rx="12"/>
-<text class="stg-chipn" x="660" y="750" text-anchor="middle"><tspan x="660">SQL Server </tspan><tspan x="660" dy="28">Service Broker</tspan></text>
-<text class="stg-chipc stg-sec" x="660" y="806" text-anchor="middle">.AddSqlServiceBroker(...)</text>
-</g>
-<g class="stg-card" aria-hidden="true">
-<rect class="stg-glow" x="-288" y="-64" width="576" height="132" rx="18" opacity="0.22"/>
-<rect class="stg-cardbox" x="-280" y="-58" width="560" height="116" rx="12"/>
-<text class="stg-cardt" x="0" y="-4" text-anchor="middle"><tspan x="0">public class PlaceOrderHandler </tspan><tspan x="0" dy="34">: IMessageHandler&lt;PlaceOrder&gt;</tspan></text>
-</g>
-</svg></div>
-<p class="anchor">One handler follows a message through every feature, and each package is checked off as it is used.</p>
+<div class="story" id="story">
+  <div class="stage" id="stage">
+    <canvas id="city" aria-hidden="true"></canvas>
+    <div class="prog" aria-hidden="true"><i id="progi"></i></div>
+    <div class="hud">
+      <div class="chip" id="chip" aria-hidden="true"><b id="chipn">00</b><span id="chipt">Message City</span></div>
+      <button class="iconbtn" id="pause" type="button" aria-pressed="false" aria-label="Pause animation">
+        <svg id="ipause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="currentColor"/></svg>
+        <svg id="iplay" viewBox="0 0 16 16" aria-hidden="true" style="display:none"><path d="M4 2.2v11.6c0 .6.7 1 1.2.6l8.4-5.8c.4-.3.4-.9 0-1.2L5.2 1.6C4.7 1.2 4 1.6 4 2.2z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <section class="ch first" id="ch-hero" data-name="Message City">
+    <div class="inner">
+      <p class="eyebrow"><i></i>Modular .NET libraries</p>
+      <h1>Chatter</h1>
+      <p class="tag">Same handlers. Any broker.</p>
+      <p class="lede">Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging.</p>
+      <div class="pill"><code>dotnet add package Chatter.CQRS</code><button class="btn solid" type="button" data-copy="dotnet add package Chatter.CQRS">Copy</button></div>
+      <div class="row"><a class="btn" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">View on GitHub ↗</a></div>
+      <p class="hint"><span aria-hidden="true"></span>Scroll to tour Message City</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-problem" data-name="The problem" aria-labelledby="h-problem">
+    <div class="inner">
+      <p class="eyebrow"><i></i>01 · The problem</p>
+      <h2 id="h-problem">Every service ends up wiring its own plumbing.</h2>
+      <p>A controller starts with one business rule. Then validation, logging, transactions and retries arrive, copied from the last controller.</p>
+      <p>When services need to talk, broker SDK code (clients, queue names, serializers) moves into the domain itself. Each building grows its own machinery and its own pipes, and changing brokers means rewiring the city.</p>
+      <p class="note">Chatter separates what a service does from how its messages travel.</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-cqrs" data-name="Inside a service" aria-labelledby="h-cqrs">
+    <div class="inner">
+      <p class="eyebrow"><i></i>02 · Chatter.CQRS</p>
+      <h2 id="h-cqrs">Inside a service: one dispatcher, many small rooms.</h2>
+      <p>Every message enters through the Message Dispatcher, which finds the right handler by message type. Handlers are small classes, registered by assembly scanning.</p>
+      <ul class="legend">
+        <li><span class="sw c" aria-hidden="true"></span><span><b>Command</b> goes to exactly one handler and changes state.</span></li>
+        <li><span class="sw e" aria-hidden="true"></span><span><b>Event</b> reaches every handler that subscribes: zero, one or many.</span></li>
+        <li><span class="sw q" aria-hidden="true"></span><span><b>Query</b> goes out through the Query Dispatcher and comes back with a <b>Read Model</b> <span class="sw r" style="display:inline-block;width:12px;height:12px;margin:0 0 -1px 2px" aria-hidden="true"></span>.</span></li>
+      </ul>
+      <p>The conveyor is the Command Pipeline: ordered behaviors that wrap every Command handler, so logging, unit of work and inbox checks live in one place. A Message Context travels with each dispatch.</p>
+<pre><code>builder.Services.<span class="a">AddChatterCqrs</span>(
+    builder.Configuration,
+    <span class="k">typeof</span>(<span class="t">Program</span>).Assembly);
+
+<span class="k">public class</span> <span class="t">PlaceOrderHandler</span>
+    : <span class="t">IMessageHandler</span>&lt;<span class="t">PlaceOrder</span>&gt;
+{
+    <span class="k">public</span> <span class="t">Task</span> Handle(<span class="t">PlaceOrder</span> message,
+        <span class="t">IMessageHandlerContext</span> context)
+    {
+        <span class="c">// change state</span>
+        <span class="k">return</span> <span class="t">Task</span>.CompletedTask;
+    }
+}</code></pre>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Chatter.CQRS docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-mb" data-name="Between services" aria-labelledby="h-mb">
+    <div class="inner">
+      <p class="eyebrow"><i></i>03 · Chatter.MessageBrokers</p>
+      <h2 id="h-mb">Leave by the dock. Arrive at a handler you already wrote.</h2>
+      <p>A handler publishes with <code>context.Publish(...)</code>. On its own the External Dispatcher does nothing; <code>AddMessageBrokers()</code> replaces it, and the message leaves through the dispatch dock.</p>
+      <p>At the next building a Brokered Message Receiver is on duty: a hosted service, one per message type. It hands each received message to your existing handler.</p>
+      <p>The <code>[BrokeredMessage]</code> label carries the sending and receiving paths, so handlers never name a queue or a topic.</p>
+<pre><code>[<span class="a">BrokeredMessage</span>(sendingPath: <span class="s">"orders"</span>,
+                 receivingPath: <span class="s">"orders"</span>)]
+<span class="k">public class</span> <span class="t">OrderPlaced</span> : <span class="t">IEvent</span> { ... }
+
+<span class="c">// inside PlaceOrderHandler</span>
+<span class="k">await</span> context.<span class="a">Publish</span>(<span class="k">new</span> <span class="t">OrderPlaced</span> { ... });</code></pre>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md" target="_blank" rel="noopener">Chatter.MessageBrokers docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-transports" data-name="Transports" aria-labelledby="h-tr">
+    <div class="inner">
+      <p class="eyebrow"><i></i>04 · Transports</p>
+      <h2 id="h-tr">Swap the roads. Keep the buildings.</h2>
+      <p>Chatter.MessageBrokers ships no transport of its own. Choose one; your handlers, messages and labels stay as they are.</p>
+      <div class="seg" role="group" aria-label="Choose a transport">
+        <button type="button" data-mode="asb" aria-pressed="true"><span class="d" style="background:#9fe3ff"></span>Azure Service Bus</button>
+        <button type="button" data-mode="rmq" aria-pressed="false"><span class="d" style="background:#ff9a52"></span>RabbitMQ</button>
+        <button type="button" data-mode="ssb" aria-pressed="false"><span class="d" style="background:#b6c2ff"></span>SQL Server Service Broker</button>
+      </div>
+      <div class="card live" aria-live="polite"><p id="modeDesc"></p></div>
+      <div class="card">
+        <h3>Azure Service Bus Auth</h3>
+        <p>At the gate, a gatekeeper checks a Microsoft Entra ID token, managed identity included. No connection-string secret waits under the mat.</p>
+        <p><a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md" target="_blank" rel="noopener">Auth docs ↗</a></p>
+      </div>
+      <p class="note">Transports provision nothing. You create the queues, topics, exchanges and Service Broker objects; Chatter drives them.</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-rel" data-name="Reliability" aria-labelledby="h-rel">
+    <div class="inner">
+      <p class="eyebrow"><i></i>05 · Reliability</p>
+      <h2 id="h-rel">A mailroom that writes it down before it ships.</h2>
+      <ul class="steps">
+        <li><span class="ico" style="background:var(--coral)" aria-hidden="true">Out</span><span><b>Outbox.</b> The state change and an Outbox record are saved in one transaction. The message is published from that store after commit.</span></li>
+        <li><span class="ico" style="background:var(--mint)" aria-hidden="true">In</span><span><b>Inbox.</b> The receiving desk records each handled message, and deduplicates redelivered commands: a parcel it has already seen is shelved without running the handler again.</span></li>
+      </ul>
+      <div class="seg" role="group" aria-label="Choose a store">
+        <button type="button" data-flav="ef" aria-pressed="true"><span class="d" style="background:#f2c983"></span>EF Core</button>
+        <button type="button" data-flav="cos" aria-pressed="false"><span class="d" style="background:#9fc0ff"></span>Cosmos DB</button>
+      </div>
+      <div class="card live" aria-live="polite"><p id="flavDesc"></p><p><a class="doclink" id="flavLink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md" target="_blank" rel="noopener">Docs ↗</a></p></div>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-rec" data-name="Recovery" aria-labelledby="h-rec">
+    <div class="inner">
+      <p class="eyebrow"><i></i>06 · Recovery</p>
+      <h2 id="h-rec">When a delivery fails.</h2>
+      <ul class="steps">
+        <li><span class="ico" style="background:var(--butter)" aria-hidden="true">↻</span><span><b>Retry</b> runs the handler again, with no delay, a constant delay or an exponential one.</span></li>
+        <li><span class="ico" style="background:#ffb0a0" aria-hidden="true">⊘</span><span><b>Circuit Breaker</b> lowers the barrier after repeated failures and stops processing. Once it has cooled, it admits a trial before the road reopens.</span></li>
+        <li><span class="ico" style="background:var(--rose)" aria-hidden="true">!</span><span><b>Error Queue.</b> A message whose delivery count reaches its receive limit is deadlettered and sent to its Error Queue.</span></li>
+      </ul>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#recovery" target="_blank" rel="noopener">Recovery docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-scf" data-name="SQL Change Feed" aria-labelledby="h-scf">
+    <div class="inner">
+      <p class="eyebrow"><i></i>07 · Chatter.SqlChangeFeed</p>
+      <h2 id="h-scf">Tables that announce their own changes.</h2>
+      <p>Point it at a SQL Server table. Each insert, update and delete arrives at your handlers as a strongly typed event, carried over SQL Server Service Broker.</p>
+      <ul class="chips">
+        <li style="--c:var(--mint)">RowInsertedEvent</li>
+        <li style="--c:var(--butter)">RowUpdatedEvent</li>
+        <li style="--c:var(--rose)">RowDeletedEvent</li>
+      </ul>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md" target="_blank" rel="noopener">Chatter.SqlChangeFeed docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-diag" data-name="Diagnostics" aria-labelledby="h-diag">
+    <div class="inner">
+      <p class="eyebrow"><i></i>08 · Diagnostics</p>
+      <h2 id="h-diag">A control tower that stays dark until you ask.</h2>
+      <p>Tracing and metrics use <code>ActivitySource</code> and <code>Meter</code> from the .NET base class library. Nothing is emitted until your application subscribes, with OpenTelemetry or any listener.</p>
+      <div class="row"><button class="btn solid" type="button" id="sub" aria-pressed="false">Subscribe to the tower</button></div>
+      <p class="muted" id="subState" aria-live="polite" style="margin-top:12px">No listener: the tower is dark and nothing is emitted.</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-map" data-name="City map" aria-labelledby="h-map">
+    <div class="inner">
+      <p class="eyebrow"><i></i>09 · City map</p>
+      <h2 id="h-map">The whole city, district by district.</h2>
+      <p>Each package is a district you add when you need it. The foundation sits in front; everything else is built on top of it. Tap a district.</p>
+      <div class="pkgs" id="pkgs" role="group" aria-label="Packages"></div>
+      <div class="card detail" id="detail" aria-live="polite"></div>
+      <div class="cta">
+        <h3>Start with the foundation.</h3>
+        <p>Add Chatter.CQRS, then Chatter.MessageBrokers and one transport when your services need to talk.</p>
+        <div class="pill"><code>dotnet add package Chatter.CQRS</code><button class="btn solid" type="button" data-copy="dotnet add package Chatter.CQRS">Copy</button></div>
+        <div class="row">
+          <a class="btn solid" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">GitHub ↗</a>
+          <a class="btn" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Read the docs ↗</a>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
 </main>
-<footer><a href="https://github.com/brenpike/Chatter/blob/master/LICENSE">MIT License</a></footer>
-</div>
+<footer>
+  <div class="row">
+    <span>Chatter · MIT licensed · independently versioned NuGet packages for modern .NET</span>
+  </div>
+  <div class="row">
+    <a href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://www.nuget.org/packages/Chatter.CQRS" target="_blank" rel="noopener">NuGet</a>
+    <a href="https://github.com/brenpike/Chatter/blob/master/LICENSE" target="_blank" rel="noopener">MIT License</a>
+  </div>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var D=document,root=D.documentElement;root.classList.add('js');
+var cv=D.getElementById('city'),ctx=cv.getContext('2d'),stage=D.getElementById('stage');
+var mq=window.matchMedia?matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
+var reduced=mq.matches;
+var W=300,H=300,DPR=1;
+var TW=32,TH=16,ZH=30,PI=Math.PI;
+
+/* ---------------- math */
+function cl(v,a,b){a=a===undefined?0:a;b=b===undefined?1:b;return v<a?a:v>b?b:v}
+function lerp(a,b,t){return a+(b-a)*t}
+function ease(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2}
+function eo(t){t=cl(t);return 1-(1-t)*(1-t)*(1-t)}
+function sg(t,a,b){return cl((t-a)/(b-a))}
+function hs(n){var s=Math.sin(n*127.1+311.7)*43758.5453;return s-Math.floor(s)}
+function P(x,y,z){return [(x-y)*TW,(x+y)*TH-(z||0)*ZH]}
+function mk(pts){var c=[0],L=0;for(var i=1;i<pts.length;i++){var a=pts[i-1],b=pts[i];L+=Math.hypot(b[0]-a[0],b[1]-a[1],(b[2]||0)-(a[2]||0));c.push(L)}return{p:pts,c:c,L:L}}
+function at(pa,f){f=cl(f);var d=f*pa.L,i=1;while(i<pa.c.length-1&&pa.c[i]<d)i++;var a=pa.p[i-1],b=pa.p[i],s=pa.c[i]-pa.c[i-1],u=s?(d-pa.c[i-1])/s:0;return[lerp(a[0],b[0],u),lerp(a[1],b[1],u),lerp(a[2]||0,b[2]||0,u)]}
+
+/* ---------------- colour */
+var shc={};
+function sh(hex,f){var k=hex+f;if(shc[k])return shc[k];var n=parseInt(hex.slice(1),16),r=n>>16&255,g=n>>8&255,b=n&255;if(f>0){r+=(255-r)*f;g+=(255-g)*f;b+=(255-b)*f}else{r*=1+f;g*=1+f;b*=1+f}return shc[k]='rgb('+(r|0)+','+(g|0)+','+(b|0)+')'}
+function mixc(h1,h2,t){var a=parseInt(h1.slice(1),16),b=parseInt(h2.slice(1),16);function c(s){return Math.round(lerp(a>>s&255,b>>s&255,t))}return 'rgb('+c(16)+','+c(8)+','+c(0)+')'}
+
+/* ---------------- primitives (world px) */
+function poly(pts,fill){ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);ctx.closePath();ctx.fillStyle=fill;ctx.fill()}
+function box(x,y,z,w,d,h,col,top,lf,rt){
+  var a=P(x,y+d,z),b=P(x+w,y+d,z),c=P(x+w,y,z),a2=P(x,y+d,z+h),b2=P(x+w,y+d,z+h),c2=P(x+w,y,z+h),d2=P(x,y,z+h);
+  poly([a,b,b2,a2],lf||sh(col,-.05));poly([b,c,c2,b2],rt||sh(col,-.24));poly([d2,c2,b2,a2],top||sh(col,.14));
+}
+function quadL(x0,x1,y,z0,z1,c){poly([P(x0,y,z0),P(x1,y,z0),P(x1,y,z1),P(x0,y,z1)],c)}
+function quadR(x,y0,y1,z0,z1,c){poly([P(x,y0,z0),P(x,y1,z0),P(x,y1,z1),P(x,y0,z1)],c)}
+function topq(x0,y0,x1,y1,z,c){poly([P(x0,y0,z),P(x1,y0,z),P(x1,y1,z),P(x0,y1,z)],c)}
+function cyl(x,y,z,r,h,col,top){
+  var p=P(x,y,z),cx=p[0],cy=p[1],rx=r*TW*1.414,ry=r*TH*1.414,hz=h*ZH;
+  var g=ctx.createLinearGradient(cx-rx,0,cx+rx,0);g.addColorStop(0,sh(col,.04));g.addColorStop(1,sh(col,-.3));
+  ctx.beginPath();ctx.moveTo(cx-rx,cy-hz);ctx.lineTo(cx-rx,cy);ctx.ellipse(cx,cy,rx,ry,0,PI,0,true);ctx.lineTo(cx+rx,cy-hz);ctx.closePath();ctx.fillStyle=g;ctx.fill();
+  ctx.beginPath();ctx.ellipse(cx,cy-hz,rx,ry,0,0,2*PI);ctx.fillStyle=top||sh(col,.18);ctx.fill();
+}
+function dot(x,y,z,r,c){var p=P(x,y,z);ctx.beginPath();ctx.arc(p[0],p[1],r,0,2*PI);ctx.fillStyle=c;ctx.fill()}
+function person(x,y,z,col,hat,bob){z=(z||0)+(bob||0);var s=.1;box(x-s,y-s,z,2*s,2*s,.4,col);var p=P(x,y,z+.56);ctx.beginPath();ctx.arc(p[0],p[1],4.3,0,2*PI);ctx.fillStyle='#ffd9b8';ctx.fill();if(hat){ctx.beginPath();ctx.ellipse(p[0],p[1]-1.6,5.2,3.4,0,PI,0);ctx.fillStyle=hat;ctx.fill()}}
+function parcel(x,y,z,col,s){s=s||.34;box(x-s/2,y-s/2,z,s,s,s*.82,col);var t=z+s*.82;poly([P(x-.035,y-s/2,t),P(x+.035,y-s/2,t),P(x+.035,y+s/2,t),P(x-.035,y+s/2,t)],'rgba(255,255,255,.5)')}
+function tree(x,y,s,col){box(x-.05,y-.05,0,.1,.1,.35*s,'#8a5a3c');var p=P(x,y,.62*s);ctx.beginPath();ctx.arc(p[0],p[1],9*s,0,2*PI);ctx.fillStyle=col;ctx.fill();ctx.beginPath();ctx.arc(p[0]-2.6*s,p[1]-2.8*s,4.4*s,0,2*PI);ctx.fillStyle='rgba(255,255,255,.22)';ctx.fill()}
+function smoke(x,y,z,t){for(var i=0;i<4;i++){var ph=(t*.32+i/4)%1,p=P(x+ph*.5,y-ph*.25,z+ph*1.5);ctx.beginPath();ctx.arc(p[0],p[1],3+ph*8,0,2*PI);ctx.fillStyle='rgba(246,240,232,'+(.42*(1-ph)).toFixed(3)+')';ctx.fill()}}
+function flag(x,y,z,col,t){var a=P(x,y,z),b=P(x,y,z+1);ctx.strokeStyle='#e8e2d6';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();var w=Math.sin(t*5+x)*.06;poly([P(x,y,z+1),P(x+.32,y-.16,z+.92+w),P(x+.62,y-.31,z+.9+w*2),P(x,y,z+.72)],col)}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+
+/* building with windows */
+function building(x,y,w,d,h,wall,roof,o){
+  o=o||{};box(x,y,0,w,d,h,wall,roof?sh(roof,.06):null);
+  var rows=Math.max(1,Math.floor((h-.25)/.62)),fl=o.flash||0,fc=o.fc||'#ffe08a',t=S.clock;
+  for(var r=0;r<rows;r++){var z0=.3+r*.62,z1=z0+.3;
+    var cols=Math.max(1,Math.floor(w/.62));for(var c=0;c<cols;c++){var xa=x+.16+c*(w-.2)/cols,lit=hs(x*7+y*3+r*5+c)+.08*Math.sin(t*.25+c+r)>.48;
+      quadL(xa,xa+.26,y+d,z0,z1,fl>.05?mixc(lit?'#ffd98a':'#3a4e63',fc,fl):(lit?'#ffd98a':sh(wall,-.4)))}
+    cols=Math.max(1,Math.floor(d/.62));for(c=0;c<cols;c++){var ya=y+.16+c*(d-.2)/cols,lit2=hs(y*11+x*2+r*7+c*3)+.08*Math.sin(t*.21+c*2+r)>.5;
+      quadR(x+w,ya,ya+.26,z0,z1,fl>.05?mixc(lit2?'#f2c66e':'#2f4256',fc,fl):(lit2?'#f2c66e':sh(wall,-.5)))}}
+  if(o.door){quadL(x+w*o.door-.18,x+w*o.door+.18,y+d,0,.5,'#5b3d2e')}
+}
+
+/* ---------------- world data */
+var PL={
+  cqrs:{x:17,y:17,w:6,d:6,col:'#a9e2c3'},
+  mb:{x:9,y:9,w:6,d:6,col:'#c4e59b'},
+  ef:{x:6.5,y:18.5,w:5,d:5,col:'#f3d5a2'},
+  cos:{x:18.5,y:6.5,w:5,d:5,col:'#bdd3f4'},
+  asb:{x:.5,y:9.5,w:5,d:5,col:'#a6dcef'},
+  auth:{x:-6,y:10,w:4,d:4,col:'#e3d3ef'},
+  rmq:{x:1.5,y:1.5,w:5,d:5,col:'#ffd0aa'},
+  ssb:{x:10.5,y:.5,w:5,d:5,col:'#d4d9ec'},
+  scf:{x:18.5,y:.5,w:5,d:5,col:'#c7ead8'},
+  diag:{x:25.5,y:9.2,w:2.5,d:2.5,col:'#d7e3ea'}
+};
+var PLK=Object.keys(PL).sort(function(a,b){var p=PL[a],q=PL[b];return(p.x+p.w/2+p.y+p.d/2)-(q.x+q.w/2+q.y+q.d/2)});
+var BR=[[[22.5,19.5],[23.8,19.5]],[[23.8,19.5],[23.8,13]],[[23.8,13],[15,13]],[[11,15],[11,18.5]],[[15,11],[18.5,11]],[[9,12],[5.5,12]],[[.5,12],[-2,12]],[[9.25,9],[9.25,4]],[[9.25,4],[6.5,4]],[[13,9],[13,5.5]],[[15.5,3],[18.5,3]]];
+var R1=mk([[22.6,19.5,0],[23.8,19.5,0],[23.8,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0]]);
+var R1S=mk([[22.6,19.5,0],[23.8,19.5,0],[23.8,17,0],[23.8,17,-1.15],[23.8,13.6,-1.75],[23.8,13,-1.75],[22.7,13,-1.75],[19.5,13,-1.15],[19.5,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0]]);
+var ROUTES=[
+  mk([[22.6,19.5],[23.8,19.5],[23.8,13],[14.2,13],[14.2,12.05],[13.7,12.05]]),
+  mk([[11,12.7],[11,19.6]]),mk([[13.7,11],[19.6,11]]),mk([[10.3,12],[3.6,12]]),mk([[1.6,12],[-3.5,12]]),
+  mk([[10.4,9.3],[9.25,9.3],[9.25,4],[4.6,4]]),mk([[13,9.3],[13,3.65]]),mk([[14.15,3],[19.3,3]])
+];
+var KC=['#ff7b5c','#5fe0b0','#6cc8ff','#ffd166'];
+
+var PK=[
+ {id:'Chatter.CQRS',s:'CQRS',pl:'cqrs',c:'#a9e2c3',dep:'',what:'In-process Commands, Queries and Events through the Message Dispatcher, with a Command Pipeline wrapping every Command handler.'},
+ {id:'Chatter.MessageBrokers',s:'MessageBrokers',pl:'mb',c:'#c4e59b',dep:'Chatter.CQRS',what:'Technology-agnostic brokered messaging: Receivers, routing, the [BrokeredMessage] label, Recovery, and Inbox and Outbox ports. Ships no transport itself.'},
+ {id:'Chatter.MessageBrokers.AzureServiceBus',s:'AzureServiceBus',pl:'asb',c:'#a6dcef',dep:'Chatter.MessageBrokers',what:'Azure Service Bus transport: queues, topic subscriptions, sessions and cross-entity transactions.'},
+ {id:'Chatter.MessageBrokers.AzureServiceBus.Auth',s:'AzureServiceBus.Auth',pl:'auth',c:'#e3d3ef',dep:'Chatter.MessageBrokers.AzureServiceBus',what:'Microsoft Entra ID token authentication for Azure Service Bus, managed identity included, so no connection-string secrets.'},
+ {id:'Chatter.MessageBrokers.RabbitMQ',s:'RabbitMQ',pl:'rmq',c:'#ffd0aa',dep:'Chatter.MessageBrokers',what:'RabbitMQ transport over the exchanges and queues you provision.'},
+ {id:'Chatter.MessageBrokers.SqlServiceBroker',s:'SqlServiceBroker',pl:'ssb',c:'#d4d9ec',dep:'Chatter.MessageBrokers',what:'SQL Server Service Broker transport over conversations and queues you provision: messaging inside the database you already run.'},
+ {id:'Chatter.MessageBrokers.Reliability.EntityFramework',s:'Reliability.EntityFramework',pl:'ef',c:'#f3d5a2',dep:'Chatter.MessageBrokers',what:'EF Core Inbox, Outbox and Unit of Work stored in your own DbContext. State change, Inbox record and Outbox record are saved in one database transaction.'},
+ {id:'Chatter.MessageBrokers.Reliability.Cosmos',s:'Reliability.Cosmos',pl:'cos',c:'#bdd3f4',dep:'Chatter.MessageBrokers',what:'Azure Cosmos DB Document Tier: the aggregate, an Outbox document and an Inbox marker written in one TransactionalBatch, published by a change-feed Outbox Relay.'},
+ {id:'Chatter.SqlChangeFeed',s:'SqlChangeFeed',pl:'scf',c:'#c7ead8',dep:'Chatter.MessageBrokers.SqlServiceBroker',what:'Watch a SQL Server table and handle strongly typed RowInsertedEvent, RowUpdatedEvent and RowDeletedEvent.'}
+];
+var PLPK={};PK.forEach(function(p,i){PLPK[p.pl]=i});
+
+/* ---------------- state */
+var S={clock:3.2,w:[1,0,0,0,0,0,0,0,0,0],cut:0,tangle:0,amb:1,mode:'asb',mm:{asb:1,rmq:0,ssb:0},flav:'ef',fm:0,sub:0,subT:0,sel:0,selA:0};
+var paused=reduced,secs=[].slice.call(D.querySelectorAll('.ch')),N=secs.length,tops=[],vh=innerHeight;
+/* camera keys: x,y,z,span */
+var K=[[12.6,11.4,0,29],[15.6,15.2,.9,19],[20.2,20.2,.6,8.2],[18.9,14.1,.8,15],[18.9,14.1,1,15.5],null,[12.5,13.4,.5,9.6],[19.4,2.6,.7,11],[25.4,10.6,1.9,10.5],[12.2,10.9,0,37]];
+var RELK=[[9,21,.4,9],[21,9,.4,9]];
+var cam=null,scl=1,OX=0,OY=0;
+
+function mapKey(){
+  var x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  for(var id in PL){var p=PL[id],cs=[[p.x,p.y],[p.x+p.w,p.y],[p.x,p.y+p.d],[p.x+p.w,p.y+p.d]];
+    for(var j=0;j<4;j++){for(var zi=0;zi<2;zi++){var q=P(cs[j][0],cs[j][1],zi?2.6:-2.1);if(q[0]<x0)x0=q[0];if(q[0]>x1)x1=q[0];if(q[1]<y0)y0=q[1];if(q[1]>y1)y1=q[1]}}}
+  var mt=W<700?70:84,mb=W<700?22:40,mx=W<700?12:40;
+  var sc=Math.min((W-2*mx)/(x1-x0),(H-mt-mb)/(y1-y0));
+  var span=Math.min(W,H*1.25)*(W>700?.8:1)/(sc*TW);
+  var yc=(mt+H-mb)/2,fy=(y0+y1)/2+(H*.52-yc)/sc,u=(x0+x1)/2/TW,v=fy/TH;
+  return[(u+v)/2,(v-u)/2,0,span];
+}
+function camKey(i){if(i===9)return mapKey();if(i===5){var a=RELK[0],b=RELK[1],f=ease(S.fm);return[lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f),a[3]]}return K[i]}
+function measure(){vh=innerHeight;tops=secs.map(function(s){return s.getBoundingClientRect().top+(window.pageYOffset||0)})}
+function progress(){
+  var y=window.pageYOffset||0,t=[1],i;
+  for(i=1;i<N;i++){var v=cl((y-(tops[i]-vh*1.0))/(vh*.42));t[i]=reduced?(v>.5?1:0):ease(v)}
+  for(i=0;i<N;i++)S.w[i]=t[i]*(1-(i+1<N?t[i+1]:0));
+  var c=camKey(0).slice();
+  for(i=1;i<N;i++){var k=camKey(i),f=t[i];if(f<=0)continue;c[0]=lerp(c[0],k[0],f);c[1]=lerp(c[1],k[1],f);c[2]=lerp(c[2],k[2],f);c[3]=Math.exp(lerp(Math.log(c[3]),Math.log(k[3]),f))}
+  return c;
+}
+
+/* ---------------- labels (screen space) */
+var LB=[];
+function lab(x,y,z,txt,o){o=o||{};var a=o.a===undefined?1:o.a;if(a<.03)return;LB.push({x:x,y:y,z:z,t:txt,bg:o.bg||'rgba(9,24,36,.9)',fg:o.fg||'#fbf3e4',a:a,dot:o.dot,big:o.big,num:o.num})}
+function toS(x,y,z){var p=P(x,y,z);return[OX+p[0]*scl,OY+p[1]*scl]}
+function drawLabels(){
+  var fs=W<560?11:12.5;
+  for(var i=0;i<LB.length;i++){var L=LB[i],s=toS(L.x,L.y,L.z),f=L.big?fs+1.5:fs;
+    if(L.num){ctx.globalAlpha=L.a;ctx.beginPath();ctx.arc(s[0],s[1]-14,11.5,0,2*PI);ctx.fillStyle=L.bg;ctx.fill();ctx.lineWidth=2.5;ctx.strokeStyle=L.dot;ctx.stroke();ctx.fillStyle=L.fg;ctx.font='700 12px "Bricolage Grotesque",system-ui,sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(L.t,s[0],s[1]-13.5);ctx.textAlign='left';continue}
+    ctx.font=(L.big?'700 ':'600 ')+f+'px "Bricolage Grotesque","Avenir Next","Segoe UI",system-ui,sans-serif';
+    var tw=ctx.measureText(L.t).width,pad=L.dot?22:9,w=tw+pad+9,h=f+11,x=cl(s[0]-w/2,6,W-w-6),y=s[1]-h-9;
+    if(y<52)y=Math.max(52,y);
+    ctx.globalAlpha=L.a;ctx.fillStyle=L.bg;rr(x,y,w,h,h/2);ctx.fill();
+    ctx.beginPath();var px=cl(s[0],x+10,x+w-10);ctx.moveTo(px-5,y+h-.5);ctx.lineTo(px+5,y+h-.5);ctx.lineTo(px,y+h+6);ctx.closePath();ctx.fill();
+    if(L.dot){ctx.beginPath();ctx.arc(x+12,y+h/2,4,0,2*PI);ctx.fillStyle=L.dot;ctx.fill()}
+    ctx.fillStyle=L.fg;ctx.textBaseline='middle';ctx.fillText(L.t,x+pad,y+h/2+.5)}
+  ctx.globalAlpha=1;LB.length=0;
+}
+
+/* ---------------- draw list */
+var DL=[];
+function add(k,x,y,fn){var s=toS(x,y,0);if(s[0]<-220||s[0]>W+220||s[1]<-260||s[1]>H+260)return;DL.push({k:k,f:fn})}
+
+/* ---------------- scene pieces */
+function drawPlate(id){
+  var p=PL[id],s1=toS(p.x,p.y+p.d,0),s2=toS(p.x+p.w,p.y,0);if(s2[0]<-40||s1[0]>W+40)return;
+  var sel=S.w[9]>.05&&PLPK[id]===S.sel,lift=sel?S.w[9]*.18*(1+Math.sin(S.clock*3)*.25):0;
+  box(p.x+.6,p.y+.6,-2.05+lift,p.w-1.2,p.d-1.2,.9,'#7d5640');
+  box(p.x,p.y,-1.2+lift,p.w,p.d,1.05,'#b9805a',null,'#c38a62','#98644a');
+  box(p.x,p.y,-.15+lift,p.w,p.d,.15,p.col);
+  if(sel){ctx.lineWidth=2.4/scl*1.4;ctx.strokeStyle='rgba(255,209,102,'+(.6+.4*Math.sin(S.clock*4)).toFixed(2)+')';ctx.beginPath();var a=P(p.x,p.y,lift),b=P(p.x+p.w,p.y,lift),c=P(p.x+p.w,p.y+p.d,lift),d=P(p.x,p.y+p.d,lift);ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.lineTo(c[0],c[1]);ctx.lineTo(d[0],d[1]);ctx.closePath();ctx.stroke()}
+}
+function drawBridge(sg_,alpha){
+  var a=sg_[0],b=sg_[1],hw=.3,x0,y0,w,d;
+  if(a[0]===b[0]){x0=a[0]-hw;y0=Math.min(a[1],b[1])-hw;w=2*hw;d=Math.abs(b[1]-a[1])+2*hw}else{y0=a[1]-hw;x0=Math.min(a[0],b[0])-hw;d=2*hw;w=Math.abs(b[0]-a[0])+2*hw}
+  ctx.globalAlpha=alpha;
+  var L=Math.max(w,d);if(L>3){var mx=x0+w/2,my=y0+d/2;box(mx-.12,my-.12,-1.5,.24,.24,1.2,'#9a6a4f')}
+  box(x0,y0,-.28,w,d,.3,'#e7d9c2','#f1e6d3','#cdb89a','#a8906f');
+  var p1=P(a[0],a[1],.03),p2=P(b[0],b[1],.03);ctx.setLineDash([5,7]);ctx.strokeStyle='rgba(160,130,95,.55)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke();ctx.setLineDash([]);
+  ctx.globalAlpha=1;
+}
+
+/* ---- CQRS building, closed or cut away */
+function drawCQRS(){
+  var t=S.clock,cut=S.cut,x0=17.5,y0=17.5,s=5,h=2.8,wall='#fbe7c6';
+  if(cut<.012){
+    building(x0,y0,s,s,h,wall,'#ff8a6b',{flash:0});
+    box(22.5,19.1,0,.25,.8,.62,'#ff8a6b');
+    cyl(18.4,18.4,h,.32,.55,'#7cc4ff');smoke(19.2,21.6,h+.6,t);box(19,21.4,h,.3,.3,.6,'#b9775a');flag(22,18.1,h,'#ffd166',t);
+    clutter(20,20,h);return;
+  }
+  var wl='#f6deb6',e=ease(cut);
+  box(x0,y0,0,.16,s,h,wl);box(x0,y0,0,s,.16,h,wl);
+  topq(x0,y0,x0+s,y0+s,.01,'#efdcbd');
+  ctx.strokeStyle='rgba(150,115,80,.18)';ctx.lineWidth=1;for(var i=1;i<5;i++){var a=P(x0+i,y0,.01),b=P(x0+i,y0+s,.01),c=P(x0,y0+i,.01),d=P(x0+s,y0+i,.01);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.moveTo(c[0],c[1]);ctx.lineTo(d[0],d[1]);ctx.stroke()}
+  quadL(18.75,19.25,y0+.16,0,.9,'#c99e7a');quadL(21.25,21.75,y0+.16,0,.9,'#c99e7a');
+  var ph=t%9,show=cut>.35;
+  // rooms
+  topq(21.45,18.3,22.35,19.7,.02,'#ffc4b2');topq(21,20.1,22.35,21.1,.02,'#fff0c4');
+  topq(17.8,20.6,18.9,21.7,.02,'#c3f2df');topq(19.15,21.3,20.25,22.35,.02,'#c3f2df');topq(20.55,21.3,21.65,22.35,.02,'#c3f2df');
+  // conveyor
+  box(19.45,18.76,0,1.95,.48,.14,'#3b4c5d');
+  for(i=0;i<6;i++){var bx=19.5+((i*.33+t*.55)%1.9);poly([P(bx,18.78,.141),P(bx+.08,18.78,.141),P(bx+.08,19.22,.141),P(bx,19.22,.141)],'#5a6f83')}
+  // parcels progress
+  var cp=null,ep=[],qp=null,hit=0,evH=[0,0,0],qH=0;
+  var door=[[19,17,0],[19,18.5,0],[19,19,.32]];
+  if(ph<3){var f;if(ph<.9)cp=at(mk(door),ph/.9);else if(ph<1.1)cp=at(mk([[19,19,.32],[19.5,19,.14]]),(ph-.9)/.2);else if(ph<2.4)cp=at(mk([[19.5,19,.14],[21.42,19,.14]]),(ph-1.1)/1.3);else if(ph<2.7)cp=at(mk([[21.42,19,.14],[21.8,19.05,.32]]),(ph-2.4)/.3);else{cp=null;hit=1-(ph-2.7)/.3}}
+  else if(ph<6){var q=ph-3;if(q<.8)ep=[at(mk(door),q/.8)];else if(q<1.8){var rr2=[[18.35,21.15],[19.7,21.85],[21.1,21.85]];for(var j=0;j<3;j++)ep.push(at(mk([[19,19,.32],[rr2[j][0],rr2[j][1],.02]]),eo(q-.8)))}else{evH=[1,1,1].map(function(v,j){return cl(1-(q-1.8-j*.12)/1.1)})}}
+  else{var r=ph-6;if(r<.6)qp=[at(mk(door),r/.6),'#2f9cf0'];else if(r<1.3)qp=[at(mk([[19,19,.32],[21.5,20.6,.02]]),eo((r-.6)/.7)),'#2f9cf0'];else if(r<1.6){qp=[[21.5,20.6,.02],r<1.45?'#2f9cf0':'#ffd166'];qH=1}else if(r<2.2)qp=[at(mk([[21.5,20.6,.02],[19,19,.32]]),eo((r-1.6)/.6)),'#ffd166'];else if(r<2.9)qp=[at(mk([[19,19,.32],[19,18.5,0],[19,17,0]]),(r-2.2)/.7),'#ffd166']}
+  var it=[];
+  function pi(k,f){it.push({k:k,f:f})}
+  pi(38,function(){cyl(19,19,0,.42,.32,'#6cc8ff');person(19,19.25,.32,'#2f6a90','#ffd166')});
+  var st=[[19.86,'#6cc8ff'],[20.44,'#ffd166'],[21.02,'#5fe0b0']];
+  st.forEach(function(sx){var on=cp&&Math.abs(cp[0]-sx[0]-.04)<.22?1:0;pi(sx[0]+18.7,function(){box(sx[0],18.66,0,.08,.08,.78,'#e9edf1');box(sx[0],19.26,0,.08,.08,.78,'#e9edf1');box(sx[0],18.66,.78,.08,.68,.12,on?'#ffffff':sx[1]);if(on)dot(sx[0]+.04,19,.98,4.5,'rgba(255,255,255,.9)')})});
+  pi(40.95,function(){box(22.02,18.6,0,.3,.5,.32,'#e98e6d');person(21.75,19.25,0,'#e2634a','#ffd166',hit*.25*Math.abs(Math.sin(hit*PI*3)))});
+  [[18.35,21.15],[19.7,21.85],[21.1,21.85]].forEach(function(r3,j){pi(r3[0]+r3[1]+.1,function(){if(evH[j]>0)dot(r3[0],r3[1],.9,6+evH[j]*5,'rgba(95,224,176,'+(evH[j]*.5).toFixed(2)+')');box(r3[0]+.15,r3[1]-.35,0,.35,.25,.28,'#8bd7b9');person(r3[0]-.1,r3[1]+.1,0,'#2aa37e','#c3f2df',evH[j]*.2*Math.abs(Math.sin(evH[j]*PI*3)))})});
+  pi(42.6,function(){box(22,20.2,0,.28,.8,.62,'#ffd166');if(qH)dot(22.1,20.6,.9,9,'rgba(255,209,102,.5)');person(21.55,20.85,0,'#2f86c4','#cfe9ff')});
+  if(cp)pi(cp[0]+cp[1]+.2,function(){parcel(cp[0],cp[1],cp[2],'#ff7b5c',.3)});
+  ep.forEach(function(p){pi(p[0]+p[1]+.2,function(){parcel(p[0],p[1],p[2],'#5fe0b0',.3)})});
+  if(qp)pi(qp[0][0]+qp[0][1]+.2,function(){parcel(qp[0][0],qp[0][1],qp[0][2],qp[1],.3)});
+  it.sort(function(a,b){return a.k-b.k});it.forEach(function(o){o.f()});
+  var hf=lerp(h,.36,e);
+  box(x0+s-.16,y0,0,.16,s,hf,wl);box(x0,y0+s-.16,0,s,.16,hf,wl);
+  if(cut<.5){var lz=h+eo(cut*2)*3.2;box(x0-.05,y0-.05,lz,s+.1,s+.1,.16,'#ff8a6b',sh('#ff8a6b',.06))}
+  if(show){var a=cl((cut-.35)/.4)*S.w[2];
+    var cap=ph<3?['Command → exactly one handler','#ff7b5c']:ph<6?['Event → every subscriber','#5fe0b0']:['Query → returns a Read Model','#6cc8ff'];
+    lab(19.7,18.2,3.1,cap[0],{a:a,dot:cap[1],big:1});
+    lab(19,19.2,.9,'Message Dispatcher',{a:a*.95,bg:'rgba(251,243,228,.94)',fg:'#16314a'});
+    lab(20.5,19.3,1.05,'Command Pipeline',{a:a*(ph<3?.95:.55),bg:'rgba(251,243,228,.94)',fg:'#16314a'});
+  }
+}
+
+/* ---- roof clutter + tangle (problem chapter) */
+function clutter(x,y,h){var g=S.tangle;if(g<.02)return;var e=eo(g),z=h-.6+.6*e;ctx.globalAlpha=cl(g*1.6);
+  cyl(x-.9,y-.6,z,.32,.7,'#9aa7b4');box(x+.3,y-1,z,.5,.5,.45,'#7e8a96');
+  var a=P(x+.8,y+.6,z),b=P(x+.8,y+.6,z+1.1);ctx.strokeStyle='#5e6b77';ctx.lineWidth=1.6;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+  ctx.beginPath();ctx.ellipse(b[0]+4,b[1]+5,7,4,-.5,0,2*PI);ctx.fillStyle='#d6dde3';ctx.fill();
+  dot(x+.8,y+.6,z+1.12,2.2,Math.sin(S.clock*8+x)>0?'#ff5d7a':'#7a2a37');ctx.globalAlpha=1}
+var TANG=[[[20,20,3.2],[12,11,2.9]],[[20,20,3.2],[7.6,19.6,2.2]],[[20,20,3.2],[20,7.6,2.2]],[[12,11,2.9],[7.6,19.6,2.2]],[[12,11,2.9],[20,7.6,2.2]],[[26.75,10.45,4.2],[20,7.6,2.2]],[[7.6,19.6,2.2],[20,20,3.2]],[[12,11,2.9],[26.75,10.45,4.2]]];
+var TC=['#8f9ba8','#c2703d','#3f8f8a','#b25a6a','#8f9ba8','#c79a3d','#5a7fa8','#c2703d'];
+function drawTangle(){var g=S.tangle;if(g<.02)return;
+  ctx.lineCap='round';
+  for(var i=0;i<TANG.length;i++){var ta=TANG[i][0],tb=TANG[i][1],A=P(ta[0]+hs(i+20)*1.6-.8,ta[1]+hs(i+30)*1.6-.8,ta[2]),B=P(tb[0]+hs(i+40)*1.2-.6,tb[1]+hs(i+50)*1.2-.6,tb[2]),dx=B[0]-A[0],dy=B[1]-A[1],len=Math.hypot(dx,dy)*1.7;
+    var c1=[A[0]+dx*.2+(hs(i)*120-60),A[1]-60-hs(i+3)*90],c2=[A[0]+dx*.8+(hs(i+7)*140-70),B[1]-40-hs(i+5)*110+Math.sin(S.clock*1.4+i)*6];
+    ctx.setLineDash([len*eo(g),9999]);
+    [['#26323d',7],[TC[i],4.4],['rgba(255,255,255,.35)',1.2]].forEach(function(st){ctx.strokeStyle=st[0];ctx.lineWidth=st[1];ctx.beginPath();ctx.moveTo(A[0],A[1]);ctx.bezierCurveTo(c1[0],c1[1],c2[0],c2[1],B[0],B[1]);ctx.stroke()})}
+  ctx.setLineDash([]);ctx.lineCap='butt';
+  var a=S.w[1];lab(20,20,4.4,'hard-coded queue name',{a:a*sg(g,.5,.9),bg:'#ff5d7a'});lab(12,11,4.1,'broker SDK client',{a:a*sg(g,.6,1),bg:'#ff5d7a'});lab(7.6,19.6,3.4,'copy-pasted retry loop',{a:a*sg(g,.7,1),bg:'#ff5d7a'});
+}
+
+/* ---- MB plate: Shipping, Receiver, Error Queue shed, barrier */
+var shipFlash=0,barrier=0,shedCount=1;
+function drawMB(){
+  var t=S.clock;
+  add(12+11+.2,12,11,function(){building(10.5,9.5,3,3,2.4,'#fdf0d8','#4fb3a9',{flash:shipFlash,fc:'#a5f3d6',door:.5});quadR(13.5,10.9,11.6,0,.55,'#5b3d2e');box(11,10,2.4,.3,.3,.55,'#b9775a');smoke(11.15,10.15,3,t+1.3);clutter(12,11,2.4)});
+  add(14.55+11.45,14.55,11.45,function(){person(14.55,11.45,0,'#e0a43a','#ffd166',S.recvBob||0);var l=P(14.55,11.45,1.05);ctx.beginPath();ctx.arc(l[0],l[1],2.6,0,2*PI);ctx.fillStyle=Math.sin(t*4)>-.2?'#5fe0b0':'#2b6b58';ctx.fill()});
+  add(10.15+14+.2,10.15,14,function(){building(9.45,13.3,1.45,1.4,1.05,'#f7e3d6','#ff5d7a',{});flag(9.6,13.4,1.05,'#ff5d7a',t);for(var i=0;i<Math.min(shedCount,4);i++)parcel(11.2,14.35-i*0,.02+i*.3,'#ff7b5c',.3)});
+  add(9.8+9.8,9.8,9.8,function(){tree(9.8,9.8,1,'#5fbf8a')});
+  add(14.4+9.6,14.4,9.6,function(){tree(14.4,9.6,.85,'#7fd39f')});
+  add(15.6+13.5,15.6,13.5,function(){box(15.52,13.42,0,.16,.16,.55,'#f5f0e6');var pv=P(15.6,13.5,.5),ang=barrier*PI/2,v1=P(15.6,12.4,.5),v2=P(15.6,13.5,1.6),ex=pv[0]+(v2[0]-pv[0])*Math.cos(ang)+(v1[0]-pv[0])*Math.sin(ang),ey=pv[1]+(v2[1]-pv[1])*Math.cos(ang)+(v1[1]-pv[1])*Math.sin(ang);
+    ctx.lineCap='round';ctx.strokeStyle='#ffffff';ctx.lineWidth=3.6;ctx.beginPath();ctx.moveTo(pv[0],pv[1]);ctx.lineTo(ex,ey);ctx.stroke();ctx.setLineDash([4,4]);ctx.strokeStyle='#ff5d7a';ctx.stroke();ctx.setLineDash([]);ctx.lineCap='butt';dot(15.6,13.5,.62,2.4,barrier>.5?'#ff5d7a':'#5fe0b0')});
+}
+
+/* ---- R1 transport visuals */
+function drawSSBunder(){var m=S.mm.ssb*S.w[4];if(m<.02)return;ctx.globalAlpha=m;
+  var pts=R1S.p.slice(2,9);ctx.lineJoin='round';
+  [['#3b4a66',9],['#8fa0d8',5.5],['rgba(255,255,255,.35)',1.4]].forEach(function(st){ctx.strokeStyle=st[0];ctx.lineWidth=st[1];ctx.beginPath();pts.forEach(function(q,i){var p=P(q[0],q[1],q[2]);if(i)ctx.lineTo(p[0],p[1]);else ctx.moveTo(p[0],p[1])});ctx.stroke()});
+  cyl(23.8,13,-2.5,.95,1.25,'#8fa0d8','#c8d2f5');
+  var p=P(23.8,13,-1.25);[[0,'#6a7bb8'],[.42,'#6a7bb8']].forEach(function(r){ctx.beginPath();ctx.ellipse(p[0],p[1]+r[0]*ZH,.95*TW*1.414,.95*TH*1.414,0,0,PI);ctx.strokeStyle=r[1];ctx.lineWidth=1.2;ctx.stroke()});
+  ctx.globalAlpha=1;lab(23.8,13,-2.6,'SQL Server · Service Broker queue',{a:m*S.w[4],dot:'#b6c2ff'});
+}
+function drawRails(){var m=S.mm.rmq*S.w[4];if(m<.02)return;ctx.globalAlpha=m;var segs=[[[22.5,19.5],[23.8,19.5]],[[23.8,19.5],[23.8,13]],[[23.8,13],[14.6,13]]];
+  segs.forEach(function(sq){var a=sq[0],b=sq[1],dx=Math.sign(b[0]-a[0]),dy=Math.sign(b[1]-a[1]),L=Math.abs(b[0]-a[0])+Math.abs(b[1]-a[1]);
+    for(var u=0;u<L;u+=.33){var cx=a[0]+dx*u,cy=a[1]+dy*u,px=-dy*.24,py=dx*.24;poly([P(cx-px-dx*.05,cy-py-dy*.05,.04),P(cx+px-dx*.05,cy+py-dy*.05,.04),P(cx+px+dx*.05,cy+py+dy*.05,.04),P(cx-px+dx*.05,cy-py+dy*.05,.04)],'#7b5a45')}
+    [-.13,.13].forEach(function(o){var p1=P(a[0]-dy*o,a[1]+dx*o,.07),p2=P(b[0]-dy*o,b[1]+dx*o,.07);ctx.strokeStyle='#b8c2cc';ctx.lineWidth=1.6;ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke()})});
+  ctx.globalAlpha=1}
+function drawSkyRoute(){var m=S.mm.asb*S.w[4];if(m<.02)return;ctx.globalAlpha=m*.8;ctx.setLineDash([2,7]);ctx.lineCap='round';ctx.strokeStyle='#e6f6ff';ctx.lineWidth=2;ctx.beginPath();for(var i=0;i<=40;i++){var q=at(R1,i/40),p=P(q[0],q[1],.2+2.6*Math.sin(PI*i/40));if(i)ctx.lineTo(p[0],p[1]);else ctx.moveTo(p[0],p[1])}ctx.stroke();ctx.setLineDash([]);ctx.lineCap='butt';ctx.globalAlpha=1}
+function blimp(x,y,z,dir){var p=P(x,y,z);ctx.save();ctx.translate(p[0],p[1]);ctx.scale(dir,1);
+  poly([[-17,-2],[-27,-11],[-23,0],[-27,10]],'#e46a4f');
+  var g=ctx.createLinearGradient(0,-11,0,11);g.addColorStop(0,'#ffffff');g.addColorStop(1,'#b7c7d4');ctx.beginPath();ctx.ellipse(0,-2,21,10,0,0,2*PI);ctx.fillStyle=g;ctx.fill();
+  ctx.fillStyle='#6cc8ff';ctx.fillRect(-12,-3,24,3);ctx.fillStyle='#41566a';rr(-6,8,12,5,2);ctx.fill();ctx.restore()}
+function car(x,y,z,dirx){box(x-.3,y-.22,z+.05,.6,.44,.32,'#ff9a52');dot(x-.18,y+.22,z+.06,2,'#31404d');dot(x+.18,y+.22,z+.06,2,'#31404d')}
+
+/* ---- ch4/5 vignette parcel along R1 */
+function vMB(){
+  var a=cl(S.w[3]+S.w[4]);if(a<.02){S.recvBob=0;return}
+  var ph=S.clock%7,md='road';if(S.w[4]>.3){md=S.mode}
+  var f=eo(sg(ph,.7,3.7)),pos,hold=sg(ph,3.7,4.2),into=sg(ph,4.3,4.9);
+  if(ph<.7){pos=[22.6,19.5,0]}else if(ph<3.7){pos=md==='ssb'?at(R1S,f):at(R1,f);if(md==='asb'){pos=pos.slice();pos[2]=.2+2.6*Math.sin(PI*f)}}
+  else if(ph<4.3){pos=[lerp(13.7,14.45,hold),lerp(12.05,11.55,hold),lerp(0,.55,hold)]}else{pos=[lerp(14.45,13.4,into),lerp(11.55,11.25,into),.4]}
+  S.recvBob=ph>3.7&&ph<4.4?.12*Math.abs(Math.sin((ph-3.7)*9)):0;
+  shipFlash=Math.max(shipFlash,ph>4.9&&ph<6.4?Math.sin(sg(ph,4.9,6.4)*PI)*a:0);
+  var pop=ph<.7?eo(ph/.7):ph>4.3?1-into:1;if(pop<.05)return;
+  var X=pos[0],Y=pos[1],Z=pos[2];
+  add(X+Y+.3,X,Y,function(){ctx.globalAlpha=a;
+    if(md==='ssb'&&Z<-.2){dot(X,Y,Z+.1,4.5,'#5fe0b0');dot(X,Y,Z+.1,9,'rgba(95,224,176,.25)')}
+    else{parcel(X,Y,Z,'#5fe0b0',.36*pop);if(md==='rmq'&&ph>.7&&ph<3.7)car(X,Y,-.05);if(md==='asb'&&ph>.7&&ph<3.7){var q=at(R1,Math.min(1,f+.02)),dir=(P(q[0],q[1])[0]-P(X,Y)[0])>=0?1:-1;blimp(X,Y,Z+.95,dir)}}
+    ctx.globalAlpha=1});
+  var tagA=a*(ph>.4&&ph<4.2?1:0);lab(X,Y,Z+(md==='asb'?1.9:.8),'→ "orders"',{a:tagA,dot:'#5fe0b0',bg:'rgba(251,243,228,.95)',fg:'#16314a'});
+  lab(14.55,11.45,1.25,'Receiver · on duty',{a:S.w[3]*(ph>3.4&&ph<5?1:.0)});
+  lab(12,11,2.9,'your handler runs',{a:S.w[3]*(ph>4.9&&ph<6.4?1:0),dot:'#5fe0b0'});
+  var ga=S.w[4]*S.mm.asb;
+  if(ga>.02){add(15.1+13.95,15.1,13.95,function(){ctx.globalAlpha=ga;box(14.75,13.6,0,.6,.5,.75,'#e3d3ef','#b98bd6');person(15.05,14.35,0,'#6b4d8a','#e3d3ef');ctx.globalAlpha=1});
+    lab(15.05,14.3,1.1,ph>3.2&&ph<5?'Entra ID token ✓':'gatekeeper',{a:ga,dot:ph>3.2&&ph<5?'#5fe0b0':'#e3d3ef'})}
+}
+
+/* ---- recovery vignette */
+function vRec(){
+  var a=S.w[6];if(a<.02){barrier=lerp(barrier,0,.2);return}
+  var ph=S.clock%11,D0=[13.7,12.05,0],DR=[13.4,11.25,.3],p0=null,puff=0,ok=0,i;
+  var Rb=mk([[19.6,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0]]),Sh=mk([[13.7,12.05,0],[13.7,13.95,0],[11.25,13.95,0]]);
+  if(ph<1.4)p0=at(Rb,eo(ph/1.4));
+  else if(ph<4){var k=Math.floor((ph-1.4)/.87),u=(ph-1.4)-k*.87;k=Math.min(k,2);if(u<.4)p0=[lerp(D0[0],DR[0],u/.4),lerp(D0[1],DR[1],u/.4),lerp(0,.3,u/.4)];else{p0=[lerp(DR[0],D0[0],sg(u,.45,.87)),lerp(DR[1],D0[1],sg(u,.45,.87)),lerp(.3,0,sg(u,.45,.87))];puff=1-sg(u,.4,.8)}
+    lab(13.4,11.25,1.3,k===0?'attempt 1 ✕':'retry ✕',{a:a*puff,bg:'#ff5d7a'})}
+  else if(ph<4.4)p0=D0.slice();else if(ph<6)p0=at(Sh,eo((ph-4.4)/1.6));else p0=null;
+  shedCount=ph>6?2:1;
+  barrier=ph<4?0:ph<4.4?eo((ph-4)/.4):ph<7?1:ph<7.5?lerp(1,.5,eo((ph-7)/.5)):ph<9.2?.5:ph<9.7?lerp(.5,0,eo((ph-9.2)/.5)):0;
+  var Q=mk([[23.8,16.6,0],[23.8,13,0],[16.25,13,0]]),Q2=mk([[23.8,16.6,0],[23.8,13,0],[16.95,13,0]]),Qb=mk([[16.25,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0],[13.4,11.25,.3]]),Qc=mk([[16.95,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0],[13.4,11.25,.3]]);
+  var q1=ph<2.4?null:ph<4.3?at(Q,eo((ph-2.4)/1.9)):ph<7.4?Q.p[2]:ph<9.2?at(Qb,eo((ph-7.4)/1.8)):null;
+  var q2=ph<3?null:ph<4.4?at(Q2,eo((ph-3)/1.4)):ph<9.6?Q2.p[2]:ph<10.8?at(Qc,eo((ph-9.6)/1.2)):null;
+  if(ph>9.1&&ph<10)ok=1-sg(ph,9.1,10);
+  [p0,q1,q2].forEach(function(p,j){if(!p)return;add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=a;parcel(p[0],p[1],p[2],j?'#5fe0b0':'#ff7b5c',.34);ctx.globalAlpha=1})});
+  if(puff>0)add(40,13.4,11.25,function(){ctx.globalAlpha=a*puff;dot(13.4,11.25,.6,8+10*(1-puff),'rgba(255,93,122,.55)');ctx.globalAlpha=1});
+  if(ok>0)add(40,13.4,11.25,function(){ctx.globalAlpha=a*ok;dot(13.4,11.25,.6,8+10*(1-ok),'rgba(95,224,176,.6)');ctx.globalAlpha=1});
+  lab(15.6,13.5,1.75,ph<7?'circuit open · cooling':ph<9.2?'half-open · one trial':'circuit closes',{a:a*(ph>4.1&&ph<10.6?1:0),bg:ph<7?'#ff5d7a':'rgba(9,24,36,.9)',dot:ph<7?null:'#5fe0b0'});
+  lab(10.2,14,1.5,'receive limit reached → Error Queue',{a:a*(ph>4.5&&ph<6.8?1:0),dot:'#ff5d7a'});
+  lab(13.4,11.25,1.3,'trial ✓',{a:a*ok,dot:'#5fe0b0'});
+}
+
+/* ---- reliability vignettes (EF + Cosmos share a local layout) */
+function vRel(pl,swap,kind){
+  var o=PL[pl],ox=o.x,oy=o.y,t=S.clock,a=S.w[5]*(kind==='ef'?1-S.fm:S.fm),act=a>.02;
+  function W2(lx,ly){return swap?[ox+ly,oy+lx]:[ox+lx,oy+ly]}
+  function lb(lx,ly,z,w,d,h,c,tp){if(swap)box(ox+ly,oy+lx,z,d,w,h,c,tp);else box(ox+lx,oy+ly,z,w,d,h,c,tp)}
+  function k(lx,ly){var p=W2(lx,ly);return p[0]+p[1]}
+  function ad(lx,ly,fn){var p=W2(lx,ly);add(p[0]+p[1],p[0],p[1],fn)}
+  function pr(lx,ly,z,c,s){var p=W2(lx,ly);add(p[0]+p[1]+.3,p[0],p[1],function(){parcel(p[0],p[1],z,c,s)})}
+  var ph=t%10,fl=0;
+  // service building
+  var bw=W2(.55,.55);add(k(1.45,1.45),bw[0]+1,bw[1]+1,function(){building(bw[0],bw[1],1.8,1.8,1.7,'#fdf1dc',kind==='ef'?'#ff8a6b':'#7cc4ff',{flash:fl,fc:'#a5f3d6'});clutter(bw[0]+.9,bw[1]+.9,1.7)});
+  // storage
+  ad(3.45,1.25,function(){
+    if(kind==='ef'){lb(2.9,.65,0,1.1,1.25,1.3,'#8fa6bd');for(var d=0;d<3;d++){var z=.18+d*.38;if(swap)quadR(ox+.65+1.25,oy+2.98,oy+3.92,z,z+.28,'#a9bdd0');else quadL(ox+2.98,ox+3.92,oy+.65+1.25,z,z+.28,'#a9bdd0')}}
+    else{for(var d2=0;d2<3;d2++){var z2=.15+d2*.45+Math.sin(t*1.6+d2)*.04;lb(2.95,.7,z2,1,1.15,.24,'#9fc0ff',sh('#cfe0ff',0))}}
+    if(cm>0){var c=W2(3.45,1.27),p=P(c[0],c[1],1.7);ctx.beginPath();ctx.arc(p[0],p[1],10+8*(1-cm),0,2*PI);ctx.fillStyle='rgba(95,224,176,'+(cm*.5).toFixed(2)+')';ctx.fill()}
+  });
+  // desk + worker, shelf
+  ad(3.3,3.55,function(){var pw=W2(3.3,3.15);person(pw[0],pw[1],0,'#3d7fb0','#ffd166',stamp*.15);lb(2.8,3.35,0,1,.5,.42,'#ffcf8a')});
+  ad(1.25,3.7,function(){lb(.6,3.45,0,1.3,.45,.85,'#b98a63');lb(.6,3.45,.42,1.3,.45,.06,'#d9ad85');if(dupOn){var s=W2(1.25,3.67);parcel(s[0],s[1],.88,'#ff7b5c',.3)}});
+  var tr=W2(4.1,4.3);add(tr[0]+tr[1],tr[0],tr[1],function(){tree(tr[0],tr[1],.8,'#6fcf98')});
+  // timeline
+  var cm=ph>1.6&&ph<2.4?1-sg(ph,1.6,2.4):0,stamp=0,dupOn=ph>8.6;
+  if(ph<1.6){var u=eo(sg(ph,0,1.4));pr(lerp(2.45,3.1,u),.95,lerp(.05,.6,u),'#ffd166',.32);pr(lerp(2.45,3.1,u),1.55,lerp(.05,.6,u),'#ff7b5c',.32);
+    if(act&&ph>.3){var c1=W2(2.85,1.25),pp=toS(c1[0],c1[1],.5);LB.push({x:0,y:0,z:0,ring:pp,a:a*sg(ph,.3,.6)})}}
+  var mk1=null;
+  if(ph>2.4&&ph<4.6){mk1=at(mk([[3.95,1.25,.3],[4.5,1.25,0],[4.5,-1.7,0]]),eo(sg(ph,2.4,4.4)))}
+  if(ph>5&&ph<6.6){mk1=at(mk([[4.5,-1.7,0],[4.5,3.6,0],[3.85,3.6,.42]]),eo(sg(ph,5,6.3)))}
+  if(ph>6.6&&ph<7.2){stamp=Math.abs(Math.sin((ph-6.6)*12));fl=1-sg(ph,6.6,7.4)}
+  if(ph>7.2&&ph<8.7){mk1=at(mk([[4.5,-1.7,0],[4.5,3.6,0],[3.85,3.6,.42]]),eo(sg(ph,7.2,8.3)))}
+  if(ph>8.3&&ph<8.65){stamp=Math.abs(Math.sin((ph-8.3)*12))}
+  var dup=ph>8.65&&ph<9.4?at(mk([[3.2,3.6,.42],[2.4,3.7,.6],[1.25,3.67,.88]]),eo(sg(ph,8.65,9.4))):null;
+  if(mk1){var m=mk1,pw2=W2(m[0],m[1]);add(pw2[0]+pw2[1]+.3,pw2[0],pw2[1],function(){var al=ph>2.4&&ph<4.6?1-sg(ph,4,4.5):1;ctx.globalAlpha=al;parcel(pw2[0],pw2[1],m[2],ph>7.2?'#ff7b5c':ph>5?'#ff7b5c':'#ff7b5c',.32);ctx.globalAlpha=1})}
+  if(dup){var pd=W2(dup[0],dup[1]);add(pd[0]+pd[1]+.3,pd[0],pd[1],function(){parcel(pd[0],pd[1],dup[2],'#ff7b5c',.3)})}
+  if(ph>6.6&&ph<7.6){var rc=at(mk([[3.3,3.4,.5],[3.4,1.4,1.4]]),eo(sg(ph,6.6,7.5))),pr2=W2(rc[0],rc[1]);add(pr2[0]+pr2[1]+.3,pr2[0],pr2[1],function(){box(pr2[0]-.12,pr2[1]-.12,rc[2],.24,.24,.06,'#5fe0b0')})}
+  if(!act)return;
+  var anc=W2(3,1.2),dsk=W2(3.3,3.5),sto=W2(3.45,1.2);
+  lab(anc[0],anc[1],2.1,kind==='ef'?'state + Outbox record · one transaction':'aggregate + Outbox doc + Inbox marker · one batch',{a:a*(ph>.3&&ph<2.4?1:0),big:1,dot:'#ffd166'});
+  lab(sto[0],sto[1],1.9,'commit ✓',{a:a*cm,dot:'#5fe0b0'});
+  lab(sto[0],sto[1],2.1,kind==='ef'?'published after commit':'Outbox Relay publishes from the change feed',{a:a*(ph>2.5&&ph<4.6?1:0),dot:'#ff7b5c'});
+  lab(dsk[0],dsk[1],1.4,'Inbox: recorded, handler runs',{a:a*(ph>6.4&&ph<7.8?1:0),dot:'#5fe0b0'});
+  lab(dsk[0],dsk[1],1.4,'already handled → shelved',{a:a*(ph>8.2&&ph<9.9?1:0),bg:'#ff7b5c',fg:'#1b1b1b'});
+  var ex=W2(4.5,-1.2);lab(ex[0],ex[1],.6,'↻ redelivered',{a:a*(ph>7.2&&ph<8?1:0)});
+}
+
+/* ---- transport + other plates (static decor) */
+function decor(){
+  var t=S.clock;
+  // ASB: hangar, mast, idle blimp
+  add(2.3+11.1,2.3,11.1,function(){building(1.1,10.1,2.2,2,1.3,'#eaf6fb','#6cc8ff',{door:.5})});
+  add(4.4+10.4,4.4,10.4,function(){box(4.32,10.32,0,.16,.16,1.9,'#d5dde4');dot(4.4,10.4,1.95,2.6,Math.sin(t*3)>0?'#ff5d7a':'#7a2a37')});
+  add(3.2+13.6,3.2,13.6,function(){blimp(3.2,13.4,2.6+Math.sin(t*1.2)*.12,1)});
+  add(1.4+13.8,1.4,13.8,function(){tree(1.4,13.8,.8,'#6fcf98')});
+  // Auth: gatehouse
+  add(-4+12.3,-4,12.3,function(){building(-4.8,11.4,1.4,1.2,1.3,'#f7effb','#b98bd6',{door:.5});box(-3.2,11,0,.18,.18,1.2,'#d8cbe6');box(-3.2,13.1,0,.18,.18,1.2,'#d8cbe6');box(-3.2,11,1.2,.18,2.28,.16,'#b98bd6');person(-3.6,12.4,0,'#6b4d8a','#e3d3ef');flag(-5.6,10.6,0,'#e3d3ef',t)});
+  // RabbitMQ: station + loco
+  add(3.4+2.8,3.4,2.8,function(){building(2.2,2.1,2.4,1.3,1.25,'#fff3e6','#ff9a52',{door:.5});box(2,3.6,0,4.1,.75,.16,'#e6cdb4')});
+  var lx=2.2+((Math.sin(t*.5)+1)/2)*3;add(lx+5.2,lx,5.2,function(){var p1=P(1.8,5.2,.04),p2=P(6.3,5.2,.04);ctx.strokeStyle='#8d7a6a';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke();box(lx-.4,4.98,.04,.8,.45,.42,'#ff9a52');box(lx+.1,4.98,.46,.3,.45,.2,'#41566a');smoke(lx-.25,5.2,.62,t*1.6)});
+  add(6+1.9,6,1.9,function(){tree(6,1.9,.85,'#5fbf8a')});
+  // SSB building + drum
+  var sf=S.ssbFlash||0;
+  add(12.75+2.25,12.75,2.25,function(){building(11.5,1,2.5,2.5,2,'#eef0f8','#8fa0d8',{flash:sf,fc:'#a5f3d6'});box(12,1.5,2,.3,.3,.5,'#b9775a');smoke(12.15,1.65,2.5,t+.7)});
+  add(11.3+4.6,11.3,4.6,function(){cyl(11.3,4.6,0,.42,.75,'#8fa0d8','#c8d2f5')});
+  // SCF database + table board
+  add(21.9+2.1,21.9,2.1,function(){cyl(21.9,2,0,.85,1.75,'#7fb2d9','#cfe6f7');var p=P(21.9,2,.6),p2=P(21.9,2,1.15);[p,p2].forEach(function(q){ctx.beginPath();ctx.ellipse(q[0],q[1],.85*TW*1.414,.85*TH*1.414,0,0,PI);ctx.strokeStyle='rgba(40,80,110,.35)';ctx.lineWidth=1.2;ctx.stroke()})});
+  add(20.5+4.5,20.5,4.5,drawBoard);
+  add(22.8+4.8,22.8,4.8,function(){tree(22.8,4.8,.8,'#6fcf98')});
+  // EF / Cosmos plates' trees + diag tower
+  add(26.75+10.45,26.75,10.45,drawTower);
+  add(18+22.6,18,22.6,function(){tree(17.6,22.6,.8,'#5fbf8a')});
+  add(22.6+22.6,22.6,22.6,function(){tree(22.6,22.4,.9,'#6fcf98')});
+}
+/* SCF table board + events */
+var ROWC=['#5fe0b0','#ffd166','#ff5d7a'],ROWN=['RowInsertedEvent','RowUpdatedEvent','RowDeletedEvent'];
+function scfState(){var ph=S.clock%6.6,k=Math.floor(ph/2.2),u=(ph-k*2.2)/2.2;return{k:k,u:u}}
+function drawBoard(){var st=scfState(),x0=19.2,x1=21.8,y=4.45;
+  box(19.35,4.3,0,.1,.1,.4,'#4a5e72');box(21.55,4.3,0,.1,.1,.4,'#4a5e72');
+  box(x0,4.3,.4,2.6,.14,1.75,'#24435c');
+  for(var r=0;r<6;r++){var z1=2.05-r*.27,z0=z1-.22,c=r===0?'#3d6a8e':'#33536f',row=st.k+2;
+    if(r===row){var fl=st.u<.5?1:1-sg(st.u,.5,.9);c=mixc('#33536f',ROWC[st.k],fl*(st.k===2&&st.u>.4?1-sg(st.u,.4,.7):1))}
+    quadL(x0+.1,x1-.1,y,z0,z1,c)}
+  for(var j=1;j<3;j++){var xx=x0+.1+j*.8,a=P(xx,y,.45),b=P(xx,y,2.05);ctx.strokeStyle='rgba(255,255,255,.14)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke()}
+}
+function vSCF(){var st=scfState(),a=cl(S.w[7]+S.w[0]+S.w[9]),w7=S.w[7];
+  var path=mk([[19.6,4.75,.1],[19,4.75,0],[19,3,0],[14.25,3,0]]),u=sg(st.u,.25,.95),p=at(path,eo(u));
+  S.ssbFlash=st.u>.92||st.u<.12?(w7>.1?.8:0):0;
+  if(st.u>.22&&st.u<.97)add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=a;parcel(p[0],p[1],p[2],ROWC[st.k],.34);ctx.globalAlpha=1});
+  lab(p[0],p[1],.75,ROWN[st.k],{a:w7*(st.u>.22&&st.u<.95?1:0),dot:ROWC[st.k],bg:'rgba(251,243,228,.95)',fg:'#16314a'});
+  lab(20.5,4.4,2.6,['row inserted','row updated','row deleted'][st.k],{a:w7*(st.u<.5?1:0)});
+  lab(12.75,2.25,2.6,'carried over Service Broker',{a:w7*(st.u>.7?1:0),dot:'#b6c2ff'});
+}
+/* diagnostics tower */
+var TX=26.75,TY=10.45;
+function drawTower(){var t=S.clock,s=S.sub,g='#ffe08a',d='#2a3d52',cw=mixc(d,g,s);
+  box(TX-.28,TY-.28,0,.56,.56,3.1,'#e8eef2');
+  for(var i=0;i<3;i++)quadL(TX-.18,TX+.18,TY+.28,.5+i*.9,.75+i*.9,s>.5?'#ffd98a':'#9fb2c2');
+  box(TX-.6,TY-.6,3.1,1.2,1.2,.75,'#3b5b78');
+  quadL(TX-.52,TX+.52,TY+.6,3.28,3.68,cw);quadR(TX+.6,TY-.52,TY+.52,3.28,3.68,cw);
+  box(TX-.66,TY-.66,3.85,1.32,1.32,.12,'#ff8a6b');
+  var a=P(TX,TY,3.97),b=P(TX,TY,4.8);ctx.strokeStyle='#d7e0e8';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+  dot(TX,TY,4.82,2.8,s>.3?(Math.sin(t*5)>0?'#5fe0b0':'#2b6b58'):'#4a2a30');
+  if(s>.02){var c=P(TX,TY,3.98),ang=t*2.2;ctx.globalAlpha=s*.5;ctx.beginPath();ctx.moveTo(c[0],c[1]);ctx.ellipse(c[0],c[1],46,23,0,ang,ang+.7);ctx.closePath();ctx.fillStyle='#5fe0b0';ctx.fill();ctx.globalAlpha=1;
+    var bw=['#6cc8ff','#5fe0b0','#ffd166'];for(var j=0;j<3;j++){var hh=s*(.45+.55*Math.abs(Math.sin(t*1.7+j*1.3)));box(TX+.85,TY-.75+j*.42,0,.26,.26,hh,bw[j])}}
+}
+function traces(){var s=S.sub;if(s<.02||!AMBP.length)return;var c=P(TX,TY,3.5);ctx.setLineDash([3,5]);ctx.lineWidth=1.3;ctx.strokeStyle='rgba(95,224,176,'+(s*.75).toFixed(2)+')';AMBP.forEach(function(q){if(Math.hypot(q[0]-TX,q[1]-TY)>9)return;var p=P(q[0],q[1],.3);ctx.beginPath();ctx.moveTo(c[0],c[1]);ctx.lineTo(p[0],p[1]);ctx.stroke()});ctx.setLineDash([])}
+
+/* ---- ambient traffic */
+var AMBP=[];
+function ambient(){
+  AMBP.length=0;var a=S.amb,t=S.clock,w=S.w;if(a<.02)return;
+  for(var r=0;r<ROUTES.length;r++){var R=ROUTES[r],ra=a*cl(r===0?1-w[3]-w[4]-w[6]:(r===1||r===2)?1-w[5]:r===7?1-w[7]:1)*(r===0||r===2?1:1-w[8]*.9);if(ra<.02)continue;var n=r===0?3:2;
+    for(var j=0;j<n;j++){var sp=1.15/R.L,u=(t*sp*(r===0?1:.8)+j/n+hs(r)*.7)%1,fwd=(j%2===0)||r===0,f=fwd?u:1-u,p=at(R,f),c=KC[(r+j)%4],pop=Math.min(1,Math.min(u,1-u)*10);
+      AMBP.push(p);
+      (function(p,c,pop,ra){add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=ra*pop;parcel(p[0],p[1],.02,c,.32);ctx.globalAlpha=1})})(p,c,pop,ra)}}
+}
+
+/* ---- sky */
+var STARS=[];for(var si=0;si<46;si++)STARS.push([hs(si*3.1),hs(si*7.7)*.5,hs(si*1.3)]);
+var skyG=null,skyH=0;
+function sky(){
+  if(!skyG||skyH!==H){skyG=ctx.createLinearGradient(0,0,0,H);skyG.addColorStop(0,'#0f2840');skyG.addColorStop(.5,'#22526d');skyG.addColorStop(.82,'#c98774');skyG.addColorStop(1,'#f0b48a');skyH=H}
+  ctx.fillStyle=skyG;ctx.fillRect(0,0,W,H);
+  var t=S.clock;for(var i=0;i<STARS.length;i++){var s=STARS[i],tw=.35+.65*Math.abs(Math.sin(t*.8+s[2]*9));ctx.fillStyle='rgba(255,248,230,'+(tw*.7*(1-s[1]*1.6)).toFixed(2)+')';ctx.fillRect(s[0]*W,s[1]*H*.9,1.6,1.6)}
+  var g=ctx.createRadialGradient(W*.5,H*1.05,0,W*.5,H*1.05,H*.9);g.addColorStop(0,'rgba(255,190,130,.35)');g.addColorStop(1,'rgba(255,190,130,0)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  for(var c=0;c<5;c++){var cx=((hs(c+40)*1.4+t*.006*(1+c*.3))%1.4-.2)*W-OX*.04,cy=H*(.18+hs(c+9)*.55);ctx.fillStyle='rgba(255,240,230,.07)';ctx.beginPath();ctx.ellipse(cx,cy,60+40*hs(c),12,0,0,2*PI);ctx.fill();ctx.beginPath();ctx.ellipse(cx+22,cy-8,34,12,0,0,2*PI);ctx.fill()}
+}
+
+/* ---- map labels */
+function mapLabels(){var a=S.w[9];if(a<.05)return;
+  var nar=W<700;
+  PK.forEach(function(p,i){var o=PL[p.pl],sel=i===S.sel;if(sel)return;if(nar)lab(o.x+o.w/2,o.y+o.d/2,1.6,String(i+1),{a:a,num:1,dot:p.c});else lab(o.x+o.w/2,o.y+o.d/2,2.4,(i+1)+' · '+p.s,{a:a*.9,dot:p.c})});
+  var q=PK[S.sel],o=PL[q.pl];lab(o.x+o.w/2,o.y+o.d/2,3.2,(S.sel+1)+' · '+q.s,{a:a,dot:q.c,big:1,bg:'rgba(251,243,228,.97)',fg:'#16314a'});
+}
+function heroLabels(){var a=S.w[0];if(a<.05)return}
+
+/* ---------------- frame */
+var last=0,running=false,raf=0,lastT=0;
+function frame(now){
+  raf=0;if(!running)return;
+  var dt=Math.min(.05,(now-(lastT||now))/1000);lastT=now;
+  if(!paused)S.clock+=dt;
+  var tc=progress();
+  var k=reduced?1:1-Math.exp(-dt*9);
+  if(!cam)cam=tc.slice();else{cam[0]=lerp(cam[0],tc[0],k);cam[1]=lerp(cam[1],tc[1],k);cam[2]=lerp(cam[2],tc[2],k);cam[3]=Math.exp(lerp(Math.log(cam[3]),Math.log(tc[3]),k))}
+  var kk=reduced?1:1-Math.exp(-dt*5);
+  for(var m in S.mm)S.mm[m]=lerp(S.mm[m],m===S.mode?1:0,kk);
+  S.fm=lerp(S.fm,S.flav==='cos'?1:0,kk);S.sub=lerp(S.sub,S.subT,reduced?1:1-Math.exp(-dt*3));
+  S.cut=sg(S.w[2],.4,1);S.tangle=sg(S.w[1],.45,.9);S.amb=cl(1-S.w[1]*1.2-S.w[6]);
+  render();
+  var sp=cl(((window.pageYOffset||0)-tops[0])/Math.max(1,tops[N-1]-tops[0]));if(Math.abs(sp-lastSp)>.001){lastSp=sp;progi.style.transform='scaleX('+sp.toFixed(4)+')'}
+  var act=0;for(var i=1;i<N;i++)if(S.w[i]>S.w[act])act=i;if(act!==curAct)setChip(act);
+  if(paused&&settled(tc))return;
+  raf=requestAnimationFrame(frame);
+}
+/* paused or reduced motion: stop drawing once the camera and toggles have eased into place; kick() restarts it */
+function settled(tc){var e=1e-3,m;for(m=0;m<4;m++)if(Math.abs(cam[m]-tc[m])>e)return false;for(m in S.mm)if(Math.abs(S.mm[m]-(m===S.mode?1:0))>e)return false;return Math.abs(S.fm-(S.flav==='cos'?1:0))<e&&Math.abs(S.sub-S.subT)<e}
+function kick(){if(running&&!raf){lastT=0;raf=requestAnimationFrame(frame)}}
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  scl=Math.min(W,H*1.25)*(W>700?.8:1)/(cam[3]*TW);var pc=P(cam[0],cam[1],cam[2]);OX=W/2-pc[0]*scl;OY=H*.52-pc[1]*scl;
+  sky();
+  ctx.setTransform(DPR*scl,0,0,DPR*scl,DPR*OX,DPR*OY);
+  for(var i=0;i<PLK.length;i++)drawPlate(PLK[i]);
+  drawSSBunder();
+  var ra=1-S.tangle*.85,ua=1-.7*S.w[4]*(S.mm.asb+S.mm.ssb);
+  for(i=0;i<BR.length;i++)drawBridge(BR[i],i<3?ra*ua:ra);
+  drawRails();
+  DL.length=0;shipFlash=0;
+  add(40,20,20,drawCQRS);drawMB();decor();
+  vRel('ef',false,'ef');vRel('cos',true,'cos');
+  vMB();vRec();vSCF();ambient();
+  DL.sort(function(a,b){return a.k-b.k});
+  for(i=0;i<DL.length;i++)DL[i].f();
+  drawSkyRoute();traces();drawTangle();
+  if(S.w[8]>.05){lab(26.75,10.45,5.1,S.sub>.5?'spans + metrics flowing':'no listener · nothing emitted',{a:S.w[8],dot:S.sub>.5?'#5fe0b0':'#ff5d7a'})}
+  mapLabels();
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  for(i=0;i<LB.length;i++){var L=LB[i];if(L.ring){ctx.globalAlpha=L.a;ctx.setLineDash([5,4]);ctx.strokeStyle='#ffd166';ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(L.ring[0],L.ring[1],34*scl,22*scl,0,0,2*PI);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;LB.splice(i,1);i--}}
+  drawLabels();
+}
+
+/* ---------------- sizing, visibility */
+function resize(){var r=stage.getBoundingClientRect();W=Math.max(200,r.width);H=Math.max(200,r.height);DPR=Math.min(2,window.devicePixelRatio||1);cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);skyG=null;measure();kick()}
+function start(){if(running)return;running=true;lastT=0;if(!raf)raf=requestAnimationFrame(frame)}
+function stop(){running=false;if(raf)cancelAnimationFrame(raf);raf=0}
+var stageVis=true;
+if('IntersectionObserver' in window){new IntersectionObserver(function(es){stageVis=es[0].isIntersecting;stageVis&&!D.hidden?start():stop()}).observe(stage)}
+D.addEventListener('visibilitychange',function(){D.hidden?stop():(stageVis&&start())});
+window.addEventListener('resize',function(){resize()});
+if(window.ResizeObserver)new ResizeObserver(function(){resize()}).observe(stage);
+if(D.fonts&&D.fonts.ready)D.fonts.ready.then(function(){measure();kick()});
+window.addEventListener('load',function(){measure();kick()});
+window.addEventListener('scroll',kick,{passive:true});
+D.addEventListener('click',kick,true);
+
+/* ---------------- HUD */
+var lastSp=-1,progi=D.getElementById('progi'),curAct=-1,chipn=D.getElementById('chipn'),chipt=D.getElementById('chipt');
+function setChip(i){curAct=i;chipn.textContent=(i<10?'0':'')+i;chipt.textContent=secs[i].getAttribute('data-name')}
+var pb=D.getElementById('pause');
+function setPaused(p){paused=p;pb.setAttribute('aria-pressed',p?'true':'false');pb.setAttribute('aria-label',p?'Play animation':'Pause animation');D.getElementById('ipause').style.display=p?'none':'';D.getElementById('iplay').style.display=p?'':'none';kick()}
+pb.addEventListener('click',function(){setPaused(!paused)});setPaused(paused);
+if(mq.addEventListener)mq.addEventListener('change',function(e){reduced=e.matches;setPaused(reduced)});
+
+/* ---------------- chapter reveals */
+if('IntersectionObserver' in window){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{rootMargin:'0px 0px -12% 0px'});secs.forEach(function(s){io.observe(s)})}else secs.forEach(function(s){s.classList.add('in')});
+secs[0].classList.add('in');
+
+/* ---------------- controls */
+var MD={asb:'<b>Chatter.MessageBrokers.AzureServiceBus</b>: parcels fly the sky route over queues, topic subscriptions and sessions, with cross-entity transactions when you need them.',
+ rmq:'<b>Chatter.MessageBrokers.RabbitMQ</b>: parcels ride the rails, over the exchanges and queues you provision.',
+ ssb:'<b>Chatter.MessageBrokers.SqlServiceBroker</b>: parcels travel underground, through Service Broker conversations and queues inside the SQL Server you already run.'};
+var FD={ef:['<b>Chatter.MessageBrokers.Reliability.EntityFramework</b>: the Inbox, Outbox and Unit of Work live in your own DbContext. State change, Inbox record and Outbox record are saved in one database transaction; an optional polling Outbox Processor publishes.','https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md'],
+ cos:['<b>Chatter.MessageBrokers.Reliability.Cosmos</b>: the Document Tier writes the aggregate, an Outbox document and an Inbox marker in one TransactionalBatch. A change-feed Outbox Relay publishes pending outbox documents.','https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md']};
+function group(attr,fn){var bs=[].slice.call(D.querySelectorAll('['+attr+']'));bs.forEach(function(b){b.addEventListener('click',function(){bs.forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false')});fn(b.getAttribute(attr))})})}
+group('data-mode',function(v){S.mode=v;D.getElementById('modeDesc').innerHTML=MD[v]});
+group('data-flav',function(v){S.flav=v;D.getElementById('flavDesc').innerHTML=FD[v][0];D.getElementById('flavLink').href=FD[v][1];D.getElementById('flavLink').textContent=(v==='ef'?'Reliability.EntityFramework':'Reliability.Cosmos')+' docs ↗'});
+D.getElementById('modeDesc').innerHTML=MD.asb;D.getElementById('flavDesc').innerHTML=FD.ef[0];D.getElementById('flavLink').textContent='Reliability.EntityFramework docs ↗';
+var sb=D.getElementById('sub'),ss=D.getElementById('subState');
+sb.addEventListener('click',function(){S.subT=S.subT?0:1;sb.setAttribute('aria-pressed',S.subT?'true':'false');sb.textContent=S.subT?'Unsubscribe':'Subscribe to the tower';ss.textContent=S.subT?'Subscribed: spans and metrics flow to your listener.':'No listener: the tower is dark and nothing is emitted.'});
+[].forEach.call(D.querySelectorAll('[data-copy]'),function(b){b.addEventListener('click',function(){var txt=b.getAttribute('data-copy'),done=function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1600)};try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){sel(b)})}else sel(b)}catch(e){sel(b)}})});
+function sel(b){try{var c=b.parentNode.querySelector('code'),r=D.createRange();r.selectNodeContents(c);var s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent='Selected'}catch(e){}}
+
+/* packages */
+var pk=D.getElementById('pkgs'),dt=D.getElementById('detail');
+PK.forEach(function(p,i){var b=D.createElement('button');b.type='button';b.setAttribute('aria-pressed',i===0?'true':'false');b.innerHTML='<i style="background:'+p.c+'"></i><span><span class="mono" style="opacity:.6">'+(i+1)+'</span> '+p.s+'</span>';b.addEventListener('click',function(){selPkg(i)});pk.appendChild(b)});
+function selPkg(i){S.sel=i;[].forEach.call(pk.children,function(b,j){b.setAttribute('aria-pressed',j===i?'true':'false')});var p=PK[i];
+  dt.innerHTML='<h3>'+p.id+'</h3><p class="dep">'+(p.dep?'Builds on '+p.dep:'The foundation: no Chatter dependencies')+'</p><p>'+p.what.replace('[BrokeredMessage]','<code>[BrokeredMessage]</code>')+'</p><p class="row"><a class="doclink" href="https://www.nuget.org/packages/'+p.id+'" target="_blank" rel="noopener">NuGet ↗</a><a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/'+p.id+'/src/README.md" target="_blank" rel="noopener">Docs ↗</a></p>'}
+selPkg(0);
+cv.addEventListener('click',function(e){if(S.w[9]<.5)return;var r=cv.getBoundingClientRect(),sx=e.clientX-r.left,sy=e.clientY-r.top,wx=(sx-OX)/scl,wy=(sy-OY)/scl,u=wx/TW,v=wy/TH,x=(u+v)/2,y=(v-u)/2;
+  for(var i=0;i<PK.length;i++){var o=PL[PK[i].pl];if(x>=o.x&&x<=o.x+o.w&&y>=o.y&&y<=o.y+o.d){selPkg(i);break}}});
+
+resize();measure();start();
+})();
+</script>
 </body>
 </html>

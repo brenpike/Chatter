@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chatter · Message City</title>
+<meta name="description" content="Chatter: modular .NET libraries for domain-driven Web APIs and microservices. An in-process CQRS core with technology-agnostic brokered messaging, toured as a little city.">
+<meta name="theme-color" content="#0d2231">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme:dark;
+  --ink:#0d2231;--ink2:#132f45;--ink3:#1b4060;--deep:#081823;
+  --cream:#fbf3e4;--muted:#a9bfcf;--line:rgba(251,243,228,.14);
+  --coral:#ff7b5c;--mint:#5fe0b0;--sky:#6cc8ff;--butter:#ffd166;--rose:#ff5d7a;
+  --disp:"Bricolage Grotesque","Avenir Next","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --gl:max(16px,env(safe-area-inset-left,0px));--gr:max(16px,env(safe-area-inset-right,0px));
+}
+*{box-sizing:border-box}
+html{background:var(--ink);color:var(--cream);-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ink);color:var(--cream);font-family:var(--disp);font-size:17px;line-height:1.58;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+@supports (overflow:clip){body{overflow-x:clip}}
+a{color:var(--butter);text-underline-offset:3px}
+:focus-visible{outline:3px solid var(--butter);outline-offset:3px;border-radius:6px}
+.skip{position:absolute;left:-9999px;top:8px;z-index:20;background:var(--butter);color:#1a1a1a;padding:10px 14px;border-radius:10px;font-weight:700}
+.skip:focus{left:var(--gl)}
+
+/* ---------- story layout */
+.story{position:relative}
+.stage{position:-webkit-sticky;position:sticky;top:0;height:55vh;height:55svh;min-height:300px;z-index:3;background:#173b55;overflow:hidden}
+.stage canvas{display:block;width:100%;height:100%;touch-action:pan-y}
+.stage::after{content:"";position:absolute;left:0;right:0;bottom:0;height:26px;background:linear-gradient(to bottom,rgba(13,34,49,0),var(--ink));pointer-events:none}
+.prog{position:absolute;left:var(--gl);right:var(--gr);bottom:10px;height:3px;border-radius:3px;background:rgba(251,243,228,.16);z-index:2;overflow:hidden}.prog i{display:block;height:100%;width:100%;background:linear-gradient(90deg,var(--mint),var(--butter),var(--coral));transform-origin:0 50%;transform:scaleX(0)}
+.hud{position:absolute;top:max(10px,env(safe-area-inset-top,0px));left:var(--gl);right:var(--gr);display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none;z-index:2}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 8px;border-radius:999px;background:rgba(8,24,35,.62);border:1px solid rgba(251,243,228,.16);font-size:12.5px;font-weight:600;letter-spacing:.01em;color:var(--cream);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);max-width:calc(100vw - 100px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip b{display:inline-grid;place-items:center;min-width:26px;height:22px;padding:0 6px;border-radius:999px;background:var(--butter);color:#1c2430;font-weight:800;font-size:11.5px}
+.hud button{pointer-events:auto}
+.iconbtn{width:44px;height:44px;border-radius:999px;border:1px solid rgba(251,243,228,.22);background:rgba(8,24,35,.62);color:var(--cream);display:grid;place-items:center;cursor:pointer;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.iconbtn svg{width:16px;height:16px}
+
+.ch{position:relative;padding:30px var(--gr) 72px var(--gl);min-height:84vh;min-height:84svh}
+.ch .inner{max-width:560px}
+html.js .ch .inner{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}
+html.js .ch.in .inner{opacity:1;transform:none}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.eyebrow i{width:10px;height:10px;border-radius:3px;background:var(--butter);display:inline-block;transform:rotate(45deg)}
+h1,h2,h3{font-family:var(--disp);line-height:1.08;margin:0}
+h1{font-size:clamp(52px,15vw,104px);font-weight:800;letter-spacing:-.035em;font-variation-settings:"opsz" 96}
+h2{font-size:clamp(28px,7.4vw,44px);font-weight:750;letter-spacing:-.02em;margin-bottom:14px;font-variation-settings:"opsz" 72}
+h3{font-size:19px;font-weight:700;margin-bottom:6px}
+p{margin:0 0 14px}
+.tag{font-size:clamp(22px,6vw,30px);font-weight:650;color:var(--butter);margin:6px 0 10px;letter-spacing:-.01em}
+.lede{color:#e3e9ee;font-size:17px}
+.muted{color:var(--muted)}
+code,.mono{font-family:var(--mono);font-size:.86em}
+p code,li code{background:rgba(251,243,228,.08);padding:1px 6px;border-radius:6px;white-space:nowrap}
+
+.pill{display:flex;align-items:center;gap:6px;max-width:100%;margin:16px 0 12px;padding:5px 5px 5px 14px;border-radius:999px;background:var(--deep);border:1px solid rgba(255,209,102,.35);box-shadow:0 8px 26px rgba(0,0,0,.25)}
+.pill code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;font-size:13.5px;color:var(--cream);scrollbar-width:none}
+.pill code::-webkit-scrollbar{display:none}
+.pill code::before{content:"$ ";color:var(--mint)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border-radius:999px;border:1px solid rgba(251,243,228,.22);background:transparent;color:var(--cream);font:inherit;font-size:15px;font-weight:650;text-decoration:none;cursor:pointer}
+.btn.solid{background:var(--butter);color:#1d2430;border-color:var(--butter)}
+.pill .btn{min-height:40px;padding:0 14px;font-size:14px;flex:none}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.hint{display:flex;align-items:center;gap:10px;margin-top:22px;color:var(--muted);font-size:14px}
+.hint span{width:22px;height:34px;border:2px solid rgba(251,243,228,.35);border-radius:12px;position:relative}
+.hint span::after{content:"";position:absolute;left:50%;top:6px;width:4px;height:8px;margin-left:-2px;border-radius:2px;background:var(--butter);animation:nudge 1.6s ease-in-out infinite}
+@keyframes nudge{0%,100%{transform:translateY(0);opacity:1}60%{transform:translateY(10px);opacity:.2}}
+
+.legend{list-style:none;padding:0;margin:4px 0 16px;display:grid;gap:10px}
+.legend li{display:grid;grid-template-columns:22px 1fr;gap:10px;align-items:start}
+.sw{width:18px;height:18px;border-radius:5px;margin-top:4px;box-shadow:inset 0 -5px 0 rgba(0,0,0,.18)}
+.sw.c{background:var(--coral)}.sw.e{background:var(--mint)}.sw.q{background:var(--sky)}.sw.r{background:var(--butter)}
+.legend b{font-weight:700}
+
+pre{margin:6px 0 16px;padding:14px 14px;border-radius:14px;background:var(--deep);border:1px solid var(--line);overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:#dfe8ef}
+pre .k{color:#ff9f86}.pre .t,pre .t{color:var(--sky)}pre .s{color:var(--mint)}pre .c{color:#7f98aa;font-style:italic}pre .a{color:var(--butter)}
+
+.seg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}
+.seg button{min-height:44px;padding:0 16px;border-radius:999px;border:1px solid rgba(251,243,228,.24);background:rgba(251,243,228,.04);color:var(--cream);font:inherit;font-size:14.5px;font-weight:650;cursor:pointer;transition:background .2s,color .2s,border-color .2s}
+.seg button[aria-pressed="true"]{background:var(--cream);color:#122535;border-color:var(--cream)}
+.seg button .d{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:1px}
+.card{overflow-wrap:anywhere;background:var(--ink2);border:1px solid var(--line);border-radius:18px;padding:16px 16px 4px;margin:14px 0}
+.card.live{min-height:96px}
+.note{font-size:15px;color:var(--muted);border-left:3px solid var(--butter);padding-left:12px}
+.steps{list-style:none;padding:0;margin:4px 0 14px;display:grid;gap:12px}
+.steps li{display:grid;grid-template-columns:40px 1fr;gap:12px;align-items:start}
+.ico{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:15px;color:#132433}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 16px;padding:0;list-style:none}
+.chips li{font-family:var(--mono);font-size:12.5px;padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:rgba(251,243,228,.05)}
+.chips li::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;background:var(--c)}
+.doclink{display:inline-flex;align-items:center;gap:6px;min-height:44px;font-weight:650}
+
+.pkgs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 12px}
+.pkgs button{min-height:52px;text-align:left;padding:8px 12px;border-radius:14px;border:1px solid rgba(251,243,228,.18);background:rgba(251,243,228,.04);color:var(--cream);font:inherit;font-size:13.5px;font-weight:650;line-height:1.2;cursor:pointer;display:flex;gap:8px;align-items:center;overflow-wrap:anywhere}
+.pkgs button i{flex:none;width:12px;height:12px;border-radius:4px;transform:rotate(45deg)}
+.pkgs button[aria-pressed="true"]{background:var(--cream);color:#122535}
+.detail h3{font-family:var(--mono);font-size:15px;font-weight:600;overflow-wrap:anywhere}
+.detail .dep{font-size:13.5px;color:var(--muted)}
+.cta{margin-top:28px;padding:22px 18px;border-radius:22px;background:linear-gradient(160deg,#1d4767,#132f45);border:1px solid rgba(255,209,102,.3)}
+.cta h3{font-size:26px;letter-spacing:-.01em}
+
+footer{padding:36px var(--gr) calc(28px + env(safe-area-inset-bottom,0px)) var(--gl);border-top:1px solid var(--line);color:var(--muted);font-size:14px;background:var(--ink)}
+footer .row{gap:6px 18px}
+footer a{min-height:44px;display:inline-flex;align-items:center}
+.proto{margin-top:18px;font-size:12px;opacity:.75}
+.proto a{color:var(--muted)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+@media (min-width:900px){
+  .story{display:grid;grid-template-columns:minmax(400px,42%) 1fr}
+  .stage{grid-column:2;grid-row:1 / span 10;height:100vh;height:100svh;align-self:start}
+  .stage::after{display:none}
+  .ch{grid-column:1;min-height:100vh;min-height:100svh;padding:22vh 44px 90px max(40px,4vw)}
+  .ch.first{padding-top:16vh}
+  .hud{top:18px;left:20px;right:20px}
+  .chip{font-size:13.5px}
+  pre{font-size:13px}
+}
+@media (prefers-reduced-motion:reduce){
+  html.js .ch .inner{transition:opacity .3s ease;transform:none}
+  .hint span::after{animation:none}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#ch-hero">Skip to content</a>
+<main>
+<div class="story" id="story">
+  <div class="stage" id="stage">
+    <canvas id="city" aria-hidden="true"></canvas>
+    <div class="prog" aria-hidden="true"><i id="progi"></i></div>
+    <div class="hud">
+      <div class="chip" id="chip" aria-hidden="true"><b id="chipn">00</b><span id="chipt">Message City</span></div>
+      <button class="iconbtn" id="pause" type="button" aria-pressed="false" aria-label="Pause animation">
+        <svg id="ipause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="currentColor"/></svg>
+        <svg id="iplay" viewBox="0 0 16 16" aria-hidden="true" style="display:none"><path d="M4 2.2v11.6c0 .6.7 1 1.2.6l8.4-5.8c.4-.3.4-.9 0-1.2L5.2 1.6C4.7 1.2 4 1.6 4 2.2z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <section class="ch first" id="ch-hero" data-name="Message City">
+    <div class="inner">
+      <p class="eyebrow"><i></i>Modular .NET libraries</p>
+      <h1>Chatter</h1>
+      <p class="tag">Same handlers. Any broker.</p>
+      <p class="lede">Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging.</p>
+      <div class="pill"><code>dotnet add package Chatter.CQRS</code><button class="btn solid" type="button" data-copy="dotnet add package Chatter.CQRS">Copy</button></div>
+      <div class="row"><a class="btn" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">View on GitHub ↗</a></div>
+      <p class="hint"><span aria-hidden="true"></span>Scroll to tour Message City</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-problem" data-name="The problem" aria-labelledby="h-problem">
+    <div class="inner">
+      <p class="eyebrow"><i></i>01 · The problem</p>
+      <h2 id="h-problem">Every service ends up wiring its own plumbing.</h2>
+      <p>A controller starts with one business rule. Then validation, logging, transactions and retries arrive, copied from the last controller.</p>
+      <p>When services need to talk, broker SDK code (clients, queue names, serializers) moves into the domain itself. Each building grows its own machinery and its own pipes, and changing brokers means rewiring the city.</p>
+      <p class="note">Chatter separates what a service does from how its messages travel.</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-cqrs" data-name="Inside a service" aria-labelledby="h-cqrs">
+    <div class="inner">
+      <p class="eyebrow"><i></i>02 · Chatter.CQRS</p>
+      <h2 id="h-cqrs">Inside a service: one dispatcher, many small rooms.</h2>
+      <p>Every message enters through the Message Dispatcher, which finds the right handler by message type. Handlers are small classes, registered by assembly scanning.</p>
+      <ul class="legend">
+        <li><span class="sw c" aria-hidden="true"></span><span><b>Command</b> goes to exactly one handler and changes state.</span></li>
+        <li><span class="sw e" aria-hidden="true"></span><span><b>Event</b> reaches every handler that subscribes: zero, one or many.</span></li>
+        <li><span class="sw q" aria-hidden="true"></span><span><b>Query</b> goes out through the Query Dispatcher and comes back with a <b>Read Model</b> <span class="sw r" style="display:inline-block;width:12px;height:12px;margin:0 0 -1px 2px" aria-hidden="true"></span>.</span></li>
+      </ul>
+      <p>The conveyor is the Command Pipeline: ordered behaviors that wrap every Command handler, so logging, unit of work and inbox checks live in one place. A Message Context travels with each dispatch.</p>
+<pre><code>builder.Services.<span class="a">AddChatterCqrs</span>(
+    builder.Configuration,
+    <span class="k">typeof</span>(<span class="t">Program</span>).Assembly);
+
+<span class="k">public class</span> <span class="t">PlaceOrderHandler</span>
+    : <span class="t">IMessageHandler</span>&lt;<span class="t">PlaceOrder</span>&gt;
+{
+    <span class="k">public</span> <span class="t">Task</span> Handle(<span class="t">PlaceOrder</span> message,
+        <span class="t">IMessageHandlerContext</span> context)
+    {
+        <span class="c">// change state</span>
+        <span class="k">return</span> <span class="t">Task</span>.CompletedTask;
+    }
+}</code></pre>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Chatter.CQRS docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-mb" data-name="Between services" aria-labelledby="h-mb">
+    <div class="inner">
+      <p class="eyebrow"><i></i>03 · Chatter.MessageBrokers</p>
+      <h2 id="h-mb">Leave by the dock. Arrive at a handler you already wrote.</h2>
+      <p>A handler publishes with <code>context.Publish(...)</code>. On its own the External Dispatcher does nothing; <code>AddMessageBrokers()</code> replaces it, and the message leaves through the dispatch dock.</p>
+      <p>At the next building a Brokered Message Receiver is on duty: a hosted service, one per message type. It hands each received message to your existing handler.</p>
+      <p>The <code>[BrokeredMessage]</code> label carries the sending and receiving paths, so handlers never name a queue or a topic.</p>
+<pre><code>[<span class="a">BrokeredMessage</span>(sendingPath: <span class="s">"orders"</span>,
+                 receivingPath: <span class="s">"orders"</span>)]
+<span class="k">public class</span> <span class="t">OrderPlaced</span> : <span class="t">IEvent</span> { ... }
+
+<span class="c">// inside PlaceOrderHandler</span>
+<span class="k">await</span> context.<span class="a">Publish</span>(<span class="k">new</span> <span class="t">OrderPlaced</span> { ... });</code></pre>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md" target="_blank" rel="noopener">Chatter.MessageBrokers docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-transports" data-name="Transports" aria-labelledby="h-tr">
+    <div class="inner">
+      <p class="eyebrow"><i></i>04 · Transports</p>
+      <h2 id="h-tr">Swap the roads. Keep the buildings.</h2>
+      <p>Chatter.MessageBrokers ships no transport of its own. Choose one; your handlers, messages and labels stay as they are.</p>
+      <div class="seg" role="group" aria-label="Choose a transport">
+        <button type="button" data-mode="asb" aria-pressed="true"><span class="d" style="background:#9fe3ff"></span>Azure Service Bus</button>
+        <button type="button" data-mode="rmq" aria-pressed="false"><span class="d" style="background:#ff9a52"></span>RabbitMQ</button>
+        <button type="button" data-mode="ssb" aria-pressed="false"><span class="d" style="background:#b6c2ff"></span>SQL Server Service Broker</button>
+      </div>
+      <div class="card live" aria-live="polite"><p id="modeDesc"></p></div>
+      <div class="card">
+        <h3>Azure Service Bus Auth</h3>
+        <p>At the gate, a gatekeeper checks a Microsoft Entra ID token, managed identity included. No connection-string secret waits under the mat.</p>
+        <p><a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md" target="_blank" rel="noopener">Auth docs ↗</a></p>
+      </div>
+      <p class="note">Transports provision nothing. You create the queues, topics, exchanges and Service Broker objects; Chatter drives them.</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-rel" data-name="Reliability" aria-labelledby="h-rel">
+    <div class="inner">
+      <p class="eyebrow"><i></i>05 · Reliability</p>
+      <h2 id="h-rel">A mailroom that writes it down before it ships.</h2>
+      <ul class="steps">
+        <li><span class="ico" style="background:var(--coral)" aria-hidden="true">Out</span><span><b>Outbox.</b> The state change and an Outbox record are saved in one transaction. The message is published from that store after commit.</span></li>
+        <li><span class="ico" style="background:var(--mint)" aria-hidden="true">In</span><span><b>Inbox.</b> The receiving desk records each handled message, and deduplicates redelivered commands: a parcel it has already seen is shelved without running the handler again.</span></li>
+      </ul>
+      <div class="seg" role="group" aria-label="Choose a store">
+        <button type="button" data-flav="ef" aria-pressed="true"><span class="d" style="background:#f2c983"></span>EF Core</button>
+        <button type="button" data-flav="cos" aria-pressed="false"><span class="d" style="background:#9fc0ff"></span>Cosmos DB</button>
+      </div>
+      <div class="card live" aria-live="polite"><p id="flavDesc"></p><p><a class="doclink" id="flavLink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md" target="_blank" rel="noopener">Docs ↗</a></p></div>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-rec" data-name="Recovery" aria-labelledby="h-rec">
+    <div class="inner">
+      <p class="eyebrow"><i></i>06 · Recovery</p>
+      <h2 id="h-rec">When a delivery fails.</h2>
+      <ul class="steps">
+        <li><span class="ico" style="background:var(--butter)" aria-hidden="true">↻</span><span><b>Retry</b> runs the handler again, with no delay, a constant delay or an exponential one.</span></li>
+        <li><span class="ico" style="background:#ffb0a0" aria-hidden="true">⊘</span><span><b>Circuit Breaker</b> lowers the barrier after repeated failures and stops processing. Once it has cooled, it admits a trial before the road reopens.</span></li>
+        <li><span class="ico" style="background:var(--rose)" aria-hidden="true">!</span><span><b>Error Queue.</b> A message whose delivery count reaches its receive limit is deadlettered and sent to its Error Queue.</span></li>
+      </ul>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#recovery" target="_blank" rel="noopener">Recovery docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-scf" data-name="SQL Change Feed" aria-labelledby="h-scf">
+    <div class="inner">
+      <p class="eyebrow"><i></i>07 · Chatter.SqlChangeFeed</p>
+      <h2 id="h-scf">Tables that announce their own changes.</h2>
+      <p>Point it at a SQL Server table. Each insert, update and delete arrives at your handlers as a strongly typed event, carried over SQL Server Service Broker.</p>
+      <ul class="chips">
+        <li style="--c:var(--mint)">RowInsertedEvent</li>
+        <li style="--c:var(--butter)">RowUpdatedEvent</li>
+        <li style="--c:var(--rose)">RowDeletedEvent</li>
+      </ul>
+      <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md" target="_blank" rel="noopener">Chatter.SqlChangeFeed docs ↗</a>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-diag" data-name="Diagnostics" aria-labelledby="h-diag">
+    <div class="inner">
+      <p class="eyebrow"><i></i>08 · Diagnostics</p>
+      <h2 id="h-diag">A control tower that stays dark until you ask.</h2>
+      <p>Tracing and metrics use <code>ActivitySource</code> and <code>Meter</code> from the .NET base class library. Nothing is emitted until your application subscribes, with OpenTelemetry or any listener.</p>
+      <div class="row"><button class="btn solid" type="button" id="sub" aria-pressed="false">Subscribe to the tower</button></div>
+      <p class="muted" id="subState" aria-live="polite" style="margin-top:12px">No listener: the tower is dark and nothing is emitted.</p>
+    </div>
+  </section>
+
+  <section class="ch" id="ch-map" data-name="City map" aria-labelledby="h-map">
+    <div class="inner">
+      <p class="eyebrow"><i></i>09 · City map</p>
+      <h2 id="h-map">The whole city, district by district.</h2>
+      <p>Each package is a district you add when you need it. The foundation sits in front; everything else is built on top of it. Tap a district.</p>
+      <div class="pkgs" id="pkgs" role="group" aria-label="Packages"></div>
+      <div class="card detail" id="detail" aria-live="polite"></div>
+      <div class="cta">
+        <h3>Start with the foundation.</h3>
+        <p>Add Chatter.CQRS, then Chatter.MessageBrokers and one transport when your services need to talk.</p>
+        <div class="pill"><code>dotnet add package Chatter.CQRS</code><button class="btn solid" type="button" data-copy="dotnet add package Chatter.CQRS">Copy</button></div>
+        <div class="row">
+          <a class="btn solid" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">GitHub ↗</a>
+          <a class="btn" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Read the docs ↗</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+</main>
+<footer>
+  <div class="row">
+    <span>Chatter · MIT licensed · independently versioned NuGet packages for modern .NET</span>
+  </div>
+  <div class="row">
+    <a href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://www.nuget.org/packages/Chatter.CQRS" target="_blank" rel="noopener">NuGet</a>
+    <a href="https://github.com/brenpike/Chatter/blob/master/LICENSE" target="_blank" rel="noopener">License</a>
+  </div>
+  <p class="proto">Prototype J · Message City · <a href="../index.html">All prototypes</a></p>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var D=document,root=D.documentElement;root.classList.add('js');
+var cv=D.getElementById('city'),ctx=cv.getContext('2d'),stage=D.getElementById('stage');
+var mq=window.matchMedia?matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
+var reduced=mq.matches;
+var W=300,H=300,DPR=1;
+var TW=32,TH=16,ZH=30,PI=Math.PI;
+
+/* ---------------- math */
+function cl(v,a,b){a=a===undefined?0:a;b=b===undefined?1:b;return v<a?a:v>b?b:v}
+function lerp(a,b,t){return a+(b-a)*t}
+function ease(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2}
+function eo(t){t=cl(t);return 1-(1-t)*(1-t)*(1-t)}
+function sg(t,a,b){return cl((t-a)/(b-a))}
+function hs(n){var s=Math.sin(n*127.1+311.7)*43758.5453;return s-Math.floor(s)}
+function P(x,y,z){return [(x-y)*TW,(x+y)*TH-(z||0)*ZH]}
+function mk(pts){var c=[0],L=0;for(var i=1;i<pts.length;i++){var a=pts[i-1],b=pts[i];L+=Math.hypot(b[0]-a[0],b[1]-a[1],(b[2]||0)-(a[2]||0));c.push(L)}return{p:pts,c:c,L:L}}
+function at(pa,f){f=cl(f);var d=f*pa.L,i=1;while(i<pa.c.length-1&&pa.c[i]<d)i++;var a=pa.p[i-1],b=pa.p[i],s=pa.c[i]-pa.c[i-1],u=s?(d-pa.c[i-1])/s:0;return[lerp(a[0],b[0],u),lerp(a[1],b[1],u),lerp(a[2]||0,b[2]||0,u)]}
+
+/* ---------------- colour */
+var shc={};
+function sh(hex,f){var k=hex+f;if(shc[k])return shc[k];var n=parseInt(hex.slice(1),16),r=n>>16&255,g=n>>8&255,b=n&255;if(f>0){r+=(255-r)*f;g+=(255-g)*f;b+=(255-b)*f}else{r*=1+f;g*=1+f;b*=1+f}return shc[k]='rgb('+(r|0)+','+(g|0)+','+(b|0)+')'}
+function mixc(h1,h2,t){var a=parseInt(h1.slice(1),16),b=parseInt(h2.slice(1),16);function c(s){return Math.round(lerp(a>>s&255,b>>s&255,t))}return 'rgb('+c(16)+','+c(8)+','+c(0)+')'}
+
+/* ---------------- primitives (world px) */
+function poly(pts,fill){ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);ctx.closePath();ctx.fillStyle=fill;ctx.fill()}
+function box(x,y,z,w,d,h,col,top,lf,rt){
+  var a=P(x,y+d,z),b=P(x+w,y+d,z),c=P(x+w,y,z),a2=P(x,y+d,z+h),b2=P(x+w,y+d,z+h),c2=P(x+w,y,z+h),d2=P(x,y,z+h);
+  poly([a,b,b2,a2],lf||sh(col,-.05));poly([b,c,c2,b2],rt||sh(col,-.24));poly([d2,c2,b2,a2],top||sh(col,.14));
+}
+function quadL(x0,x1,y,z0,z1,c){poly([P(x0,y,z0),P(x1,y,z0),P(x1,y,z1),P(x0,y,z1)],c)}
+function quadR(x,y0,y1,z0,z1,c){poly([P(x,y0,z0),P(x,y1,z0),P(x,y1,z1),P(x,y0,z1)],c)}
+function topq(x0,y0,x1,y1,z,c){poly([P(x0,y0,z),P(x1,y0,z),P(x1,y1,z),P(x0,y1,z)],c)}
+function cyl(x,y,z,r,h,col,top){
+  var p=P(x,y,z),cx=p[0],cy=p[1],rx=r*TW*1.414,ry=r*TH*1.414,hz=h*ZH;
+  var g=ctx.createLinearGradient(cx-rx,0,cx+rx,0);g.addColorStop(0,sh(col,.04));g.addColorStop(1,sh(col,-.3));
+  ctx.beginPath();ctx.moveTo(cx-rx,cy-hz);ctx.lineTo(cx-rx,cy);ctx.ellipse(cx,cy,rx,ry,0,PI,0,true);ctx.lineTo(cx+rx,cy-hz);ctx.closePath();ctx.fillStyle=g;ctx.fill();
+  ctx.beginPath();ctx.ellipse(cx,cy-hz,rx,ry,0,0,2*PI);ctx.fillStyle=top||sh(col,.18);ctx.fill();
+}
+function dot(x,y,z,r,c){var p=P(x,y,z);ctx.beginPath();ctx.arc(p[0],p[1],r,0,2*PI);ctx.fillStyle=c;ctx.fill()}
+function person(x,y,z,col,hat,bob){z=(z||0)+(bob||0);var s=.1;box(x-s,y-s,z,2*s,2*s,.4,col);var p=P(x,y,z+.56);ctx.beginPath();ctx.arc(p[0],p[1],4.3,0,2*PI);ctx.fillStyle='#ffd9b8';ctx.fill();if(hat){ctx.beginPath();ctx.ellipse(p[0],p[1]-1.6,5.2,3.4,0,PI,0);ctx.fillStyle=hat;ctx.fill()}}
+function parcel(x,y,z,col,s){s=s||.34;box(x-s/2,y-s/2,z,s,s,s*.82,col);var t=z+s*.82;poly([P(x-.035,y-s/2,t),P(x+.035,y-s/2,t),P(x+.035,y+s/2,t),P(x-.035,y+s/2,t)],'rgba(255,255,255,.5)')}
+function tree(x,y,s,col){box(x-.05,y-.05,0,.1,.1,.35*s,'#8a5a3c');var p=P(x,y,.62*s);ctx.beginPath();ctx.arc(p[0],p[1],9*s,0,2*PI);ctx.fillStyle=col;ctx.fill();ctx.beginPath();ctx.arc(p[0]-2.6*s,p[1]-2.8*s,4.4*s,0,2*PI);ctx.fillStyle='rgba(255,255,255,.22)';ctx.fill()}
+function smoke(x,y,z,t){for(var i=0;i<4;i++){var ph=(t*.32+i/4)%1,p=P(x+ph*.5,y-ph*.25,z+ph*1.5);ctx.beginPath();ctx.arc(p[0],p[1],3+ph*8,0,2*PI);ctx.fillStyle='rgba(246,240,232,'+(.42*(1-ph)).toFixed(3)+')';ctx.fill()}}
+function flag(x,y,z,col,t){var a=P(x,y,z),b=P(x,y,z+1);ctx.strokeStyle='#e8e2d6';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();var w=Math.sin(t*5+x)*.06;poly([P(x,y,z+1),P(x+.32,y-.16,z+.92+w),P(x+.62,y-.31,z+.9+w*2),P(x,y,z+.72)],col)}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+
+/* building with windows */
+function building(x,y,w,d,h,wall,roof,o){
+  o=o||{};box(x,y,0,w,d,h,wall,roof?sh(roof,.06):null);
+  var rows=Math.max(1,Math.floor((h-.25)/.62)),fl=o.flash||0,fc=o.fc||'#ffe08a',t=S.clock;
+  for(var r=0;r<rows;r++){var z0=.3+r*.62,z1=z0+.3;
+    var cols=Math.max(1,Math.floor(w/.62));for(var c=0;c<cols;c++){var xa=x+.16+c*(w-.2)/cols,lit=hs(x*7+y*3+r*5+c)+.08*Math.sin(t*.25+c+r)>.48;
+      quadL(xa,xa+.26,y+d,z0,z1,fl>.05?mixc(lit?'#ffd98a':'#3a4e63',fc,fl):(lit?'#ffd98a':sh(wall,-.4)))}
+    cols=Math.max(1,Math.floor(d/.62));for(c=0;c<cols;c++){var ya=y+.16+c*(d-.2)/cols,lit2=hs(y*11+x*2+r*7+c*3)+.08*Math.sin(t*.21+c*2+r)>.5;
+      quadR(x+w,ya,ya+.26,z0,z1,fl>.05?mixc(lit2?'#f2c66e':'#2f4256',fc,fl):(lit2?'#f2c66e':sh(wall,-.5)))}}
+  if(o.door){quadL(x+w*o.door-.18,x+w*o.door+.18,y+d,0,.5,'#5b3d2e')}
+}
+
+/* ---------------- world data */
+var PL={
+  cqrs:{x:17,y:17,w:6,d:6,col:'#a9e2c3'},
+  mb:{x:9,y:9,w:6,d:6,col:'#c4e59b'},
+  ef:{x:6.5,y:18.5,w:5,d:5,col:'#f3d5a2'},
+  cos:{x:18.5,y:6.5,w:5,d:5,col:'#bdd3f4'},
+  asb:{x:.5,y:9.5,w:5,d:5,col:'#a6dcef'},
+  auth:{x:-6,y:10,w:4,d:4,col:'#e3d3ef'},
+  rmq:{x:1.5,y:1.5,w:5,d:5,col:'#ffd0aa'},
+  ssb:{x:10.5,y:.5,w:5,d:5,col:'#d4d9ec'},
+  scf:{x:18.5,y:.5,w:5,d:5,col:'#c7ead8'},
+  diag:{x:25.5,y:9.2,w:2.5,d:2.5,col:'#d7e3ea'}
+};
+var PLK=Object.keys(PL).sort(function(a,b){var p=PL[a],q=PL[b];return(p.x+p.w/2+p.y+p.d/2)-(q.x+q.w/2+q.y+q.d/2)});
+var BR=[[[22.5,19.5],[23.8,19.5]],[[23.8,19.5],[23.8,13]],[[23.8,13],[15,13]],[[11,15],[11,18.5]],[[15,11],[18.5,11]],[[9,12],[5.5,12]],[[.5,12],[-2,12]],[[9.25,9],[9.25,4]],[[9.25,4],[6.5,4]],[[13,9],[13,5.5]],[[15.5,3],[18.5,3]]];
+var R1=mk([[22.6,19.5,0],[23.8,19.5,0],[23.8,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0]]);
+var R1S=mk([[22.6,19.5,0],[23.8,19.5,0],[23.8,17,0],[23.8,17,-1.15],[23.8,13.6,-1.75],[23.8,13,-1.75],[22.7,13,-1.75],[19.5,13,-1.15],[19.5,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0]]);
+var ROUTES=[
+  mk([[22.6,19.5],[23.8,19.5],[23.8,13],[14.2,13],[14.2,12.05],[13.7,12.05]]),
+  mk([[11,12.7],[11,19.6]]),mk([[13.7,11],[19.6,11]]),mk([[10.3,12],[3.6,12]]),mk([[1.6,12],[-3.5,12]]),
+  mk([[10.4,9.3],[9.25,9.3],[9.25,4],[4.6,4]]),mk([[13,9.3],[13,3.65]]),mk([[14.15,3],[19.3,3]])
+];
+var KC=['#ff7b5c','#5fe0b0','#6cc8ff','#ffd166'];
+
+var PK=[
+ {id:'Chatter.CQRS',s:'CQRS',pl:'cqrs',c:'#a9e2c3',dep:'',what:'In-process Commands, Queries and Events through the Message Dispatcher, with a Command Pipeline wrapping every Command handler.'},
+ {id:'Chatter.MessageBrokers',s:'MessageBrokers',pl:'mb',c:'#c4e59b',dep:'Chatter.CQRS',what:'Technology-agnostic brokered messaging: Receivers, routing, the [BrokeredMessage] label, Recovery, and Inbox and Outbox ports. Ships no transport itself.'},
+ {id:'Chatter.MessageBrokers.AzureServiceBus',s:'AzureServiceBus',pl:'asb',c:'#a6dcef',dep:'Chatter.MessageBrokers',what:'Azure Service Bus transport: queues, topic subscriptions, sessions and cross-entity transactions.'},
+ {id:'Chatter.MessageBrokers.AzureServiceBus.Auth',s:'AzureServiceBus.Auth',pl:'auth',c:'#e3d3ef',dep:'Chatter.MessageBrokers.AzureServiceBus',what:'Microsoft Entra ID token authentication for Azure Service Bus, managed identity included, so no connection-string secrets.'},
+ {id:'Chatter.MessageBrokers.RabbitMQ',s:'RabbitMQ',pl:'rmq',c:'#ffd0aa',dep:'Chatter.MessageBrokers',what:'RabbitMQ transport over the exchanges and queues you provision.'},
+ {id:'Chatter.MessageBrokers.SqlServiceBroker',s:'SqlServiceBroker',pl:'ssb',c:'#d4d9ec',dep:'Chatter.MessageBrokers',what:'SQL Server Service Broker transport over conversations and queues you provision: messaging inside the database you already run.'},
+ {id:'Chatter.MessageBrokers.Reliability.EntityFramework',s:'Reliability.EntityFramework',pl:'ef',c:'#f3d5a2',dep:'Chatter.MessageBrokers',what:'EF Core Inbox, Outbox and Unit of Work stored in your own DbContext. State change, Inbox record and Outbox record are saved in one database transaction.'},
+ {id:'Chatter.MessageBrokers.Reliability.Cosmos',s:'Reliability.Cosmos',pl:'cos',c:'#bdd3f4',dep:'Chatter.MessageBrokers',what:'Azure Cosmos DB Document Tier: the aggregate, an Outbox document and an Inbox marker written in one TransactionalBatch, published by a change-feed Outbox Relay.'},
+ {id:'Chatter.SqlChangeFeed',s:'SqlChangeFeed',pl:'scf',c:'#c7ead8',dep:'Chatter.MessageBrokers.SqlServiceBroker',what:'Watch a SQL Server table and handle strongly typed RowInsertedEvent, RowUpdatedEvent and RowDeletedEvent.'}
+];
+var PLPK={};PK.forEach(function(p,i){PLPK[p.pl]=i});
+
+/* ---------------- state */
+var S={clock:3.2,w:[1,0,0,0,0,0,0,0,0,0],cut:0,tangle:0,amb:1,mode:'asb',mm:{asb:1,rmq:0,ssb:0},flav:'ef',fm:0,sub:0,subT:0,sel:0,selA:0};
+var paused=reduced,secs=[].slice.call(D.querySelectorAll('.ch')),N=secs.length,tops=[],vh=innerHeight;
+/* camera keys: x,y,z,span */
+var K=[[12.6,11.4,0,29],[15.6,15.2,.9,19],[20.2,20.2,.6,8.2],[18.9,14.1,.8,15],[18.9,14.1,1,15.5],null,[12.5,13.4,.5,9.6],[19.4,2.6,.7,11],[25.4,10.6,1.9,10.5],[12.2,10.9,0,37]];
+var RELK=[[9,21,.4,9],[21,9,.4,9]];
+var cam=null,scl=1,OX=0,OY=0;
+
+function mapKey(){
+  var x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  for(var id in PL){var p=PL[id],cs=[[p.x,p.y],[p.x+p.w,p.y],[p.x,p.y+p.d],[p.x+p.w,p.y+p.d]];
+    for(var j=0;j<4;j++){for(var zi=0;zi<2;zi++){var q=P(cs[j][0],cs[j][1],zi?2.6:-2.1);if(q[0]<x0)x0=q[0];if(q[0]>x1)x1=q[0];if(q[1]<y0)y0=q[1];if(q[1]>y1)y1=q[1]}}}
+  var mt=W<700?70:84,mb=W<700?22:40,mx=W<700?12:40;
+  var sc=Math.min((W-2*mx)/(x1-x0),(H-mt-mb)/(y1-y0));
+  var span=Math.min(W,H*1.25)*(W>700?.8:1)/(sc*TW);
+  var yc=(mt+H-mb)/2,fy=(y0+y1)/2+(H*.52-yc)/sc,u=(x0+x1)/2/TW,v=fy/TH;
+  return[(u+v)/2,(v-u)/2,0,span];
+}
+function camKey(i){if(i===9)return mapKey();if(i===5){var a=RELK[0],b=RELK[1],f=ease(S.fm);return[lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f),a[3]]}return K[i]}
+function measure(){vh=innerHeight;tops=secs.map(function(s){return s.getBoundingClientRect().top+(window.pageYOffset||0)})}
+function progress(){
+  var y=window.pageYOffset||0,t=[1],i;
+  for(i=1;i<N;i++){var v=cl((y-(tops[i]-vh*1.0))/(vh*.42));t[i]=reduced?(v>.5?1:0):ease(v)}
+  for(i=0;i<N;i++)S.w[i]=t[i]*(1-(i+1<N?t[i+1]:0));
+  var c=camKey(0).slice();
+  for(i=1;i<N;i++){var k=camKey(i),f=t[i];if(f<=0)continue;c[0]=lerp(c[0],k[0],f);c[1]=lerp(c[1],k[1],f);c[2]=lerp(c[2],k[2],f);c[3]=Math.exp(lerp(Math.log(c[3]),Math.log(k[3]),f))}
+  return c;
+}
+
+/* ---------------- labels (screen space) */
+var LB=[];
+function lab(x,y,z,txt,o){o=o||{};var a=o.a===undefined?1:o.a;if(a<.03)return;LB.push({x:x,y:y,z:z,t:txt,bg:o.bg||'rgba(9,24,36,.9)',fg:o.fg||'#fbf3e4',a:a,dot:o.dot,big:o.big,num:o.num})}
+function toS(x,y,z){var p=P(x,y,z);return[OX+p[0]*scl,OY+p[1]*scl]}
+function drawLabels(){
+  var fs=W<560?11:12.5;
+  for(var i=0;i<LB.length;i++){var L=LB[i],s=toS(L.x,L.y,L.z),f=L.big?fs+1.5:fs;
+    if(L.num){ctx.globalAlpha=L.a;ctx.beginPath();ctx.arc(s[0],s[1]-14,11.5,0,2*PI);ctx.fillStyle=L.bg;ctx.fill();ctx.lineWidth=2.5;ctx.strokeStyle=L.dot;ctx.stroke();ctx.fillStyle=L.fg;ctx.font='700 12px "Bricolage Grotesque",system-ui,sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(L.t,s[0],s[1]-13.5);ctx.textAlign='left';continue}
+    ctx.font=(L.big?'700 ':'600 ')+f+'px "Bricolage Grotesque","Avenir Next","Segoe UI",system-ui,sans-serif';
+    var tw=ctx.measureText(L.t).width,pad=L.dot?22:9,w=tw+pad+9,h=f+11,x=cl(s[0]-w/2,6,W-w-6),y=s[1]-h-9;
+    if(y<52)y=Math.max(52,y);
+    ctx.globalAlpha=L.a;ctx.fillStyle=L.bg;rr(x,y,w,h,h/2);ctx.fill();
+    ctx.beginPath();var px=cl(s[0],x+10,x+w-10);ctx.moveTo(px-5,y+h-.5);ctx.lineTo(px+5,y+h-.5);ctx.lineTo(px,y+h+6);ctx.closePath();ctx.fill();
+    if(L.dot){ctx.beginPath();ctx.arc(x+12,y+h/2,4,0,2*PI);ctx.fillStyle=L.dot;ctx.fill()}
+    ctx.fillStyle=L.fg;ctx.textBaseline='middle';ctx.fillText(L.t,x+pad,y+h/2+.5)}
+  ctx.globalAlpha=1;LB.length=0;
+}
+
+/* ---------------- draw list */
+var DL=[];
+function add(k,x,y,fn){var s=toS(x,y,0);if(s[0]<-220||s[0]>W+220||s[1]<-260||s[1]>H+260)return;DL.push({k:k,f:fn})}
+
+/* ---------------- scene pieces */
+function drawPlate(id){
+  var p=PL[id],s1=toS(p.x,p.y+p.d,0),s2=toS(p.x+p.w,p.y,0);if(s2[0]<-40||s1[0]>W+40)return;
+  var sel=S.w[9]>.05&&PLPK[id]===S.sel,lift=sel?S.w[9]*.18*(1+Math.sin(S.clock*3)*.25):0;
+  box(p.x+.6,p.y+.6,-2.05+lift,p.w-1.2,p.d-1.2,.9,'#7d5640');
+  box(p.x,p.y,-1.2+lift,p.w,p.d,1.05,'#b9805a',null,'#c38a62','#98644a');
+  box(p.x,p.y,-.15+lift,p.w,p.d,.15,p.col);
+  if(sel){ctx.lineWidth=2.4/scl*1.4;ctx.strokeStyle='rgba(255,209,102,'+(.6+.4*Math.sin(S.clock*4)).toFixed(2)+')';ctx.beginPath();var a=P(p.x,p.y,lift),b=P(p.x+p.w,p.y,lift),c=P(p.x+p.w,p.y+p.d,lift),d=P(p.x,p.y+p.d,lift);ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.lineTo(c[0],c[1]);ctx.lineTo(d[0],d[1]);ctx.closePath();ctx.stroke()}
+}
+function drawBridge(sg_,alpha){
+  var a=sg_[0],b=sg_[1],hw=.3,x0,y0,w,d;
+  if(a[0]===b[0]){x0=a[0]-hw;y0=Math.min(a[1],b[1])-hw;w=2*hw;d=Math.abs(b[1]-a[1])+2*hw}else{y0=a[1]-hw;x0=Math.min(a[0],b[0])-hw;d=2*hw;w=Math.abs(b[0]-a[0])+2*hw}
+  ctx.globalAlpha=alpha;
+  var L=Math.max(w,d);if(L>3){var mx=x0+w/2,my=y0+d/2;box(mx-.12,my-.12,-1.5,.24,.24,1.2,'#9a6a4f')}
+  box(x0,y0,-.28,w,d,.3,'#e7d9c2','#f1e6d3','#cdb89a','#a8906f');
+  var p1=P(a[0],a[1],.03),p2=P(b[0],b[1],.03);ctx.setLineDash([5,7]);ctx.strokeStyle='rgba(160,130,95,.55)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke();ctx.setLineDash([]);
+  ctx.globalAlpha=1;
+}
+
+/* ---- CQRS building, closed or cut away */
+function drawCQRS(){
+  var t=S.clock,cut=S.cut,x0=17.5,y0=17.5,s=5,h=2.8,wall='#fbe7c6';
+  if(cut<.012){
+    building(x0,y0,s,s,h,wall,'#ff8a6b',{flash:0});
+    box(22.5,19.1,0,.25,.8,.62,'#ff8a6b');
+    cyl(18.4,18.4,h,.32,.55,'#7cc4ff');smoke(19.2,21.6,h+.6,t);box(19,21.4,h,.3,.3,.6,'#b9775a');flag(22,18.1,h,'#ffd166',t);
+    clutter(20,20,h);return;
+  }
+  var wl='#f6deb6',e=ease(cut);
+  box(x0,y0,0,.16,s,h,wl);box(x0,y0,0,s,.16,h,wl);
+  topq(x0,y0,x0+s,y0+s,.01,'#efdcbd');
+  ctx.strokeStyle='rgba(150,115,80,.18)';ctx.lineWidth=1;for(var i=1;i<5;i++){var a=P(x0+i,y0,.01),b=P(x0+i,y0+s,.01),c=P(x0,y0+i,.01),d=P(x0+s,y0+i,.01);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.moveTo(c[0],c[1]);ctx.lineTo(d[0],d[1]);ctx.stroke()}
+  quadL(18.75,19.25,y0+.16,0,.9,'#c99e7a');quadL(21.25,21.75,y0+.16,0,.9,'#c99e7a');
+  var ph=t%9,show=cut>.35;
+  // rooms
+  topq(21.45,18.3,22.35,19.7,.02,'#ffc4b2');topq(21,20.1,22.35,21.1,.02,'#fff0c4');
+  topq(17.8,20.6,18.9,21.7,.02,'#c3f2df');topq(19.15,21.3,20.25,22.35,.02,'#c3f2df');topq(20.55,21.3,21.65,22.35,.02,'#c3f2df');
+  // conveyor
+  box(19.45,18.76,0,1.95,.48,.14,'#3b4c5d');
+  for(i=0;i<6;i++){var bx=19.5+((i*.33+t*.55)%1.9);poly([P(bx,18.78,.141),P(bx+.08,18.78,.141),P(bx+.08,19.22,.141),P(bx,19.22,.141)],'#5a6f83')}
+  // parcels progress
+  var cp=null,ep=[],qp=null,hit=0,evH=[0,0,0],qH=0;
+  var door=[[19,17,0],[19,18.5,0],[19,19,.32]];
+  if(ph<3){var f;if(ph<.9)cp=at(mk(door),ph/.9);else if(ph<1.1)cp=at(mk([[19,19,.32],[19.5,19,.14]]),(ph-.9)/.2);else if(ph<2.4)cp=at(mk([[19.5,19,.14],[21.42,19,.14]]),(ph-1.1)/1.3);else if(ph<2.7)cp=at(mk([[21.42,19,.14],[21.8,19.05,.32]]),(ph-2.4)/.3);else{cp=null;hit=1-(ph-2.7)/.3}}
+  else if(ph<6){var q=ph-3;if(q<.8)ep=[at(mk(door),q/.8)];else if(q<1.8){var rr2=[[18.35,21.15],[19.7,21.85],[21.1,21.85]];for(var j=0;j<3;j++)ep.push(at(mk([[19,19,.32],[rr2[j][0],rr2[j][1],.02]]),eo(q-.8)))}else{evH=[1,1,1].map(function(v,j){return cl(1-(q-1.8-j*.12)/1.1)})}}
+  else{var r=ph-6;if(r<.6)qp=[at(mk(door),r/.6),'#2f9cf0'];else if(r<1.3)qp=[at(mk([[19,19,.32],[21.5,20.6,.02]]),eo((r-.6)/.7)),'#2f9cf0'];else if(r<1.6){qp=[[21.5,20.6,.02],r<1.45?'#2f9cf0':'#ffd166'];qH=1}else if(r<2.2)qp=[at(mk([[21.5,20.6,.02],[19,19,.32]]),eo((r-1.6)/.6)),'#ffd166'];else if(r<2.9)qp=[at(mk([[19,19,.32],[19,18.5,0],[19,17,0]]),(r-2.2)/.7),'#ffd166']}
+  var it=[];
+  function pi(k,f){it.push({k:k,f:f})}
+  pi(38,function(){cyl(19,19,0,.42,.32,'#6cc8ff');person(19,19.25,.32,'#2f6a90','#ffd166')});
+  var st=[[19.86,'#6cc8ff'],[20.44,'#ffd166'],[21.02,'#5fe0b0']];
+  st.forEach(function(sx){var on=cp&&Math.abs(cp[0]-sx[0]-.04)<.22?1:0;pi(sx[0]+18.7,function(){box(sx[0],18.66,0,.08,.08,.78,'#e9edf1');box(sx[0],19.26,0,.08,.08,.78,'#e9edf1');box(sx[0],18.66,.78,.08,.68,.12,on?'#ffffff':sx[1]);if(on)dot(sx[0]+.04,19,.98,4.5,'rgba(255,255,255,.9)')})});
+  pi(40.95,function(){box(22.02,18.6,0,.3,.5,.32,'#e98e6d');person(21.75,19.25,0,'#e2634a','#ffd166',hit*.25*Math.abs(Math.sin(hit*PI*3)))});
+  [[18.35,21.15],[19.7,21.85],[21.1,21.85]].forEach(function(r3,j){pi(r3[0]+r3[1]+.1,function(){if(evH[j]>0)dot(r3[0],r3[1],.9,6+evH[j]*5,'rgba(95,224,176,'+(evH[j]*.5).toFixed(2)+')');box(r3[0]+.15,r3[1]-.35,0,.35,.25,.28,'#8bd7b9');person(r3[0]-.1,r3[1]+.1,0,'#2aa37e','#c3f2df',evH[j]*.2*Math.abs(Math.sin(evH[j]*PI*3)))})});
+  pi(42.6,function(){box(22,20.2,0,.28,.8,.62,'#ffd166');if(qH)dot(22.1,20.6,.9,9,'rgba(255,209,102,.5)');person(21.55,20.85,0,'#2f86c4','#cfe9ff')});
+  if(cp)pi(cp[0]+cp[1]+.2,function(){parcel(cp[0],cp[1],cp[2],'#ff7b5c',.3)});
+  ep.forEach(function(p){pi(p[0]+p[1]+.2,function(){parcel(p[0],p[1],p[2],'#5fe0b0',.3)})});
+  if(qp)pi(qp[0][0]+qp[0][1]+.2,function(){parcel(qp[0][0],qp[0][1],qp[0][2],qp[1],.3)});
+  it.sort(function(a,b){return a.k-b.k});it.forEach(function(o){o.f()});
+  var hf=lerp(h,.36,e);
+  box(x0+s-.16,y0,0,.16,s,hf,wl);box(x0,y0+s-.16,0,s,.16,hf,wl);
+  if(cut<.5){var lz=h+eo(cut*2)*3.2;box(x0-.05,y0-.05,lz,s+.1,s+.1,.16,'#ff8a6b',sh('#ff8a6b',.06))}
+  if(show){var a=cl((cut-.35)/.4)*S.w[2];
+    var cap=ph<3?['Command → exactly one handler','#ff7b5c']:ph<6?['Event → every subscriber','#5fe0b0']:['Query → returns a Read Model','#6cc8ff'];
+    lab(19.7,18.2,3.1,cap[0],{a:a,dot:cap[1],big:1});
+    lab(19,19.2,.9,'Message Dispatcher',{a:a*.95,bg:'rgba(251,243,228,.94)',fg:'#16314a'});
+    lab(20.5,19.3,1.05,'Command Pipeline',{a:a*(ph<3?.95:.55),bg:'rgba(251,243,228,.94)',fg:'#16314a'});
+  }
+}
+
+/* ---- roof clutter + tangle (problem chapter) */
+function clutter(x,y,h){var g=S.tangle;if(g<.02)return;var e=eo(g),z=h-.6+.6*e;ctx.globalAlpha=cl(g*1.6);
+  cyl(x-.9,y-.6,z,.32,.7,'#9aa7b4');box(x+.3,y-1,z,.5,.5,.45,'#7e8a96');
+  var a=P(x+.8,y+.6,z),b=P(x+.8,y+.6,z+1.1);ctx.strokeStyle='#5e6b77';ctx.lineWidth=1.6;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+  ctx.beginPath();ctx.ellipse(b[0]+4,b[1]+5,7,4,-.5,0,2*PI);ctx.fillStyle='#d6dde3';ctx.fill();
+  dot(x+.8,y+.6,z+1.12,2.2,Math.sin(S.clock*8+x)>0?'#ff5d7a':'#7a2a37');ctx.globalAlpha=1}
+var TANG=[[[20,20,3.2],[12,11,2.9]],[[20,20,3.2],[7.6,19.6,2.2]],[[20,20,3.2],[20,7.6,2.2]],[[12,11,2.9],[7.6,19.6,2.2]],[[12,11,2.9],[20,7.6,2.2]],[[26.75,10.45,4.2],[20,7.6,2.2]],[[7.6,19.6,2.2],[20,20,3.2]],[[12,11,2.9],[26.75,10.45,4.2]]];
+var TC=['#8f9ba8','#c2703d','#3f8f8a','#b25a6a','#8f9ba8','#c79a3d','#5a7fa8','#c2703d'];
+function drawTangle(){var g=S.tangle;if(g<.02)return;
+  ctx.lineCap='round';
+  for(var i=0;i<TANG.length;i++){var ta=TANG[i][0],tb=TANG[i][1],A=P(ta[0]+hs(i+20)*1.6-.8,ta[1]+hs(i+30)*1.6-.8,ta[2]),B=P(tb[0]+hs(i+40)*1.2-.6,tb[1]+hs(i+50)*1.2-.6,tb[2]),dx=B[0]-A[0],dy=B[1]-A[1],len=Math.hypot(dx,dy)*1.7;
+    var c1=[A[0]+dx*.2+(hs(i)*120-60),A[1]-60-hs(i+3)*90],c2=[A[0]+dx*.8+(hs(i+7)*140-70),B[1]-40-hs(i+5)*110+Math.sin(S.clock*1.4+i)*6];
+    ctx.setLineDash([len*eo(g),9999]);
+    [['#26323d',7],[TC[i],4.4],['rgba(255,255,255,.35)',1.2]].forEach(function(st){ctx.strokeStyle=st[0];ctx.lineWidth=st[1];ctx.beginPath();ctx.moveTo(A[0],A[1]);ctx.bezierCurveTo(c1[0],c1[1],c2[0],c2[1],B[0],B[1]);ctx.stroke()})}
+  ctx.setLineDash([]);ctx.lineCap='butt';
+  var a=S.w[1];lab(20,20,4.4,'hard-coded queue name',{a:a*sg(g,.5,.9),bg:'#ff5d7a'});lab(12,11,4.1,'broker SDK client',{a:a*sg(g,.6,1),bg:'#ff5d7a'});lab(7.6,19.6,3.4,'copy-pasted retry loop',{a:a*sg(g,.7,1),bg:'#ff5d7a'});
+}
+
+/* ---- MB plate: Shipping, Receiver, Error Queue shed, barrier */
+var shipFlash=0,barrier=0,shedCount=1;
+function drawMB(){
+  var t=S.clock;
+  add(12+11+.2,12,11,function(){building(10.5,9.5,3,3,2.4,'#fdf0d8','#4fb3a9',{flash:shipFlash,fc:'#a5f3d6',door:.5});quadR(13.5,10.9,11.6,0,.55,'#5b3d2e');box(11,10,2.4,.3,.3,.55,'#b9775a');smoke(11.15,10.15,3,t+1.3);clutter(12,11,2.4)});
+  add(14.55+11.45,14.55,11.45,function(){person(14.55,11.45,0,'#e0a43a','#ffd166',S.recvBob||0);var l=P(14.55,11.45,1.05);ctx.beginPath();ctx.arc(l[0],l[1],2.6,0,2*PI);ctx.fillStyle=Math.sin(t*4)>-.2?'#5fe0b0':'#2b6b58';ctx.fill()});
+  add(10.15+14+.2,10.15,14,function(){building(9.45,13.3,1.45,1.4,1.05,'#f7e3d6','#ff5d7a',{});flag(9.6,13.4,1.05,'#ff5d7a',t);for(var i=0;i<Math.min(shedCount,4);i++)parcel(11.2,14.35-i*0,.02+i*.3,'#ff7b5c',.3)});
+  add(9.8+9.8,9.8,9.8,function(){tree(9.8,9.8,1,'#5fbf8a')});
+  add(14.4+9.6,14.4,9.6,function(){tree(14.4,9.6,.85,'#7fd39f')});
+  add(15.6+13.5,15.6,13.5,function(){box(15.52,13.42,0,.16,.16,.55,'#f5f0e6');var pv=P(15.6,13.5,.5),ang=barrier*PI/2,v1=P(15.6,12.4,.5),v2=P(15.6,13.5,1.6),ex=pv[0]+(v2[0]-pv[0])*Math.cos(ang)+(v1[0]-pv[0])*Math.sin(ang),ey=pv[1]+(v2[1]-pv[1])*Math.cos(ang)+(v1[1]-pv[1])*Math.sin(ang);
+    ctx.lineCap='round';ctx.strokeStyle='#ffffff';ctx.lineWidth=3.6;ctx.beginPath();ctx.moveTo(pv[0],pv[1]);ctx.lineTo(ex,ey);ctx.stroke();ctx.setLineDash([4,4]);ctx.strokeStyle='#ff5d7a';ctx.stroke();ctx.setLineDash([]);ctx.lineCap='butt';dot(15.6,13.5,.62,2.4,barrier>.5?'#ff5d7a':'#5fe0b0')});
+}
+
+/* ---- R1 transport visuals */
+function drawSSBunder(){var m=S.mm.ssb*S.w[4];if(m<.02)return;ctx.globalAlpha=m;
+  var pts=R1S.p.slice(2,9);ctx.lineJoin='round';
+  [['#3b4a66',9],['#8fa0d8',5.5],['rgba(255,255,255,.35)',1.4]].forEach(function(st){ctx.strokeStyle=st[0];ctx.lineWidth=st[1];ctx.beginPath();pts.forEach(function(q,i){var p=P(q[0],q[1],q[2]);if(i)ctx.lineTo(p[0],p[1]);else ctx.moveTo(p[0],p[1])});ctx.stroke()});
+  cyl(23.8,13,-2.5,.95,1.25,'#8fa0d8','#c8d2f5');
+  var p=P(23.8,13,-1.25);[[0,'#6a7bb8'],[.42,'#6a7bb8']].forEach(function(r){ctx.beginPath();ctx.ellipse(p[0],p[1]+r[0]*ZH,.95*TW*1.414,.95*TH*1.414,0,0,PI);ctx.strokeStyle=r[1];ctx.lineWidth=1.2;ctx.stroke()});
+  ctx.globalAlpha=1;lab(23.8,13,-2.6,'SQL Server · Service Broker queue',{a:m*S.w[4],dot:'#b6c2ff'});
+}
+function drawRails(){var m=S.mm.rmq*S.w[4];if(m<.02)return;ctx.globalAlpha=m;var segs=[[[22.5,19.5],[23.8,19.5]],[[23.8,19.5],[23.8,13]],[[23.8,13],[14.6,13]]];
+  segs.forEach(function(sq){var a=sq[0],b=sq[1],dx=Math.sign(b[0]-a[0]),dy=Math.sign(b[1]-a[1]),L=Math.abs(b[0]-a[0])+Math.abs(b[1]-a[1]);
+    for(var u=0;u<L;u+=.33){var cx=a[0]+dx*u,cy=a[1]+dy*u,px=-dy*.24,py=dx*.24;poly([P(cx-px-dx*.05,cy-py-dy*.05,.04),P(cx+px-dx*.05,cy+py-dy*.05,.04),P(cx+px+dx*.05,cy+py+dy*.05,.04),P(cx-px+dx*.05,cy-py+dy*.05,.04)],'#7b5a45')}
+    [-.13,.13].forEach(function(o){var p1=P(a[0]-dy*o,a[1]+dx*o,.07),p2=P(b[0]-dy*o,b[1]+dx*o,.07);ctx.strokeStyle='#b8c2cc';ctx.lineWidth=1.6;ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke()})});
+  ctx.globalAlpha=1}
+function drawSkyRoute(){var m=S.mm.asb*S.w[4];if(m<.02)return;ctx.globalAlpha=m*.8;ctx.setLineDash([2,7]);ctx.lineCap='round';ctx.strokeStyle='#e6f6ff';ctx.lineWidth=2;ctx.beginPath();for(var i=0;i<=40;i++){var q=at(R1,i/40),p=P(q[0],q[1],.2+2.6*Math.sin(PI*i/40));if(i)ctx.lineTo(p[0],p[1]);else ctx.moveTo(p[0],p[1])}ctx.stroke();ctx.setLineDash([]);ctx.lineCap='butt';ctx.globalAlpha=1}
+function blimp(x,y,z,dir){var p=P(x,y,z);ctx.save();ctx.translate(p[0],p[1]);ctx.scale(dir,1);
+  poly([[-17,-2],[-27,-11],[-23,0],[-27,10]],'#e46a4f');
+  var g=ctx.createLinearGradient(0,-11,0,11);g.addColorStop(0,'#ffffff');g.addColorStop(1,'#b7c7d4');ctx.beginPath();ctx.ellipse(0,-2,21,10,0,0,2*PI);ctx.fillStyle=g;ctx.fill();
+  ctx.fillStyle='#6cc8ff';ctx.fillRect(-12,-3,24,3);ctx.fillStyle='#41566a';rr(-6,8,12,5,2);ctx.fill();ctx.restore()}
+function car(x,y,z,dirx){box(x-.3,y-.22,z+.05,.6,.44,.32,'#ff9a52');dot(x-.18,y+.22,z+.06,2,'#31404d');dot(x+.18,y+.22,z+.06,2,'#31404d')}
+
+/* ---- ch4/5 vignette parcel along R1 */
+function vMB(){
+  var a=cl(S.w[3]+S.w[4]);if(a<.02){S.recvBob=0;return}
+  var ph=S.clock%7,md='road';if(S.w[4]>.3){md=S.mode}
+  var f=eo(sg(ph,.7,3.7)),pos,hold=sg(ph,3.7,4.2),into=sg(ph,4.3,4.9);
+  if(ph<.7){pos=[22.6,19.5,0]}else if(ph<3.7){pos=md==='ssb'?at(R1S,f):at(R1,f);if(md==='asb'){pos=pos.slice();pos[2]=.2+2.6*Math.sin(PI*f)}}
+  else if(ph<4.3){pos=[lerp(13.7,14.45,hold),lerp(12.05,11.55,hold),lerp(0,.55,hold)]}else{pos=[lerp(14.45,13.4,into),lerp(11.55,11.25,into),.4]}
+  S.recvBob=ph>3.7&&ph<4.4?.12*Math.abs(Math.sin((ph-3.7)*9)):0;
+  shipFlash=Math.max(shipFlash,ph>4.9&&ph<6.4?Math.sin(sg(ph,4.9,6.4)*PI)*a:0);
+  var pop=ph<.7?eo(ph/.7):ph>4.3?1-into:1;if(pop<.05)return;
+  var X=pos[0],Y=pos[1],Z=pos[2];
+  add(X+Y+.3,X,Y,function(){ctx.globalAlpha=a;
+    if(md==='ssb'&&Z<-.2){dot(X,Y,Z+.1,4.5,'#5fe0b0');dot(X,Y,Z+.1,9,'rgba(95,224,176,.25)')}
+    else{parcel(X,Y,Z,'#5fe0b0',.36*pop);if(md==='rmq'&&ph>.7&&ph<3.7)car(X,Y,-.05);if(md==='asb'&&ph>.7&&ph<3.7){var q=at(R1,Math.min(1,f+.02)),dir=(P(q[0],q[1])[0]-P(X,Y)[0])>=0?1:-1;blimp(X,Y,Z+.95,dir)}}
+    ctx.globalAlpha=1});
+  var tagA=a*(ph>.4&&ph<4.2?1:0);lab(X,Y,Z+(md==='asb'?1.9:.8),'→ "orders"',{a:tagA,dot:'#5fe0b0',bg:'rgba(251,243,228,.95)',fg:'#16314a'});
+  lab(14.55,11.45,1.25,'Receiver · on duty',{a:S.w[3]*(ph>3.4&&ph<5?1:.0)});
+  lab(12,11,2.9,'your handler runs',{a:S.w[3]*(ph>4.9&&ph<6.4?1:0),dot:'#5fe0b0'});
+  var ga=S.w[4]*S.mm.asb;
+  if(ga>.02){add(15.1+13.95,15.1,13.95,function(){ctx.globalAlpha=ga;box(14.75,13.6,0,.6,.5,.75,'#e3d3ef','#b98bd6');person(15.05,14.35,0,'#6b4d8a','#e3d3ef');ctx.globalAlpha=1});
+    lab(15.05,14.3,1.1,ph>3.2&&ph<5?'Entra ID token ✓':'gatekeeper',{a:ga,dot:ph>3.2&&ph<5?'#5fe0b0':'#e3d3ef'})}
+}
+
+/* ---- recovery vignette */
+function vRec(){
+  var a=S.w[6];if(a<.02){barrier=lerp(barrier,0,.2);return}
+  var ph=S.clock%11,D0=[13.7,12.05,0],DR=[13.4,11.25,.3],p0=null,puff=0,ok=0,i;
+  var Rb=mk([[19.6,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0]]),Sh=mk([[13.7,12.05,0],[13.7,13.95,0],[11.25,13.95,0]]);
+  if(ph<1.4)p0=at(Rb,eo(ph/1.4));
+  else if(ph<4){var k=Math.floor((ph-1.4)/.87),u=(ph-1.4)-k*.87;k=Math.min(k,2);if(u<.4)p0=[lerp(D0[0],DR[0],u/.4),lerp(D0[1],DR[1],u/.4),lerp(0,.3,u/.4)];else{p0=[lerp(DR[0],D0[0],sg(u,.45,.87)),lerp(DR[1],D0[1],sg(u,.45,.87)),lerp(.3,0,sg(u,.45,.87))];puff=1-sg(u,.4,.8)}
+    lab(13.4,11.25,1.3,k===0?'attempt 1 ✕':'retry ✕',{a:a*puff,bg:'#ff5d7a'})}
+  else if(ph<4.4)p0=D0.slice();else if(ph<6)p0=at(Sh,eo((ph-4.4)/1.6));else p0=null;
+  shedCount=ph>6?2:1;
+  barrier=ph<4?0:ph<4.4?eo((ph-4)/.4):ph<7?1:ph<7.5?lerp(1,.5,eo((ph-7)/.5)):ph<9.2?.5:ph<9.7?lerp(.5,0,eo((ph-9.2)/.5)):0;
+  var Q=mk([[23.8,16.6,0],[23.8,13,0],[16.25,13,0]]),Q2=mk([[23.8,16.6,0],[23.8,13,0],[16.95,13,0]]),Qb=mk([[16.25,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0],[13.4,11.25,.3]]),Qc=mk([[16.95,13,0],[14.2,13,0],[14.2,12.05,0],[13.7,12.05,0],[13.4,11.25,.3]]);
+  var q1=ph<2.4?null:ph<4.3?at(Q,eo((ph-2.4)/1.9)):ph<7.4?Q.p[2]:ph<9.2?at(Qb,eo((ph-7.4)/1.8)):null;
+  var q2=ph<3?null:ph<4.4?at(Q2,eo((ph-3)/1.4)):ph<9.6?Q2.p[2]:ph<10.8?at(Qc,eo((ph-9.6)/1.2)):null;
+  if(ph>9.1&&ph<10)ok=1-sg(ph,9.1,10);
+  [p0,q1,q2].forEach(function(p,j){if(!p)return;add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=a;parcel(p[0],p[1],p[2],j?'#5fe0b0':'#ff7b5c',.34);ctx.globalAlpha=1})});
+  if(puff>0)add(40,13.4,11.25,function(){ctx.globalAlpha=a*puff;dot(13.4,11.25,.6,8+10*(1-puff),'rgba(255,93,122,.55)');ctx.globalAlpha=1});
+  if(ok>0)add(40,13.4,11.25,function(){ctx.globalAlpha=a*ok;dot(13.4,11.25,.6,8+10*(1-ok),'rgba(95,224,176,.6)');ctx.globalAlpha=1});
+  lab(15.6,13.5,1.75,ph<7?'circuit open · cooling':ph<9.2?'half-open · one trial':'circuit closes',{a:a*(ph>4.1&&ph<10.6?1:0),bg:ph<7?'#ff5d7a':'rgba(9,24,36,.9)',dot:ph<7?null:'#5fe0b0'});
+  lab(10.2,14,1.5,'receive limit reached → Error Queue',{a:a*(ph>4.5&&ph<6.8?1:0),dot:'#ff5d7a'});
+  lab(13.4,11.25,1.3,'trial ✓',{a:a*ok,dot:'#5fe0b0'});
+}
+
+/* ---- reliability vignettes (EF + Cosmos share a local layout) */
+function vRel(pl,swap,kind){
+  var o=PL[pl],ox=o.x,oy=o.y,t=S.clock,a=S.w[5]*(kind==='ef'?1-S.fm:S.fm),act=a>.02;
+  function W2(lx,ly){return swap?[ox+ly,oy+lx]:[ox+lx,oy+ly]}
+  function lb(lx,ly,z,w,d,h,c,tp){if(swap)box(ox+ly,oy+lx,z,d,w,h,c,tp);else box(ox+lx,oy+ly,z,w,d,h,c,tp)}
+  function k(lx,ly){var p=W2(lx,ly);return p[0]+p[1]}
+  function ad(lx,ly,fn){var p=W2(lx,ly);add(p[0]+p[1],p[0],p[1],fn)}
+  function pr(lx,ly,z,c,s){var p=W2(lx,ly);add(p[0]+p[1]+.3,p[0],p[1],function(){parcel(p[0],p[1],z,c,s)})}
+  var ph=t%10,fl=0;
+  // service building
+  var bw=W2(.55,.55);add(k(1.45,1.45),bw[0]+1,bw[1]+1,function(){building(bw[0],bw[1],1.8,1.8,1.7,'#fdf1dc',kind==='ef'?'#ff8a6b':'#7cc4ff',{flash:fl,fc:'#a5f3d6'});clutter(bw[0]+.9,bw[1]+.9,1.7)});
+  // storage
+  ad(3.45,1.25,function(){
+    if(kind==='ef'){lb(2.9,.65,0,1.1,1.25,1.3,'#8fa6bd');for(var d=0;d<3;d++){var z=.18+d*.38;if(swap)quadR(ox+.65+1.25,oy+2.98,oy+3.92,z,z+.28,'#a9bdd0');else quadL(ox+2.98,ox+3.92,oy+.65+1.25,z,z+.28,'#a9bdd0')}}
+    else{for(var d2=0;d2<3;d2++){var z2=.15+d2*.45+Math.sin(t*1.6+d2)*.04;lb(2.95,.7,z2,1,1.15,.24,'#9fc0ff',sh('#cfe0ff',0))}}
+    if(cm>0){var c=W2(3.45,1.27),p=P(c[0],c[1],1.7);ctx.beginPath();ctx.arc(p[0],p[1],10+8*(1-cm),0,2*PI);ctx.fillStyle='rgba(95,224,176,'+(cm*.5).toFixed(2)+')';ctx.fill()}
+  });
+  // desk + worker, shelf
+  ad(3.3,3.55,function(){var pw=W2(3.3,3.15);person(pw[0],pw[1],0,'#3d7fb0','#ffd166',stamp*.15);lb(2.8,3.35,0,1,.5,.42,'#ffcf8a')});
+  ad(1.25,3.7,function(){lb(.6,3.45,0,1.3,.45,.85,'#b98a63');lb(.6,3.45,.42,1.3,.45,.06,'#d9ad85');if(dupOn){var s=W2(1.25,3.67);parcel(s[0],s[1],.88,'#ff7b5c',.3)}});
+  var tr=W2(4.1,4.3);add(tr[0]+tr[1],tr[0],tr[1],function(){tree(tr[0],tr[1],.8,'#6fcf98')});
+  // timeline
+  var cm=ph>1.6&&ph<2.4?1-sg(ph,1.6,2.4):0,stamp=0,dupOn=ph>8.6;
+  if(ph<1.6){var u=eo(sg(ph,0,1.4));pr(lerp(2.45,3.1,u),.95,lerp(.05,.6,u),'#ffd166',.32);pr(lerp(2.45,3.1,u),1.55,lerp(.05,.6,u),'#ff7b5c',.32);
+    if(act&&ph>.3){var c1=W2(2.85,1.25),pp=toS(c1[0],c1[1],.5);LB.push({x:0,y:0,z:0,ring:pp,a:a*sg(ph,.3,.6)})}}
+  var mk1=null;
+  if(ph>2.4&&ph<4.6){mk1=at(mk([[3.95,1.25,.3],[4.5,1.25,0],[4.5,-1.7,0]]),eo(sg(ph,2.4,4.4)))}
+  if(ph>5&&ph<6.6){mk1=at(mk([[4.5,-1.7,0],[4.5,3.6,0],[3.85,3.6,.42]]),eo(sg(ph,5,6.3)))}
+  if(ph>6.6&&ph<7.2){stamp=Math.abs(Math.sin((ph-6.6)*12));fl=1-sg(ph,6.6,7.4)}
+  if(ph>7.2&&ph<8.7){mk1=at(mk([[4.5,-1.7,0],[4.5,3.6,0],[3.85,3.6,.42]]),eo(sg(ph,7.2,8.3)))}
+  if(ph>8.3&&ph<8.65){stamp=Math.abs(Math.sin((ph-8.3)*12))}
+  var dup=ph>8.65&&ph<9.4?at(mk([[3.2,3.6,.42],[2.4,3.7,.6],[1.25,3.67,.88]]),eo(sg(ph,8.65,9.4))):null;
+  if(mk1){var m=mk1,pw2=W2(m[0],m[1]);add(pw2[0]+pw2[1]+.3,pw2[0],pw2[1],function(){var al=ph>2.4&&ph<4.6?1-sg(ph,4,4.5):1;ctx.globalAlpha=al;parcel(pw2[0],pw2[1],m[2],ph>7.2?'#ff7b5c':ph>5?'#ff7b5c':'#ff7b5c',.32);ctx.globalAlpha=1})}
+  if(dup){var pd=W2(dup[0],dup[1]);add(pd[0]+pd[1]+.3,pd[0],pd[1],function(){parcel(pd[0],pd[1],dup[2],'#ff7b5c',.3)})}
+  if(ph>6.6&&ph<7.6){var rc=at(mk([[3.3,3.4,.5],[3.4,1.4,1.4]]),eo(sg(ph,6.6,7.5))),pr2=W2(rc[0],rc[1]);add(pr2[0]+pr2[1]+.3,pr2[0],pr2[1],function(){box(pr2[0]-.12,pr2[1]-.12,rc[2],.24,.24,.06,'#5fe0b0')})}
+  if(!act)return;
+  var anc=W2(3,1.2),dsk=W2(3.3,3.5),sto=W2(3.45,1.2);
+  lab(anc[0],anc[1],2.1,kind==='ef'?'state + Outbox record · one transaction':'aggregate + Outbox doc + Inbox marker · one batch',{a:a*(ph>.3&&ph<2.4?1:0),big:1,dot:'#ffd166'});
+  lab(sto[0],sto[1],1.9,'commit ✓',{a:a*cm,dot:'#5fe0b0'});
+  lab(sto[0],sto[1],2.1,kind==='ef'?'published after commit':'Outbox Relay publishes from the change feed',{a:a*(ph>2.5&&ph<4.6?1:0),dot:'#ff7b5c'});
+  lab(dsk[0],dsk[1],1.4,'Inbox: recorded, handler runs',{a:a*(ph>6.4&&ph<7.8?1:0),dot:'#5fe0b0'});
+  lab(dsk[0],dsk[1],1.4,'already handled → shelved',{a:a*(ph>8.2&&ph<9.9?1:0),bg:'#ff7b5c',fg:'#1b1b1b'});
+  var ex=W2(4.5,-1.2);lab(ex[0],ex[1],.6,'↻ redelivered',{a:a*(ph>7.2&&ph<8?1:0)});
+}
+
+/* ---- transport + other plates (static decor) */
+function decor(){
+  var t=S.clock;
+  // ASB: hangar, mast, idle blimp
+  add(2.3+11.1,2.3,11.1,function(){building(1.1,10.1,2.2,2,1.3,'#eaf6fb','#6cc8ff',{door:.5})});
+  add(4.4+10.4,4.4,10.4,function(){box(4.32,10.32,0,.16,.16,1.9,'#d5dde4');dot(4.4,10.4,1.95,2.6,Math.sin(t*3)>0?'#ff5d7a':'#7a2a37')});
+  add(3.2+13.6,3.2,13.6,function(){blimp(3.2,13.4,2.6+Math.sin(t*1.2)*.12,1)});
+  add(1.4+13.8,1.4,13.8,function(){tree(1.4,13.8,.8,'#6fcf98')});
+  // Auth: gatehouse
+  add(-4+12.3,-4,12.3,function(){building(-4.8,11.4,1.4,1.2,1.3,'#f7effb','#b98bd6',{door:.5});box(-3.2,11,0,.18,.18,1.2,'#d8cbe6');box(-3.2,13.1,0,.18,.18,1.2,'#d8cbe6');box(-3.2,11,1.2,.18,2.28,.16,'#b98bd6');person(-3.6,12.4,0,'#6b4d8a','#e3d3ef');flag(-5.6,10.6,0,'#e3d3ef',t)});
+  // RabbitMQ: station + loco
+  add(3.4+2.8,3.4,2.8,function(){building(2.2,2.1,2.4,1.3,1.25,'#fff3e6','#ff9a52',{door:.5});box(2,3.6,0,4.1,.75,.16,'#e6cdb4')});
+  var lx=2.2+((Math.sin(t*.5)+1)/2)*3;add(lx+5.2,lx,5.2,function(){var p1=P(1.8,5.2,.04),p2=P(6.3,5.2,.04);ctx.strokeStyle='#8d7a6a';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke();box(lx-.4,4.98,.04,.8,.45,.42,'#ff9a52');box(lx+.1,4.98,.46,.3,.45,.2,'#41566a');smoke(lx-.25,5.2,.62,t*1.6)});
+  add(6+1.9,6,1.9,function(){tree(6,1.9,.85,'#5fbf8a')});
+  // SSB building + drum
+  var sf=S.ssbFlash||0;
+  add(12.75+2.25,12.75,2.25,function(){building(11.5,1,2.5,2.5,2,'#eef0f8','#8fa0d8',{flash:sf,fc:'#a5f3d6'});box(12,1.5,2,.3,.3,.5,'#b9775a');smoke(12.15,1.65,2.5,t+.7)});
+  add(11.3+4.6,11.3,4.6,function(){cyl(11.3,4.6,0,.42,.75,'#8fa0d8','#c8d2f5')});
+  // SCF database + table board
+  add(21.9+2.1,21.9,2.1,function(){cyl(21.9,2,0,.85,1.75,'#7fb2d9','#cfe6f7');var p=P(21.9,2,.6),p2=P(21.9,2,1.15);[p,p2].forEach(function(q){ctx.beginPath();ctx.ellipse(q[0],q[1],.85*TW*1.414,.85*TH*1.414,0,0,PI);ctx.strokeStyle='rgba(40,80,110,.35)';ctx.lineWidth=1.2;ctx.stroke()})});
+  add(20.5+4.5,20.5,4.5,drawBoard);
+  add(22.8+4.8,22.8,4.8,function(){tree(22.8,4.8,.8,'#6fcf98')});
+  // EF / Cosmos plates' trees + diag tower
+  add(26.75+10.45,26.75,10.45,drawTower);
+  add(18+22.6,18,22.6,function(){tree(17.6,22.6,.8,'#5fbf8a')});
+  add(22.6+22.6,22.6,22.6,function(){tree(22.6,22.4,.9,'#6fcf98')});
+}
+/* SCF table board + events */
+var ROWC=['#5fe0b0','#ffd166','#ff5d7a'],ROWN=['RowInsertedEvent','RowUpdatedEvent','RowDeletedEvent'];
+function scfState(){var ph=S.clock%6.6,k=Math.floor(ph/2.2),u=(ph-k*2.2)/2.2;return{k:k,u:u}}
+function drawBoard(){var st=scfState(),x0=19.2,x1=21.8,y=4.45;
+  box(19.35,4.3,0,.1,.1,.4,'#4a5e72');box(21.55,4.3,0,.1,.1,.4,'#4a5e72');
+  box(x0,4.3,.4,2.6,.14,1.75,'#24435c');
+  for(var r=0;r<6;r++){var z1=2.05-r*.27,z0=z1-.22,c=r===0?'#3d6a8e':'#33536f',row=st.k+2;
+    if(r===row){var fl=st.u<.5?1:1-sg(st.u,.5,.9);c=mixc('#33536f',ROWC[st.k],fl*(st.k===2&&st.u>.4?1-sg(st.u,.4,.7):1))}
+    quadL(x0+.1,x1-.1,y,z0,z1,c)}
+  for(var j=1;j<3;j++){var xx=x0+.1+j*.8,a=P(xx,y,.45),b=P(xx,y,2.05);ctx.strokeStyle='rgba(255,255,255,.14)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke()}
+}
+function vSCF(){var st=scfState(),a=cl(S.w[7]+S.w[0]+S.w[9]),w7=S.w[7];
+  var path=mk([[19.6,4.75,.1],[19,4.75,0],[19,3,0],[14.25,3,0]]),u=sg(st.u,.25,.95),p=at(path,eo(u));
+  S.ssbFlash=st.u>.92||st.u<.12?(w7>.1?.8:0):0;
+  if(st.u>.22&&st.u<.97)add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=a;parcel(p[0],p[1],p[2],ROWC[st.k],.34);ctx.globalAlpha=1});
+  lab(p[0],p[1],.75,ROWN[st.k],{a:w7*(st.u>.22&&st.u<.95?1:0),dot:ROWC[st.k],bg:'rgba(251,243,228,.95)',fg:'#16314a'});
+  lab(20.5,4.4,2.6,['row inserted','row updated','row deleted'][st.k],{a:w7*(st.u<.5?1:0)});
+  lab(12.75,2.25,2.6,'carried over Service Broker',{a:w7*(st.u>.7?1:0),dot:'#b6c2ff'});
+}
+/* diagnostics tower */
+var TX=26.75,TY=10.45;
+function drawTower(){var t=S.clock,s=S.sub,g='#ffe08a',d='#2a3d52',cw=mixc(d,g,s);
+  box(TX-.28,TY-.28,0,.56,.56,3.1,'#e8eef2');
+  for(var i=0;i<3;i++)quadL(TX-.18,TX+.18,TY+.28,.5+i*.9,.75+i*.9,s>.5?'#ffd98a':'#9fb2c2');
+  box(TX-.6,TY-.6,3.1,1.2,1.2,.75,'#3b5b78');
+  quadL(TX-.52,TX+.52,TY+.6,3.28,3.68,cw);quadR(TX+.6,TY-.52,TY+.52,3.28,3.68,cw);
+  box(TX-.66,TY-.66,3.85,1.32,1.32,.12,'#ff8a6b');
+  var a=P(TX,TY,3.97),b=P(TX,TY,4.8);ctx.strokeStyle='#d7e0e8';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+  dot(TX,TY,4.82,2.8,s>.3?(Math.sin(t*5)>0?'#5fe0b0':'#2b6b58'):'#4a2a30');
+  if(s>.02){var c=P(TX,TY,3.98),ang=t*2.2;ctx.globalAlpha=s*.5;ctx.beginPath();ctx.moveTo(c[0],c[1]);ctx.ellipse(c[0],c[1],46,23,0,ang,ang+.7);ctx.closePath();ctx.fillStyle='#5fe0b0';ctx.fill();ctx.globalAlpha=1;
+    var bw=['#6cc8ff','#5fe0b0','#ffd166'];for(var j=0;j<3;j++){var hh=s*(.45+.55*Math.abs(Math.sin(t*1.7+j*1.3)));box(TX+.85,TY-.75+j*.42,0,.26,.26,hh,bw[j])}}
+}
+function traces(){var s=S.sub;if(s<.02||!AMBP.length)return;var c=P(TX,TY,3.5);ctx.setLineDash([3,5]);ctx.lineWidth=1.3;ctx.strokeStyle='rgba(95,224,176,'+(s*.75).toFixed(2)+')';AMBP.forEach(function(q){if(Math.hypot(q[0]-TX,q[1]-TY)>9)return;var p=P(q[0],q[1],.3);ctx.beginPath();ctx.moveTo(c[0],c[1]);ctx.lineTo(p[0],p[1]);ctx.stroke()});ctx.setLineDash([])}
+
+/* ---- ambient traffic */
+var AMBP=[];
+function ambient(){
+  AMBP.length=0;var a=S.amb,t=S.clock,w=S.w;if(a<.02)return;
+  for(var r=0;r<ROUTES.length;r++){var R=ROUTES[r],ra=a*cl(r===0?1-w[3]-w[4]-w[6]:(r===1||r===2)?1-w[5]:r===7?1-w[7]:1)*(r===0||r===2?1:1-w[8]*.9);if(ra<.02)continue;var n=r===0?3:2;
+    for(var j=0;j<n;j++){var sp=1.15/R.L,u=(t*sp*(r===0?1:.8)+j/n+hs(r)*.7)%1,fwd=(j%2===0)||r===0,f=fwd?u:1-u,p=at(R,f),c=KC[(r+j)%4],pop=Math.min(1,Math.min(u,1-u)*10);
+      AMBP.push(p);
+      (function(p,c,pop,ra){add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=ra*pop;parcel(p[0],p[1],.02,c,.32);ctx.globalAlpha=1})})(p,c,pop,ra)}}
+}
+
+/* ---- sky */
+var STARS=[];for(var si=0;si<46;si++)STARS.push([hs(si*3.1),hs(si*7.7)*.5,hs(si*1.3)]);
+var skyG=null,skyH=0;
+function sky(){
+  if(!skyG||skyH!==H){skyG=ctx.createLinearGradient(0,0,0,H);skyG.addColorStop(0,'#0f2840');skyG.addColorStop(.5,'#22526d');skyG.addColorStop(.82,'#c98774');skyG.addColorStop(1,'#f0b48a');skyH=H}
+  ctx.fillStyle=skyG;ctx.fillRect(0,0,W,H);
+  var t=S.clock;for(var i=0;i<STARS.length;i++){var s=STARS[i],tw=.35+.65*Math.abs(Math.sin(t*.8+s[2]*9));ctx.fillStyle='rgba(255,248,230,'+(tw*.7*(1-s[1]*1.6)).toFixed(2)+')';ctx.fillRect(s[0]*W,s[1]*H*.9,1.6,1.6)}
+  var g=ctx.createRadialGradient(W*.5,H*1.05,0,W*.5,H*1.05,H*.9);g.addColorStop(0,'rgba(255,190,130,.35)');g.addColorStop(1,'rgba(255,190,130,0)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  for(var c=0;c<5;c++){var cx=((hs(c+40)*1.4+t*.006*(1+c*.3))%1.4-.2)*W-OX*.04,cy=H*(.18+hs(c+9)*.55);ctx.fillStyle='rgba(255,240,230,.07)';ctx.beginPath();ctx.ellipse(cx,cy,60+40*hs(c),12,0,0,2*PI);ctx.fill();ctx.beginPath();ctx.ellipse(cx+22,cy-8,34,12,0,0,2*PI);ctx.fill()}
+}
+
+/* ---- map labels */
+function mapLabels(){var a=S.w[9];if(a<.05)return;
+  var nar=W<700;
+  PK.forEach(function(p,i){var o=PL[p.pl],sel=i===S.sel;if(sel)return;if(nar)lab(o.x+o.w/2,o.y+o.d/2,1.6,String(i+1),{a:a,num:1,dot:p.c});else lab(o.x+o.w/2,o.y+o.d/2,2.4,(i+1)+' · '+p.s,{a:a*.9,dot:p.c})});
+  var q=PK[S.sel],o=PL[q.pl];lab(o.x+o.w/2,o.y+o.d/2,3.2,(S.sel+1)+' · '+q.s,{a:a,dot:q.c,big:1,bg:'rgba(251,243,228,.97)',fg:'#16314a'});
+}
+function heroLabels(){var a=S.w[0];if(a<.05)return}
+
+/* ---------------- frame */
+var last=0,running=false,raf=0,lastT=0;
+function frame(now){
+  raf=0;if(!running)return;
+  var dt=Math.min(.05,(now-(lastT||now))/1000);lastT=now;
+  if(!paused)S.clock+=dt;
+  var tc=progress();
+  var k=reduced?1:1-Math.exp(-dt*9);
+  if(!cam)cam=tc.slice();else{cam[0]=lerp(cam[0],tc[0],k);cam[1]=lerp(cam[1],tc[1],k);cam[2]=lerp(cam[2],tc[2],k);cam[3]=Math.exp(lerp(Math.log(cam[3]),Math.log(tc[3]),k))}
+  var kk=reduced?1:1-Math.exp(-dt*5);
+  for(var m in S.mm)S.mm[m]=lerp(S.mm[m],m===S.mode?1:0,kk);
+  S.fm=lerp(S.fm,S.flav==='cos'?1:0,kk);S.sub=lerp(S.sub,S.subT,reduced?1:1-Math.exp(-dt*3));
+  S.cut=sg(S.w[2],.4,1);S.tangle=sg(S.w[1],.45,.9);S.amb=cl(1-S.w[1]*1.2-S.w[6]);
+  render();
+  var sp=cl(((window.pageYOffset||0)-tops[0])/Math.max(1,tops[N-1]-tops[0]));if(Math.abs(sp-lastSp)>.001){lastSp=sp;progi.style.transform='scaleX('+sp.toFixed(4)+')'}
+  var act=0;for(var i=1;i<N;i++)if(S.w[i]>S.w[act])act=i;if(act!==curAct)setChip(act);
+  if(paused&&settled(tc))return;
+  raf=requestAnimationFrame(frame);
+}
+/* paused or reduced motion: stop drawing once the camera and toggles have eased into place; kick() restarts it */
+function settled(tc){var e=1e-3,m;for(m=0;m<4;m++)if(Math.abs(cam[m]-tc[m])>e)return false;for(m in S.mm)if(Math.abs(S.mm[m]-(m===S.mode?1:0))>e)return false;return Math.abs(S.fm-(S.flav==='cos'?1:0))<e&&Math.abs(S.sub-S.subT)<e}
+function kick(){if(running&&!raf){lastT=0;raf=requestAnimationFrame(frame)}}
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  scl=Math.min(W,H*1.25)*(W>700?.8:1)/(cam[3]*TW);var pc=P(cam[0],cam[1],cam[2]);OX=W/2-pc[0]*scl;OY=H*.52-pc[1]*scl;
+  sky();
+  ctx.setTransform(DPR*scl,0,0,DPR*scl,DPR*OX,DPR*OY);
+  for(var i=0;i<PLK.length;i++)drawPlate(PLK[i]);
+  drawSSBunder();
+  var ra=1-S.tangle*.85,ua=1-.7*S.w[4]*(S.mm.asb+S.mm.ssb);
+  for(i=0;i<BR.length;i++)drawBridge(BR[i],i<3?ra*ua:ra);
+  drawRails();
+  DL.length=0;shipFlash=0;
+  add(40,20,20,drawCQRS);drawMB();decor();
+  vRel('ef',false,'ef');vRel('cos',true,'cos');
+  vMB();vRec();vSCF();ambient();
+  DL.sort(function(a,b){return a.k-b.k});
+  for(i=0;i<DL.length;i++)DL[i].f();
+  drawSkyRoute();traces();drawTangle();
+  if(S.w[8]>.05){lab(26.75,10.45,5.1,S.sub>.5?'spans + metrics flowing':'no listener · nothing emitted',{a:S.w[8],dot:S.sub>.5?'#5fe0b0':'#ff5d7a'})}
+  mapLabels();
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  for(i=0;i<LB.length;i++){var L=LB[i];if(L.ring){ctx.globalAlpha=L.a;ctx.setLineDash([5,4]);ctx.strokeStyle='#ffd166';ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(L.ring[0],L.ring[1],34*scl,22*scl,0,0,2*PI);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;LB.splice(i,1);i--}}
+  drawLabels();
+}
+
+/* ---------------- sizing, visibility */
+function resize(){var r=stage.getBoundingClientRect();W=Math.max(200,r.width);H=Math.max(200,r.height);DPR=Math.min(2,window.devicePixelRatio||1);cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);skyG=null;measure();kick()}
+function start(){if(running)return;running=true;lastT=0;if(!raf)raf=requestAnimationFrame(frame)}
+function stop(){running=false;if(raf)cancelAnimationFrame(raf);raf=0}
+var stageVis=true;
+if('IntersectionObserver' in window){new IntersectionObserver(function(es){stageVis=es[0].isIntersecting;stageVis&&!D.hidden?start():stop()}).observe(stage)}
+D.addEventListener('visibilitychange',function(){D.hidden?stop():(stageVis&&start())});
+window.addEventListener('resize',function(){resize()});
+if(window.ResizeObserver)new ResizeObserver(function(){resize()}).observe(stage);
+if(D.fonts&&D.fonts.ready)D.fonts.ready.then(function(){measure();kick()});
+window.addEventListener('load',function(){measure();kick()});
+window.addEventListener('scroll',kick,{passive:true});
+D.addEventListener('click',kick,true);
+
+/* ---------------- HUD */
+var lastSp=-1,progi=D.getElementById('progi'),curAct=-1,chipn=D.getElementById('chipn'),chipt=D.getElementById('chipt');
+function setChip(i){curAct=i;chipn.textContent=(i<10?'0':'')+i;chipt.textContent=secs[i].getAttribute('data-name')}
+var pb=D.getElementById('pause');
+function setPaused(p){paused=p;pb.setAttribute('aria-pressed',p?'true':'false');pb.setAttribute('aria-label',p?'Play animation':'Pause animation');D.getElementById('ipause').style.display=p?'none':'';D.getElementById('iplay').style.display=p?'':'none';kick()}
+pb.addEventListener('click',function(){setPaused(!paused)});setPaused(paused);
+if(mq.addEventListener)mq.addEventListener('change',function(e){reduced=e.matches;setPaused(reduced)});
+
+/* ---------------- chapter reveals */
+if('IntersectionObserver' in window){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{rootMargin:'0px 0px -12% 0px'});secs.forEach(function(s){io.observe(s)})}else secs.forEach(function(s){s.classList.add('in')});
+secs[0].classList.add('in');
+
+/* ---------------- controls */
+var MD={asb:'<b>Chatter.MessageBrokers.AzureServiceBus</b>: parcels fly the sky route over queues, topic subscriptions and sessions, with cross-entity transactions when you need them.',
+ rmq:'<b>Chatter.MessageBrokers.RabbitMQ</b>: parcels ride the rails, over the exchanges and queues you provision.',
+ ssb:'<b>Chatter.MessageBrokers.SqlServiceBroker</b>: parcels travel underground, through Service Broker conversations and queues inside the SQL Server you already run.'};
+var FD={ef:['<b>Chatter.MessageBrokers.Reliability.EntityFramework</b>: the Inbox, Outbox and Unit of Work live in your own DbContext. State change, Inbox record and Outbox record are saved in one database transaction; an optional polling Outbox Processor publishes.','https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md'],
+ cos:['<b>Chatter.MessageBrokers.Reliability.Cosmos</b>: the Document Tier writes the aggregate, an Outbox document and an Inbox marker in one TransactionalBatch. A change-feed Outbox Relay publishes pending outbox documents.','https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md']};
+function group(attr,fn){var bs=[].slice.call(D.querySelectorAll('['+attr+']'));bs.forEach(function(b){b.addEventListener('click',function(){bs.forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false')});fn(b.getAttribute(attr))})})}
+group('data-mode',function(v){S.mode=v;D.getElementById('modeDesc').innerHTML=MD[v]});
+group('data-flav',function(v){S.flav=v;D.getElementById('flavDesc').innerHTML=FD[v][0];D.getElementById('flavLink').href=FD[v][1];D.getElementById('flavLink').textContent=(v==='ef'?'Reliability.EntityFramework':'Reliability.Cosmos')+' docs ↗'});
+D.getElementById('modeDesc').innerHTML=MD.asb;D.getElementById('flavDesc').innerHTML=FD.ef[0];D.getElementById('flavLink').textContent='Reliability.EntityFramework docs ↗';
+var sb=D.getElementById('sub'),ss=D.getElementById('subState');
+sb.addEventListener('click',function(){S.subT=S.subT?0:1;sb.setAttribute('aria-pressed',S.subT?'true':'false');sb.textContent=S.subT?'Unsubscribe':'Subscribe to the tower';ss.textContent=S.subT?'Subscribed: spans and metrics flow to your listener.':'No listener: the tower is dark and nothing is emitted.'});
+[].forEach.call(D.querySelectorAll('[data-copy]'),function(b){b.addEventListener('click',function(){var txt=b.getAttribute('data-copy'),done=function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1600)};try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){sel(b)})}else sel(b)}catch(e){sel(b)}})});
+function sel(b){try{var c=b.parentNode.querySelector('code'),r=D.createRange();r.selectNodeContents(c);var s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent='Selected'}catch(e){}}
+
+/* packages */
+var pk=D.getElementById('pkgs'),dt=D.getElementById('detail');
+PK.forEach(function(p,i){var b=D.createElement('button');b.type='button';b.setAttribute('aria-pressed',i===0?'true':'false');b.innerHTML='<i style="background:'+p.c+'"></i><span><span class="mono" style="opacity:.6">'+(i+1)+'</span> '+p.s+'</span>';b.addEventListener('click',function(){selPkg(i)});pk.appendChild(b)});
+function selPkg(i){S.sel=i;[].forEach.call(pk.children,function(b,j){b.setAttribute('aria-pressed',j===i?'true':'false')});var p=PK[i];
+  dt.innerHTML='<h3>'+p.id+'</h3><p class="dep">'+(p.dep?'Builds on '+p.dep:'The foundation: no Chatter dependencies')+'</p><p>'+p.what.replace('[BrokeredMessage]','<code>[BrokeredMessage]</code>')+'</p><p class="row"><a class="doclink" href="https://www.nuget.org/packages/'+p.id+'" target="_blank" rel="noopener">NuGet ↗</a><a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/'+p.id+'/src/README.md" target="_blank" rel="noopener">Docs ↗</a></p>'}
+selPkg(0);
+cv.addEventListener('click',function(e){if(S.w[9]<.5)return;var r=cv.getBoundingClientRect(),sx=e.clientX-r.left,sy=e.clientY-r.top,wx=(sx-OX)/scl,wy=(sy-OY)/scl,u=wx/TW,v=wy/TH,x=(u+v)/2,y=(v-u)/2;
+  for(var i=0;i<PK.length;i++){var o=PL[PK[i].pl];if(x>=o.x&&x<=o.x+o.w&&y>=o.y&&y<=o.y+o.d){selPkg(i);break}}});
+
+resize();measure();start();
+})();
+</script>
+</body>
+</html>

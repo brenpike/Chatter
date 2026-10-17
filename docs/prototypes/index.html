@@ -1,0 +1,135 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chatter Site Prototypes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="robots" content="noindex">
+<meta name="description" content="Motion-design prototypes for the next Chatter GitHub Pages site. Not deployed.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one column of concept cards, each with a looping glyph that previews the prototype's motion idea */
+:root {
+  --bg: #F3F2EE;
+  --surface: #FFFFFF;
+  --line: #DAD7CF;
+  --ink: #17161A;
+  --muted: #5E5B66;
+  --accent: #D9480F;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #121116; --surface: #1C1B22; --line: #312F3A; --ink: #F1EFF5; --muted: #A6A2B2; --accent: #FF7A3D; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --bg: #121116; --surface: #1C1B22; --line: #312F3A; --ink: #F1EFF5; --muted: #A6A2B2; --accent: #FF7A3D; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--display); line-height: 1.5; -webkit-text-size-adjust: 100%; }
+.page {
+  max-width: 980px; margin: 0 auto;
+  padding-block: 28px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px;
+}
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+h1 { margin: 6px 0 10px; font-weight: 800; font-size: clamp(2.1rem, 8vw, 3.6rem); line-height: 1.02; letter-spacing: -.03em; text-wrap: balance; }
+h1 em { font-style: normal; color: var(--accent); }
+.lede { margin: 0; color: var(--muted); max-width: 60ch; font-size: 1.05rem; }
+ol.cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 720px) { ol.cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+a.card {
+  display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 16px; align-items: center;
+  min-height: 44px; padding: 16px; height: 100%;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  color: var(--ink); text-decoration: none;
+  transition: transform .2s ease, border-color .2s ease;
+}
+a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+a.card:active { transform: translateY(0) scale(.99); }
+a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.glyph { width: 76px; height: 76px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.glyph svg { width: 100%; height: 100%; display: block; }
+.meta { min-width: 0; }
+.letter { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: .06em; }
+.card h2 { margin: 2px 0 4px; font-size: 1.3rem; line-height: 1.15; font-weight: 800; letter-spacing: -.01em; }
+.card p { margin: 0; color: var(--muted); font-size: .95rem; }
+.go { font-family: var(--mono); font-size: 12px; color: var(--ink); margin-top: 8px; display: inline-block; }
+.go::after { content: " \2192"; color: var(--accent); }
+footer { border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: .9rem; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+footer a { color: var(--ink); text-underline-offset: 3px; min-height: 44px; display: inline-flex; align-items: center; }
+
+/* glyph motion */
+.stroke { stroke: var(--ink); fill: none; stroke-width: 2; stroke-linecap: round; }
+.dot { fill: var(--accent); }
+.soft { fill: var(--line); }
+@keyframes cord { 0%,10% { stroke-dashoffset: 80; } 50%,90% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 80; } }
+@keyframes blink { 0%,45% { fill: var(--line); } 50%,95% { fill: var(--accent); } }
+@keyframes orbit { to { transform: rotate(360deg); } }
+@keyframes rise { 0% { transform: translateY(14px); opacity: 0; } 30%,70% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(-14px); opacity: 0; } }
+@keyframes hop { 0% { transform: translate(18px, 50px); } 50% { transform: translate(38px, 28px); } 100% { transform: translate(58px, 50px); } }
+@keyframes tick { 0%,100% { transform: translateX(0); } 50% { transform: translateX(40px); } }
+.cord { stroke-dasharray: 80; animation: cord 3s ease-in-out infinite; }
+.lamp { animation: blink 1.6s steps(1) infinite; }
+.lamp.b { animation-delay: .8s; }
+.spin { transform-origin: 38px 38px; animation: orbit 4s linear infinite; }
+.word { animation: rise 2.4s ease-in-out infinite; font-family: var(--display); font-weight: 800; fill: var(--ink); }
+.parcel { animation: hop 1.8s ease-in-out infinite alternate; }
+.token { animation: tick 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .cord, .lamp, .spin, .word, .parcel, .token { animation: none; } .cord { stroke-dashoffset: 0; } }
+</style>
+
+<main class="page">
+  <header>
+    <p class="eyebrow">Chatter · GitHub Pages redesign</p>
+    <h1>Five ways to tell the <em>Chatter</em> story</h1>
+    <p class="lede">Each prototype explains the same thing: what Chatter is for, what each package does, and how to start. Each one uses motion in its own way. They are built for phones first, so scroll slowly and tap the controls.</p>
+  </header>
+
+  <ol class="cards">
+    <li><a class="card" href="g-switchboard/index.html">
+      <div class="glyph" aria-hidden="true"><svg viewBox="0 0 76 76">
+        <circle class="soft lamp" cx="20" cy="20" r="5"/><circle class="soft lamp b" cx="56" cy="20" r="5"/>
+        <circle class="stroke" cx="20" cy="56" r="5"/><circle class="stroke" cx="56" cy="56" r="5"/>
+        <path class="stroke cord" d="M20 56 C 24 80, 52 80, 56 56"/>
+      </svg></div>
+      <div class="meta"><span class="letter">G</span><h2>Switchboard</h2><p>Chatter as an old telephone exchange. Messages are calls patched through brass jacks, party lines and trunk lines.</p><span class="go">Open prototype</span></div>
+    </a></li>
+    <li><a class="card" href="h-signal/index.html">
+      <div class="glyph" aria-hidden="true"><svg viewBox="0 0 76 76">
+        <circle class="stroke" cx="38" cy="38" r="22" opacity=".35"/>
+        <g class="spin"><circle class="dot" cx="38" cy="16" r="4"/></g>
+        <circle class="dot" cx="38" cy="38" r="3"/>
+      </svg></div>
+      <div class="meta"><span class="letter">H</span><h2>Signal</h2><p>A cinematic scroll journey. A single point of light becomes a Command, an Event and a Query, then crosses between services.</p><span class="go">Open prototype</span></div>
+    </a></li>
+    <li><a class="card" href="i-kinetic/index.html">
+      <div class="glyph" aria-hidden="true"><svg viewBox="0 0 76 76">
+        <text class="word" x="38" y="46" text-anchor="middle" font-size="22">Aa</text>
+      </svg></div>
+      <div class="meta"><span class="letter">I</span><h2>Kinetic</h2><p>Poster typography in motion. The words themselves are the messages, and they split, stack and re-route as you scroll.</p><span class="go">Open prototype</span></div>
+    </a></li>
+    <li><a class="card" href="j-isometric/index.html">
+      <div class="glyph" aria-hidden="true"><svg viewBox="0 0 76 76">
+        <path class="soft" d="M8 54 L20 47 L32 54 L20 61 Z"/><path class="soft" d="M44 54 L56 47 L68 54 L56 61 Z"/>
+        <path class="stroke" d="M12 52 V36 L20 31 L28 36 V52 M48 52 V30 L56 25 L64 30 V52"/>
+        <rect class="dot parcel" width="7" height="7" rx="1.5"/>
+      </svg></div>
+      <div class="meta"><span class="letter">J · Published as the site</span><h2>Message City</h2><p>An isometric toy city. Services are buildings and handlers are rooms. Parcels travel the roads between them.</p><span class="go">Open prototype</span></div>
+    </a></li>
+    <li><a class="card" href="k-playground/index.html">
+      <div class="glyph" aria-hidden="true"><svg viewBox="0 0 76 76">
+        <rect class="stroke" x="10" y="22" width="14" height="14" rx="3"/><rect class="stroke" x="52" y="22" width="14" height="14" rx="3"/>
+        <path class="stroke" d="M24 29 H52" opacity=".4"/>
+        <circle class="dot token" cx="17" cy="29" r="3.5"/>
+        <rect class="soft" x="10" y="48" width="56" height="10" rx="5"/><rect class="dot" x="10" y="48" width="24" height="10" rx="5"/>
+      </svg></div>
+      <div class="meta"><span class="letter">K</span><h2>Playground</h2><p>The page is a live two-service simulation. Each chapter unlocks a new control: send Commands, switch transports, break the broker.</p><span class="go">Open prototype</span></div>
+    </a></li>
+  </ol>
+
+  <footer>
+    <span>Kept for reference. J is the live site at <a href="https://brenpike.github.io/Chatter/" target="_blank" rel="noopener">brenpike.github.io/Chatter</a>.</span>
+    <a href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">brenpike/Chatter on GitHub</a>
+  </footer>
+</main>
