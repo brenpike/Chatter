@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-17
+
+### Security
+
+- `Microsoft.Data.SqlClient` is updated to 7.1.1, and `System.Security.Cryptography.Pkcs` is pinned to 10.0.13. SqlClient brings in Pkcs 9.0.x, which carries advisories [GHSA-846f-f764-76mx](https://github.com/advisories/GHSA-846f-f764-76mx) and [GHSA-2fmv-rv2c-59x7](https://github.com/advisories/GHSA-2fmv-rv2c-59x7). No code change.
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers.SqlServiceBroker 0.18.1 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [0.16.0] - 2026-09-29
 
 ### Changed
