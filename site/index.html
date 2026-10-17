@@ -7,6 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 29 10.5 16 18 3 10.5z' fill='%23ffd166'/%3E%3Cpath d='M3 10.5 16 18v11L3 21.5z' fill='%23ff7b5c'/%3E%3Cpath d='M29 10.5 16 18v11l13-7.5z' fill='%23c9583f'/%3E%3Cpath d='M16 7.5 21.5 10.6 16 13.7 10.5 10.6z' fill='%235fe0b0'/%3E%3C/svg%3E">
 <title>Chatter: Same handlers. Any broker.</title>
+<meta name="author" content="Brennan Pike">
 <meta name="description" content="Chatter lets the same Command and Event handlers serve in-process dispatch and cross-service messaging over Azure Service Bus, RabbitMQ or SQL Server Service Broker.">
 <link rel="canonical" href="https://brenpike.github.io/Chatter/">
 <meta property="og:type" content="website">
@@ -62,6 +63,9 @@ h3{font-size:19px;font-weight:700;margin-bottom:6px}
 p{margin:0 0 14px}
 .tag{font-size:clamp(22px,6vw,30px);font-weight:650;color:var(--butter);margin:6px 0 10px;letter-spacing:-.01em}
 .lede{color:#e3e9ee;font-size:17px}
+.byline{margin:-4px 0 18px;color:var(--muted);font-size:14px}
+.byline a{color:var(--cream);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+.byline a:hover{text-decoration-color:var(--cream)}
 .muted{color:var(--muted)}
 code,.mono{font-family:var(--mono);font-size:.86em}
 p code,li code{background:rgba(251,243,228,.08);padding:1px 6px;border-radius:6px;white-space:nowrap}
@@ -157,6 +161,7 @@ footer a{min-height:44px;display:inline-flex;align-items:center}
       <h1>Chatter</h1>
       <p class="tag">Same handlers. Any broker.</p>
       <p class="lede">Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging.</p>
+      <p class="byline">by <a href="https://github.com/brenpike" target="_blank" rel="noopener">Brennan Pike</a></p>
       <div class="pill"><code>dotnet add package Chatter.CQRS</code><button class="btn solid" type="button" data-copy="dotnet add package Chatter.CQRS">Copy</button></div>
       <div class="row"><a class="btn" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">View on GitHub ↗</a></div>
       <p class="hint"><span aria-hidden="true"></span>Scroll to tour Message City</p>
