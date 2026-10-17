@@ -193,7 +193,10 @@ footer a{min-height:44px;display:inline-flex;align-items:center}
 {
     <span class="k">public</span> <span class="t">Task</span> Handle(<span class="t">PlaceOrder</span> message,
         <span class="t">IMessageHandlerContext</span> context)
-    { <span class="c">/* change state */</span> }
+    {
+        <span class="c">// change state</span>
+        <span class="k">return</span> <span class="t">Task</span>.CompletedTask;
+    }
 }</code></pre>
       <a class="doclink" href="https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md" target="_blank" rel="noopener">Chatter.CQRS docs ↗</a>
     </div>
