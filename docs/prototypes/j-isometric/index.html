@@ -33,6 +33,7 @@ a{color:var(--butter);text-underline-offset:3px}
 .stage{position:-webkit-sticky;position:sticky;top:0;height:55vh;height:55svh;min-height:300px;z-index:3;background:#173b55;overflow:hidden}
 .stage canvas{display:block;width:100%;height:100%;touch-action:pan-y}
 .stage::after{content:"";position:absolute;left:0;right:0;bottom:0;height:26px;background:linear-gradient(to bottom,rgba(13,34,49,0),var(--ink));pointer-events:none}
+.prog{position:absolute;left:var(--gl);right:var(--gr);bottom:10px;height:3px;border-radius:3px;background:rgba(251,243,228,.16);z-index:2;overflow:hidden}.prog i{display:block;height:100%;width:100%;background:linear-gradient(90deg,var(--mint),var(--butter),var(--coral));transform-origin:0 50%;transform:scaleX(0)}
 .hud{position:absolute;top:max(10px,env(safe-area-inset-top,0px));left:var(--gl);right:var(--gr);display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none;z-index:2}
 .chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 8px;border-radius:999px;background:rgba(8,24,35,.62);border:1px solid rgba(251,243,228,.16);font-size:12.5px;font-weight:600;letter-spacing:.01em;color:var(--cream);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);max-width:calc(100vw - 100px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chip b{display:inline-grid;place-items:center;min-width:26px;height:22px;padding:0 6px;border-radius:999px;background:var(--butter);color:#1c2430;font-weight:800;font-size:11.5px}
@@ -132,6 +133,7 @@ footer a{min-height:44px;display:inline-flex;align-items:center}
 <div class="story" id="story">
   <div class="stage" id="stage">
     <canvas id="city" aria-hidden="true"></canvas>
+    <div class="prog" aria-hidden="true"><i id="progi"></i></div>
     <div class="hud">
       <div class="chip" id="chip" aria-hidden="true"><b id="chipn">00</b><span id="chipt">Message City</span></div>
       <button class="iconbtn" id="pause" type="button" aria-pressed="false" aria-label="Pause animation">
@@ -417,7 +419,17 @@ var K=[[12.6,11.4,0,29],[15.6,15.2,.9,19],[20.2,20.2,.6,8.2],[18.9,14.1,.8,15],[
 var RELK=[[9,21,.4,9],[21,9,.4,9]];
 var cam=null,scl=1,OX=0,OY=0;
 
-function camKey(i){if(i===5){var a=RELK[0],b=RELK[1],f=ease(S.fm);return[lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f),a[3]]}return K[i]}
+function mapKey(){
+  var x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  for(var id in PL){var p=PL[id],cs=[[p.x,p.y],[p.x+p.w,p.y],[p.x,p.y+p.d],[p.x+p.w,p.y+p.d]];
+    for(var j=0;j<4;j++){for(var zi=0;zi<2;zi++){var q=P(cs[j][0],cs[j][1],zi?2.6:-2.1);if(q[0]<x0)x0=q[0];if(q[0]>x1)x1=q[0];if(q[1]<y0)y0=q[1];if(q[1]>y1)y1=q[1]}}}
+  var mt=W<700?70:84,mb=W<700?22:40,mx=W<700?12:40;
+  var sc=Math.min((W-2*mx)/(x1-x0),(H-mt-mb)/(y1-y0));
+  var span=Math.min(W,H*1.25)*(W>700?.8:1)/(sc*TW);
+  var yc=(mt+H-mb)/2,fy=(y0+y1)/2+(H*.52-yc)/sc,u=(x0+x1)/2/TW,v=fy/TH;
+  return[(u+v)/2,(v-u)/2,0,span];
+}
+function camKey(i){if(i===9)return mapKey();if(i===5){var a=RELK[0],b=RELK[1],f=ease(S.fm);return[lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f),a[3]]}return K[i]}
 function measure(){vh=innerHeight;tops=secs.map(function(s){return s.getBoundingClientRect().top+(window.pageYOffset||0)})}
 function progress(){
   var y=window.pageYOffset||0,t=[1],i;
@@ -485,7 +497,7 @@ function drawCQRS(){
   quadL(18.75,19.25,y0+.16,0,.9,'#c99e7a');quadL(21.25,21.75,y0+.16,0,.9,'#c99e7a');
   var ph=t%9,show=cut>.35;
   // rooms
-  topq(21.45,18.3,22.35,19.7,.02,'#ffc4b2');topq(21,20.1,22.35,21.1,.02,'#cfe9ff');
+  topq(21.45,18.3,22.35,19.7,.02,'#ffc4b2');topq(21,20.1,22.35,21.1,.02,'#fff0c4');
   topq(17.8,20.6,18.9,21.7,.02,'#c3f2df');topq(19.15,21.3,20.25,22.35,.02,'#c3f2df');topq(20.55,21.3,21.65,22.35,.02,'#c3f2df');
   // conveyor
   box(19.45,18.76,0,1.95,.48,.14,'#3b4c5d');
@@ -495,7 +507,7 @@ function drawCQRS(){
   var door=[[19,17,0],[19,18.5,0],[19,19,.32]];
   if(ph<3){var f;if(ph<.9)cp=at(mk(door),ph/.9);else if(ph<1.1)cp=at(mk([[19,19,.32],[19.5,19,.14]]),(ph-.9)/.2);else if(ph<2.4)cp=at(mk([[19.5,19,.14],[21.42,19,.14]]),(ph-1.1)/1.3);else if(ph<2.7)cp=at(mk([[21.42,19,.14],[21.8,19.05,.32]]),(ph-2.4)/.3);else{cp=null;hit=1-(ph-2.7)/.3}}
   else if(ph<6){var q=ph-3;if(q<.8)ep=[at(mk(door),q/.8)];else if(q<1.8){var rr2=[[18.35,21.15],[19.7,21.85],[21.1,21.85]];for(var j=0;j<3;j++)ep.push(at(mk([[19,19,.32],[rr2[j][0],rr2[j][1],.02]]),eo(q-.8)))}else{evH=[1,1,1].map(function(v,j){return cl(1-(q-1.8-j*.12)/1.1)})}}
-  else{var r=ph-6;if(r<.6)qp=[at(mk(door),r/.6),'#6cc8ff'];else if(r<1.3)qp=[at(mk([[19,19,.32],[21.5,20.6,.02]]),eo((r-.6)/.7)),'#6cc8ff'];else if(r<1.6){qp=[[21.5,20.6,.02],r<1.45?'#6cc8ff':'#ffd166'];qH=1}else if(r<2.2)qp=[at(mk([[21.5,20.6,.02],[19,19,.32]]),eo((r-1.6)/.6)),'#ffd166'];else if(r<2.9)qp=[at(mk([[19,19,.32],[19,18.5,0],[19,17,0]]),(r-2.2)/.7),'#ffd166']}
+  else{var r=ph-6;if(r<.6)qp=[at(mk(door),r/.6),'#2f9cf0'];else if(r<1.3)qp=[at(mk([[19,19,.32],[21.5,20.6,.02]]),eo((r-.6)/.7)),'#2f9cf0'];else if(r<1.6){qp=[[21.5,20.6,.02],r<1.45?'#2f9cf0':'#ffd166'];qH=1}else if(r<2.2)qp=[at(mk([[21.5,20.6,.02],[19,19,.32]]),eo((r-1.6)/.6)),'#ffd166'];else if(r<2.9)qp=[at(mk([[19,19,.32],[19,18.5,0],[19,17,0]]),(r-2.2)/.7),'#ffd166']}
   var it=[];
   function pi(k,f){it.push({k:k,f:f})}
   pi(38,function(){cyl(19,19,0,.42,.32,'#6cc8ff');person(19,19.25,.32,'#2f6a90','#ffd166')});
@@ -510,7 +522,7 @@ function drawCQRS(){
   it.sort(function(a,b){return a.k-b.k});it.forEach(function(o){o.f()});
   var hf=lerp(h,.36,e);
   box(x0+s-.16,y0,0,.16,s,hf,wl);box(x0,y0+s-.16,0,s,.16,hf,wl);
-  if(cut<1){ctx.globalAlpha=cl(1-cut*1.6);topq(x0,y0,x0+s,y0+s,h,sh('#ff8a6b',.06));ctx.globalAlpha=1}
+  if(cut<.5){var lz=h+eo(cut*2)*3.2;box(x0-.05,y0-.05,lz,s+.1,s+.1,.16,'#ff8a6b',sh('#ff8a6b',.06))}
   if(show){var a=cl((cut-.35)/.4)*S.w[2];
     var cap=ph<3?['Command → exactly one handler','#ff7b5c']:ph<6?['Event → every subscriber','#5fe0b0']:['Query → returns a Read Model','#6cc8ff'];
     lab(19.7,18.2,3.1,cap[0],{a:a,dot:cap[1],big:1});
@@ -726,7 +738,7 @@ function traces(){var s=S.sub;if(s<.02||!AMBP.length)return;var c=P(TX,TY,3.5);c
 var AMBP=[];
 function ambient(){
   AMBP.length=0;var a=S.amb,t=S.clock,w=S.w;if(a<.02)return;
-  for(var r=0;r<ROUTES.length;r++){var R=ROUTES[r],ra=a*cl(r===0?1-w[3]-w[4]-w[6]:(r===1||r===2)?1-w[5]:r===7?1-w[7]:1);if(ra<.02)continue;var n=r===0?3:2;
+  for(var r=0;r<ROUTES.length;r++){var R=ROUTES[r],ra=a*cl(r===0?1-w[3]-w[4]-w[6]:(r===1||r===2)?1-w[5]:r===7?1-w[7]:1)*(r===0||r===2?1:1-w[8]*.9);if(ra<.02)continue;var n=r===0?3:2;
     for(var j=0;j<n;j++){var sp=1.15/R.L,u=(t*sp*(r===0?1:.8)+j/n+hs(r)*.7)%1,fwd=(j%2===0)||r===0,f=fwd?u:1-u,p=at(R,f),c=KC[(r+j)%4],pop=Math.min(1,Math.min(u,1-u)*10);
       AMBP.push(p);
       (function(p,c,pop,ra){add(p[0]+p[1]+.3,p[0],p[1],function(){ctx.globalAlpha=ra*pop;parcel(p[0],p[1],.02,c,.32);ctx.globalAlpha=1})})(p,c,pop,ra)}}
@@ -763,8 +775,9 @@ function frame(now){
   var kk=reduced?1:1-Math.exp(-dt*5);
   for(var m in S.mm)S.mm[m]=lerp(S.mm[m],m===S.mode?1:0,kk);
   S.fm=lerp(S.fm,S.flav==='cos'?1:0,kk);S.sub=lerp(S.sub,S.subT,reduced?1:1-Math.exp(-dt*3));
-  S.cut=S.w[2];S.tangle=S.w[1];S.amb=cl(1-S.w[1]*1.2-S.w[6]*.85);
+  S.cut=sg(S.w[2],.4,1);S.tangle=sg(S.w[1],.45,.9);S.amb=cl(1-S.w[1]*1.2-S.w[6]);
   render();
+  var sp=cl(((window.pageYOffset||0)-tops[0])/Math.max(1,tops[N-1]-tops[0]));if(Math.abs(sp-lastSp)>.001){lastSp=sp;progi.style.transform='scaleX('+sp.toFixed(4)+')'}
   var act=0;for(var i=1;i<N;i++)if(S.w[i]>S.w[act])act=i;if(act!==curAct)setChip(act);
   raf=requestAnimationFrame(frame);
 }
@@ -805,7 +818,7 @@ if(D.fonts&&D.fonts.ready)D.fonts.ready.then(measure);
 window.addEventListener('load',measure);
 
 /* ---------------- HUD */
-var curAct=-1,chipn=D.getElementById('chipn'),chipt=D.getElementById('chipt');
+var lastSp=-1,progi=D.getElementById('progi'),curAct=-1,chipn=D.getElementById('chipn'),chipt=D.getElementById('chipt');
 function setChip(i){curAct=i;chipn.textContent=(i<10?'0':'')+i;chipt.textContent=secs[i].getAttribute('data-name')}
 var pb=D.getElementById('pause');
 function setPaused(p){paused=p;pb.setAttribute('aria-pressed',p?'true':'false');pb.setAttribute('aria-label',p?'Play animation':'Pause animation');D.getElementById('ipause').style.display=p?'none':'';D.getElementById('iplay').style.display=p?'':'none'}
