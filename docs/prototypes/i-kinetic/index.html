@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chatter · Same handlers. Any broker.</title>
+<meta name="description" content="Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging.">
+<meta name="theme-color" content="#F2F1EC">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anybody:wdth,wght@50..150,100..900&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<script>document.documentElement.classList.add('js')</script>
+<style>
+:root{
+  --paper:#F2F1EC; --paper2:#E6E4DC; --ink:#121212; --ink2:#2A2A28; --mute:#5F5E59;
+  --sig:#FF4A1C; --sig-ink:#C93410; --cob:#1D3BD6; --rule:rgba(18,18,18,.16);
+  --disp:"Anybody","Arial Narrow","Helvetica Neue",Impact,sans-serif;
+  --body:"Hanken Grotesk",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,"Liberation Mono",monospace;
+  --gl:max(16px,env(safe-area-inset-left,0px)); --gr:max(16px,env(safe-area-inset-right,0px));
+  --hdr:52px;
+  color-scheme:light;
+}
+@media (min-width:760px){:root{--gl:max(40px,env(safe-area-inset-left,0px));--gr:max(40px,env(safe-area-inset-right,0px))}}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--paper);color:var(--ink);-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);font-size:17px;line-height:1.5;overflow-x:hidden;overflow-x:clip}
+.diag,.index,.hero{overflow:hidden;overflow:clip}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--cob);outline-offset:3px;border-radius:2px}
+.sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+.d{font-family:var(--disp);font-weight:800;font-variation-settings:"wdth" var(--wd,100),"wght" var(--wg,820);text-transform:uppercase;line-height:.86;letter-spacing:-.005em}
+.mono{font-family:var(--mono)}
+code,pre,.mono,.tag{font-variant-ligatures:none}
+.pad{padding-left:var(--gl);padding-right:var(--gr)}
+.wrap{max-width:1320px;margin:0 auto}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 10px;display:flex;gap:10px;align-items:center;color:var(--ink)}
+.eyebrow b{display:inline-block;background:var(--ink);color:var(--paper);padding:2px 7px;font-weight:600}
+.eyebrow i{font-style:normal;color:var(--mute)}
+
+/* header */
+.hdr{position:fixed;inset:0 0 auto 0;height:calc(var(--hdr) + env(safe-area-inset-top,0px));padding-top:env(safe-area-inset-top,0px);z-index:50;background:rgba(242,241,236,.92);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
+.hdr .in{height:var(--hdr);display:flex;align-items:center;gap:8px}
+.brand{font-family:var(--disp);font-variation-settings:"wdth" 140,"wght" 900;font-weight:900;font-size:22px;text-decoration:none;letter-spacing:-.01em;margin-right:auto;display:flex;align-items:center;min-height:44px}
+.brand span{color:var(--sig)}
+.hbtn{min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1.5px solid var(--ink);background:transparent;color:var(--ink);font:600 13px/1 var(--mono);padding:0 12px;border-radius:999px;text-decoration:none;cursor:pointer}
+.hbtn[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.hbtn svg{width:14px;height:14px}
+.prog{position:absolute;left:0;bottom:-1px;height:3px;width:100%;background:var(--sig);transform-origin:0 50%;transform:scaleX(0)}
+
+/* hero */
+.hero{min-height:100vh;min-height:100svh;padding-top:calc(var(--hdr) + env(safe-area-inset-top,0px) + 24px);padding-bottom:40px;display:flex;flex-direction:column;justify-content:center;position:relative}
+.hero h1{margin:0 0 18px;font-size:clamp(56px,18vw,190px)}
+.hero h1 .ln{display:block;white-space:nowrap}
+.hero h1 .w{display:inline-block;white-space:nowrap}
+.hero h1 .ln + .ln{margin-top:.04em}
+.hero .t2{color:var(--sig)}
+@media (max-width:759px){.hero h1 .w{display:block}}
+.hero h1.meas .w,.hero h1.meas .ln{display:inline-block!important}
+.ch{display:inline-block;will-change:transform}
+.js .hero h1.pre .ch{opacity:0}
+.cy{display:inline-block;position:relative;vertical-align:bottom;color:var(--sig);white-space:nowrap}
+.cy .layer{position:absolute;left:0;bottom:0;white-space:nowrap;font-variation-settings:"wdth" var(--wd,100),"wght" 820}
+.cy .layer .ch{animation:chIn .62s cubic-bezier(.2,.9,.2,1) both;animation-delay:calc(220ms + var(--i)*22ms)}
+.cy .layer.out .ch{animation:chOut .42s cubic-bezier(.6,0,.8,.4) both;animation-delay:calc(var(--i)*14ms)}
+.cy .layer.still .ch{animation:none}
+@keyframes chIn{from{transform:translateY(70%) rotate(8deg);opacity:0}to{transform:none;opacity:1}}
+@keyframes chOut{to{transform:translateY(-80%) rotate(-6deg);opacity:0}}
+.lede{font-size:clamp(17px,2.2vw,22px);max-width:34em;margin:0 0 22px;color:var(--ink2)}
+.tlist{font:500 12px/1.6 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:0 0 18px}
+.tlist span{color:var(--ink)}
+.pill{display:inline-flex;align-items:stretch;border:2px solid var(--ink);border-radius:999px;overflow:hidden;max-width:100%;background:var(--paper)}
+.pill code{font:500 clamp(11.5px,3.3vw,14px)/1 var(--mono);padding:0 12px;display:flex;align-items:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:48px}
+.pill code::before{content:"$";color:var(--sig-ink);margin-right:8px;font-weight:600}
+.pill button{border:0;background:var(--ink);color:var(--paper);font:600 13px/1 var(--mono);padding:0 14px;min-height:48px;min-width:64px;cursor:pointer;flex:none}
+.ctas{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.btn{display:inline-flex;align-items:center;gap:8px;min-height:48px;padding:0 18px;border-radius:999px;font:600 15px/1 var(--body);text-decoration:none;border:2px solid var(--ink)}
+.btn.pri{background:var(--sig);border-color:var(--sig);color:var(--ink)}
+.cue{position:absolute;right:var(--gr);bottom:18px;font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);display:flex;align-items:center;gap:8px}
+.cue::after{content:"";width:1.5px;height:28px;background:var(--ink);animation:cue 1.6s ease-in-out infinite;transform-origin:top}
+@keyframes cue{0%{transform:scaleY(0)}50%{transform:scaleY(1)}100%{transform:scaleY(0);transform-origin:bottom}}
+.paused .cue::after{animation:none}
+
+/* scenes */
+.scene{position:relative;height:calc(var(--len,3) * 100vh);height:calc(var(--len,3) * 100svh);border-top:1px solid var(--rule)}
+.stage{position:sticky;top:0;height:100vh;height:100svh;overflow:hidden;display:flex;flex-direction:column;padding-top:calc(var(--hdr) + env(safe-area-inset-top,0px) + 14px);padding-bottom:max(14px,env(safe-area-inset-bottom,0px))}
+.copy{flex:none;position:relative;z-index:3}
+.copy h2{margin:0;font-size:clamp(30px,8.6vw,60px);max-width:16ch}
+.kin{flex:1 1 auto;position:relative;min-height:0;margin:10px 0;transition:opacity .22s;overflow:hidden}
+.kin > *{position:absolute;left:0;top:0;transform-origin:50% 50%}
+.caps{flex:none;position:relative;margin:0;padding:0;list-style:none;z-index:3;font-size:16px;line-height:1.45;color:var(--ink2);max-width:38em;overflow-wrap:break-word}
+.caps li{margin:0 0 8px;padding-left:14px;border-left:3px solid var(--sig)}
+.caps code,.lede code,.body code,.diag code{font-family:var(--mono);font-size:.86em;background:var(--paper2);padding:1px 5px;border-radius:3px;color:var(--ink);overflow-wrap:anywhere}
+.js .caps li{position:absolute;left:0;right:0;top:0;opacity:0;transform:translateY(10px);transition:opacity .35s,transform .35s;margin:0}
+.js .caps li.on{opacity:1;transform:none}
+html:not(.js) .scene{height:auto}
+html:not(.js) .stage{position:relative;height:auto;padding-bottom:40px}
+html:not(.js) .kin{display:none}
+@media (min-width:960px){
+  .stage{display:grid;grid-template-columns:minmax(300px,4fr) 7fr;grid-template-rows:auto 1fr auto;column-gap:48px}
+  .copy{grid-column:1;grid-row:1;padding-top:6vh}
+  .caps{grid-column:1;grid-row:3;align-self:end}
+  .kin{grid-column:2;grid-row:1/4;margin:0 0 6px}
+  .copy h2{font-size:clamp(40px,4.4vw,72px)}
+  .caps{font-size:18px}
+  .r-led .hd{font-size:12px;padding:10px 14px}.r-row{min-height:58px;font-size:15px;grid-template-columns:110px 1fr}.r-row .k{font-size:21px;padding:0 14px}.r-m{font-size:15px;padding:12px 16px}.r-h{font-size:14px;padding:16px 26px}
+}
+
+/* generic kinetic pieces */
+.big{white-space:nowrap;font-family:var(--disp);font-weight:800;text-transform:uppercase;line-height:.9;font-variation-settings:"wdth" var(--wd,100),"wght" var(--wg,820)}
+.blk{white-space:nowrap;padding:.08em .22em .02em;line-height:1}
+.c-sig{color:var(--sig)} .c-cob{color:var(--cob)} .c-ink{color:var(--ink)}
+.bg-sig{background:var(--sig);color:var(--ink)} .bg-ink{background:var(--ink);color:var(--paper)} .bg-cob{background:var(--cob);color:var(--paper)} .bg-out{background:var(--paper);color:var(--ink);box-shadow:inset 0 0 0 3px var(--ink)}
+.tag{font:600 11px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+
+/* problem */
+.p-dom{color:var(--cob);--wd:70;--wg:880;transition:color .3s}
+.p-dom.free{color:var(--ink)}
+
+/* cqrs */
+.q-slot{border:2.5px solid var(--ink);display:flex;flex-direction:column;justify-content:flex-end;padding:6px 7px;font:600 10.5px/1.15 var(--mono);text-transform:none;transition:background .25s,color .25s;background:var(--paper)}
+.q-slot small{font:500 9px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin-bottom:auto}
+.q-slot.lit{background:var(--ink);color:var(--paper)}
+.q-slot.lit small{color:var(--sig)}
+.q-cmd,.q-ev,.q-qry{z-index:2}
+.q-cmd{color:var(--sig)} .q-ev{color:var(--cob)} .q-qry{color:var(--ink)}
+.q-rm{background:var(--cob);color:var(--paper);z-index:2}
+.q-band{border-top:2.5px solid var(--ink);display:flex;align-items:center;transition:background .2s,color .2s;padding-left:4px}
+.q-band .lb{font-family:var(--disp);font-weight:800;text-transform:uppercase;white-space:nowrap;line-height:.9;font-variation-settings:"wdth" 92,"wght" 760;-webkit-text-stroke:0}
+.q-band .no{position:absolute;right:6px;top:6px;font:500 10px/1 var(--mono);letter-spacing:.08em;color:var(--mute)}
+.q-band.past{color:var(--mute)}
+.q-band.on{background:var(--cob);color:var(--paper)}
+.q-band.on .no{color:var(--paper)}
+.q-band.h{background:var(--ink);color:var(--paper)}
+.q-band.h.on{background:var(--sig);color:var(--ink)}
+.q-chip{z-index:3}
+.q-pl{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase}
+
+/* across */
+.x-box{border:2.5px solid var(--ink);padding:10px 12px;overflow:hidden;background:var(--paper)}
+.x-box h3{margin:0 0 6px;font-size:clamp(20px,6vw,34px)}
+.x-box .ln{font:500 11.5px/1.45 var(--mono);color:var(--ink2);transition:background .25s,color .25s;display:inline-block;padding:1px 4px;margin-left:-4px}
+.x-box .ln.lit{background:var(--ink);color:var(--paper)}
+.x-box .rcv{display:inline-block;margin:4px 0 6px;border:1.5px solid var(--ink);padding:3px 7px;transition:background .25s}
+.x-box .rcv.lit{background:var(--sig)}
+.x-band{background:repeating-linear-gradient(90deg,var(--ink) 0 10px,transparent 10px 18px) center/100% 2px no-repeat;display:flex;justify-content:space-between;align-items:center;padding:0 2px;transition:background-color .25s}
+.x-band.v{background:repeating-linear-gradient(180deg,var(--ink) 0 10px,transparent 10px 18px) center/2px 100% no-repeat;flex-direction:column;padding:4px 0}
+.x-band .tag{background:var(--paper);padding:3px 6px;border:1.5px solid var(--ink);transition:background .25s,color .25s}
+.x-band .tag.lit{background:var(--ink);color:var(--paper)}
+.x-band .mid{font:600 10px/1 var(--mono);letter-spacing:.14em;background:var(--paper);padding:2px 6px}
+.x-ev{z-index:4;text-align:center}
+.x-ev .big{color:var(--sig);display:block}
+.x-ev small{display:block;font:600 12px/1 var(--mono);margin-top:4px;color:var(--ink)}
+.x-chip{z-index:5;background:var(--ink);color:var(--paper);font:500 12px/1 var(--mono);padding:8px 10px;white-space:nowrap}
+.x-chip b{color:var(--sig);font-weight:600}
+
+/* swap */
+.s-g{width:100%;height:100%;pointer-events:none}
+.s-l{position:absolute;width:100%;text-align:center;white-space:nowrap;left:0}
+.s-l span{display:inline-block;font-family:var(--disp);font-weight:800;text-transform:uppercase;line-height:.84;font-variation-settings:"wdth" var(--wd,100),"wght" 860;color:var(--sig)}
+.s-g.auth .s-l span{color:var(--cob)}
+.s-card{z-index:3;width:min(92%,440px);background:var(--ink);color:#EDEBE4;padding:12px 14px 14px;box-shadow:10px 10px 0 var(--cob)}
+.s-card .bar{display:flex;justify-content:space-between;font:500 10px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:#9C9A93;margin-bottom:10px}
+.s-card .bar b{color:var(--sig);font-weight:600}
+.s-card pre{margin:0;font:400 clamp(11px,3.1vw,13.5px)/1.55 var(--mono);white-space:pre;overflow:hidden}
+.s-card .k{color:#8FA4FF}.s-card .t{color:#FF8A66}
+.s-reg{z-index:3;background:var(--paper);border:2px solid var(--ink);font:500 12px/1.3 var(--mono);padding:8px 10px;white-space:nowrap;text-align:center}
+.s-reg s{text-decoration-thickness:2px;text-decoration-color:var(--sig);color:var(--mute)}
+.s-reg b{font-weight:600;color:var(--cob)}
+.s-reg.swap{animation:regSwap .45s cubic-bezier(.2,.9,.2,1)}
+@keyframes regSwap{from{transform:var(--tf) translateY(10px);opacity:0}}
+
+/* reliability */
+.seg{display:inline-flex;border:2px solid var(--ink);border-radius:999px;margin-top:12px;overflow:hidden}
+.seg button{min-height:44px;padding:0 16px;border:0;background:transparent;color:var(--ink);font:600 13px/1 var(--mono);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.r-led{border:2.5px solid var(--ink);background:var(--paper);width:min(100%,560px)}
+.r-led .hd{background:var(--ink);color:var(--paper);font:600 10.5px/1.3 var(--mono);letter-spacing:.06em;padding:7px 10px;text-transform:uppercase}
+.r-row{display:grid;grid-template-columns:76px 1fr;align-items:center;border-top:1.5px solid var(--rule);min-height:40px;font:500 12.5px/1.2 var(--mono)}
+.r-row .k{font-family:var(--disp);font-variation-settings:"wdth" 110,"wght" 800;font-weight:800;font-size:15px;padding:0 10px;text-transform:uppercase}
+.r-row .v{padding:0 10px;white-space:nowrap;overflow:hidden}
+.r-row.ob .k{color:var(--sig-ink)}
+.r-stamp{z-index:4;border:4px solid var(--sig);color:var(--sig);padding:.06em .2em 0;background:rgba(242,241,236,.85)}
+.r-fly{z-index:4}
+.r-gate{height:30px;border-bottom:3px solid var(--ink);display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:4px}
+.r-gate .tag{background:var(--paper);padding:3px 5px;transition:background .2s,color .2s}
+.r-gate .tag.lit{background:var(--cob);color:var(--paper)}
+.r-m{background:var(--cob);color:var(--paper);font:600 13px/1 var(--mono);padding:10px 12px;white-space:nowrap;z-index:3}
+.r-m.dup::after{content:"";position:absolute;left:-6px;right:-6px;top:50%;height:4px;background:var(--sig);transform:scaleX(var(--k,0));transform-origin:0 50%}
+.r-h{border:2.5px solid var(--ink);padding:12px 18px;font:600 12px/1 var(--mono);letter-spacing:.08em;transition:background .25s,color .25s}
+.r-h.lit{background:var(--ink);color:var(--paper)}
+.r-skip{color:var(--sig-ink)}
+.cos{display:none}
+[data-store="cosmos"] .cos{display:inline}
+[data-store="cosmos"] .ef{display:none}
+
+/* recovery */
+.c-bar{background:var(--ink);color:var(--paper);display:flex;align-items:center;justify-content:space-between;padding:0 12px;font:600 11px/1 var(--mono);letter-spacing:.1em;transition:background .15s}
+.c-bar.hit{background:var(--sig);color:var(--ink)}
+.c-dots{display:flex;gap:8px;align-items:center;font:500 10.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.c-dots i{width:14px;height:14px;border:2px solid var(--ink);display:inline-block}
+.c-dots i.on{background:var(--sig);border-color:var(--sig)}
+.c-word{color:var(--cob)}
+.c-half{color:var(--ink);padding-bottom:.08em;border-bottom:.09em solid var(--sig)}
+.c-h1{transform-origin:100% 100%!important}
+.c-h2{transform-origin:0 100%!important}
+.c-state{font:600 12px/1 var(--mono);letter-spacing:.08em;background:var(--ink);color:var(--paper);padding:8px 10px;white-space:nowrap}
+.c-state.open{background:var(--sig);color:var(--ink)}
+.c-buck{border:3px solid var(--ink);border-top:0;display:flex;align-items:flex-start;justify-content:center;padding-top:10px;transition:background .25s}
+.c-buck::before,.c-buck::after{content:"";position:absolute;top:0;width:18px;height:3px;background:var(--ink)}
+.c-buck::before{left:-18px}.c-buck::after{right:-18px}
+.c-buck .tag{font-size:12px}
+.c-buck.lit{background:var(--paper2)}
+.c-msg{color:var(--sig)}
+.c-tal{display:flex;gap:6px;align-items:center;font:500 10.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.c-tal .nt{text-transform:none;letter-spacing:0}
+.c-tal i{width:6px;height:20px;background:var(--rule);display:inline-block}
+.c-tal i.on{background:var(--ink)}
+
+/* feed */
+.f-tab{width:min(100%,520px);border:2.5px solid var(--ink);background:var(--paper);font:500 13px/1 var(--mono)}
+.f-tab .tt{background:var(--ink);color:var(--paper);padding:7px 10px;font-size:11px;letter-spacing:.06em;display:flex;justify-content:space-between}
+.f-r{display:grid;grid-template-columns:1fr 1.3fr 1fr;height:34px;align-items:center;padding:0 10px;border-top:1.5px solid var(--rule);position:relative;background:var(--paper)}
+.f-r.h{color:var(--mute);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;height:28px}
+.f-r .st{position:relative;overflow:hidden;height:34px}
+.f-r .st span{position:absolute;left:0;top:0;line-height:34px}
+.f-r .st span + span{color:var(--cob);font-weight:600}
+.f-r .strike{position:absolute;left:6px;right:6px;top:50%;height:3px;background:var(--ink);transform:scaleX(0);transform-origin:0 50%}
+.f-r.ins{transition:background .3s}
+.f-g .ch{will-change:transform,opacity}
+.f-chip{font:600 12px/1 var(--mono);padding:9px 10px;white-space:nowrap;border:2px solid var(--ink);background:var(--paper)}
+.f-chip b{font-weight:600}
+.f-chip.fi b{color:var(--sig-ink)} .f-chip.fu b{color:var(--cob)} .f-chip.fd b{color:var(--ink)}
+.f-lane{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--mute)}
+
+/* diagnostics */
+.diag{padding-top:72px;padding-bottom:72px;border-top:1px solid var(--rule);background:var(--ink);color:var(--paper)}
+.diag .eyebrow{color:var(--paper)} .diag .eyebrow b{background:var(--sig);color:var(--ink)} .diag .eyebrow i{color:#A4A29B}
+.dh{margin:6px 0 22px}
+.dh.nt .fl{transition:none!important}
+.dh .fl{display:block;width:max-content;white-space:nowrap;transition:font-variation-settings .9s cubic-bezier(.2,.8,.2,1),color .6s}
+.dh .l1{--wg:120;font-variation-settings:"wdth" 120,"wght" 120;color:#EDEBE4}
+.dh .l2{font-variation-settings:"wdth" 80,"wght" 300;color:#8E8C86}
+.dh .l3{font-variation-settings:"wdth" 120,"wght" 120;color:#6B6A65}
+.diag.on .dh .l1{font-variation-settings:"wdth" 120,"wght" 120;color:#6B6A65}
+.diag.on .dh .l3{font-variation-settings:"wdth" 120,"wght" 900;color:var(--sig)}
+.diag p{max-width:36em;color:#D9D7CF}
+.diag code{background:#2B2B29;color:#F2F1EC}
+.sw{display:inline-flex;align-items:center;gap:12px;min-height:52px;padding:0 18px 0 8px;border:2px solid var(--paper);border-radius:999px;background:transparent;color:var(--paper);font:600 14px/1 var(--mono);cursor:pointer;margin:6px 0 22px}
+.sw .kn{width:52px;height:32px;border-radius:999px;background:#3A3A37;position:relative;transition:background .25s}
+.sw .kn::after{content:"";position:absolute;left:4px;top:4px;width:24px;height:24px;border-radius:50%;background:var(--paper);transition:transform .3s cubic-bezier(.2,.9,.2,1)}
+.sw[aria-checked="true"] .kn{background:var(--sig)}
+.sw[aria-checked="true"] .kn::after{transform:translateX(20px)}
+.trace{border:1.5px solid #4A4A46;max-width:760px;font:500 12px/1.3 var(--mono)}
+.trace .th{display:flex;justify-content:space-between;padding:8px 12px;border-bottom:1.5px solid #4A4A46;color:#A4A29B;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
+.trace .empty{padding:18px 12px;color:#8E8C86;transition:opacity .3s}
+.diag.on .trace .empty{display:none}
+.tr{display:none;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 12px;padding:10px 12px;border-bottom:1px solid #333331}
+.diag.on .tr{display:grid}
+.tr .src{color:#8FA4FF;font-size:10.5px;overflow-wrap:anywhere}
+.tr .nm{color:var(--paper);clip-path:inset(0 100% 0 0);transition:clip-path .55s steps(18)}
+.tr .bar{grid-column:1/3;height:8px;position:relative}
+.tr .bar i{position:absolute;top:0;bottom:0;background:var(--sig);left:var(--l);width:var(--w);transform:scaleX(0);transform-origin:0 50%;transition:transform .6s cubic-bezier(.2,.9,.2,1)}
+.tr.on .nm{clip-path:inset(0 0 0 0)}
+.tr.on .bar i{transform:none}
+
+/* index */
+.index{padding-top:80px;padding-bottom:40px}
+.ih{margin:0 0 26px;font-size:clamp(64px,22vw,220px);--wd:62;--wg:880}
+.ih .fl{display:block;width:max-content;white-space:nowrap}
+.pkgs{list-style:none;margin:0;padding:0;border-top:3px solid var(--ink)}
+.pkgs > li{border-bottom:1.5px solid var(--ink)}
+.pkgs summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:34px 1fr 32px;align-items:start;gap:4px 10px;padding:16px 0 14px;min-height:56px}
+.pkgs summary::-webkit-details-marker{display:none}
+.pkgs .n{font:600 12px/1 var(--mono);padding-top:6px;color:var(--mute)}
+.pkgs .nm{min-width:0}
+.pkgs .pre{display:block;font:500 12px/1 var(--mono);color:var(--mute);margin-bottom:4px}
+.pkgs .nm .d{display:block;font-size:clamp(26px,7.8vw,78px);--wd:72;--wg:800;line-height:.9;overflow-wrap:anywhere;transition:font-variation-settings .5s cubic-bezier(.2,.8,.2,1),color .3s}
+.pkgs details[open] .nm .d{--wd:66;--wg:900;color:var(--sig-ink)}
+.pkgs .role{grid-column:2;font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--cob)}
+.pkgs .pm{grid-column:3;grid-row:1;width:32px;height:32px;border:2px solid var(--ink);border-radius:50%;position:relative;margin-top:2px;transition:transform .35s,background .2s}
+.pkgs .pm::before,.pkgs .pm::after{content:"";position:absolute;left:50%;top:50%;width:12px;height:2px;background:var(--ink);transform:translate(-50%,-50%)}
+.pkgs .pm::after{transform:translate(-50%,-50%) rotate(90deg)}
+.pkgs details[open] .pm{transform:rotate(45deg);background:var(--sig);border-color:var(--sig)}
+.pkgs .body{display:grid;gap:14px;padding:0 0 22px 44px;max-width:900px;animation:open .45s cubic-bezier(.2,.9,.2,1)}
+@keyframes open{from{opacity:0;transform:translateY(-8px)}}
+.pkgs dl{margin:0;display:grid;gap:12px}
+.pkgs dt{font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);margin-bottom:4px}
+.pkgs dd{margin:0;font-size:16px;line-height:1.5}
+.pkgs .links{display:flex;flex-wrap:wrap;gap:8px}
+.pkgs .links a{min-height:44px;display:inline-flex;align-items:center;padding:0 14px;border:1.5px solid var(--ink);border-radius:999px;font:600 13px/1 var(--mono);text-decoration:none}
+.pkgs .links a:first-child{background:var(--ink);color:var(--paper)}
+@media (min-width:760px){.pkgs summary{grid-template-columns:56px 1fr 180px 40px}.pkgs .role{grid-column:3;grid-row:1;padding-top:8px;text-align:right}.pkgs .pm{grid-column:4}.pkgs .body{padding-left:66px}.pkgs dl{grid-template-columns:1fr 1fr;column-gap:32px}}
+.js .pkgs > li{opacity:0;transform:translateY(24px);transition:opacity .6s,transform .6s cubic-bezier(.2,.9,.2,1)}
+.js .pkgs > li.in{opacity:1;transform:none}
+
+.end{padding-top:60px;padding-bottom:40px;border-top:3px solid var(--ink);margin-top:56px}
+.end h2{margin:0 0 22px;font-size:clamp(48px,15vw,170px)}
+.end h2 .fl{display:block;width:max-content;white-space:nowrap}
+.end h2 .fl + .fl{color:var(--sig)}
+.end p{max-width:36em;color:var(--ink2)}
+footer{padding-top:28px;padding-bottom:max(28px,env(safe-area-inset-bottom,0px));border-top:1px solid var(--rule);font:500 12px/1.6 var(--mono);color:var(--mute);display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px}
+footer a{display:inline-flex;align-items:center;min-height:44px}
+
+@media (prefers-reduced-motion:reduce){
+  .cue::after,.cy .layer .ch{animation:none!important}
+  .js .pkgs > li{transition:opacity .4s;transform:none}
+}
+</style>
+</head>
+<body>
+<header class="hdr pad" role="banner">
+  <div class="in wrap">
+    <a class="brand" href="#top" aria-label="Chatter, back to top">CHATTER<span>.</span></a>
+    <button class="hbtn" id="pause" type="button" aria-pressed="false" aria-label="Pause looping motion">
+      <svg viewBox="0 0 14 14" aria-hidden="true"><rect x="2" y="1" width="3.5" height="12" fill="currentColor"/><rect x="8.5" y="1" width="3.5" height="12" fill="currentColor"/></svg><span>Pause</span>
+    </button>
+    <a class="hbtn" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">GitHub</a>
+  </div>
+  <div class="prog" id="prog" aria-hidden="true"></div>
+</header>
+
+<main id="top">
+<!-- 01 HERO -->
+<section class="hero pad" aria-labelledby="h-hero">
+  <div class="wrap" style="width:100%">
+    <p class="eyebrow"><b>01</b><i>.NET · CQRS · brokered messaging</i></p>
+    <h1 class="d pre" id="h-hero">
+      <span class="ln"><span class="w t1">Same</span> <span class="w t1">handlers.</span></span>
+      <span class="ln"><span class="w t2">Any</span> <span class="w t2 cy" id="cyc"><span class="sr">broker.</span><span class="layer still" aria-hidden="true">broker.</span></span></span>
+    </h1>
+    <p class="tlist" aria-label="Transports">Transports: <span>Azure Service Bus</span> · <span>RabbitMQ</span> · <span>SQL Server Service Broker</span></p>
+    <p class="lede">Modular .NET libraries for domain-driven Web APIs and microservices: an in-process CQRS core with technology-agnostic brokered messaging. Write the handler once. Let it travel.</p>
+    <div class="pill"><code id="inst1">dotnet add package Chatter.CQRS</code><button type="button" data-copy="inst1">Copy</button></div>
+    <div class="ctas"><a class="btn pri" href="#s-problem">See it move ↓</a><a class="btn" href="#index">Package index</a></div>
+  </div>
+  <span class="cue" aria-hidden="true">Scroll</span>
+</section>
+
+<!-- 02 PROBLEM -->
+<section class="scene" id="s-problem" data-scene="problem" style="--len:3.2" aria-labelledby="h-problem">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>02</b><i>The problem</i></p><h2 class="d" id="h-problem">The SDK buries the domain.</h2></div>
+    <div class="kin" aria-hidden="true">
+      <div class="big p-dom">Domain</div>
+      <div class="big blk p-w bg-sig">Retries</div>
+      <div class="big blk p-w bg-ink">Queues</div>
+      <div class="big blk p-w bg-out">Connection strings</div>
+      <div class="big blk p-w bg-cob">Serializers</div>
+      <div class="big blk p-w bg-sig">Dedupe</div>
+      <div class="big blk p-w bg-out">Topics</div>
+      <div class="big blk p-w bg-ink">SDK clients</div>
+      <div class="big blk p-w bg-cob">Ack · nack</div>
+    </div>
+    <ul class="caps">
+      <li>Your domain starts simple: orders, payments, the rules of the business.</li>
+      <li>Then broker SDK code moves in: retries, queues, connection strings, serializers, dedupe. Controllers swell with orchestration and the domain gets buried.</li>
+      <li>Chatter moves those concerns behind stable abstractions in separate packages, so your handlers keep speaking the domain.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 03 CQRS -->
+<section class="scene" id="s-cqrs" data-scene="cqrs" style="--len:5" aria-labelledby="h-cqrs">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>03</b><i>Chatter.CQRS</i></p><h2 class="d" id="h-cqrs">Three shapes. One dispatcher.</h2></div>
+    <div class="kin" aria-hidden="true">
+      <div class="q-slot"><small>handler</small><span>—</span></div>
+      <div class="q-slot"><small>handler</small><span>—</span></div>
+      <div class="q-slot"><small>handler</small><span>—</span></div>
+      <div class="big q-cmd">Command</div>
+      <div class="big q-ev">Event</div><div class="big q-ev">Event</div><div class="big q-ev">Event</div>
+      <div class="big q-qry">Query</div>
+      <div class="big blk q-rm">Read model</div>
+      <div class="q-pl">Command Pipeline</div>
+      <div class="q-band"><span class="lb">Logging</span><span class="no">behavior 1</span></div>
+      <div class="q-band"><span class="lb">Unit of work</span><span class="no">behavior 2</span></div>
+      <div class="q-band"><span class="lb">Inbox</span><span class="no">behavior 3</span></div>
+      <div class="q-band h"><span class="lb">Handler</span><span class="no">your code</span></div>
+      <div class="big blk q-chip bg-sig">Command</div>
+    </div>
+    <ul class="caps">
+      <li>A <strong>Command</strong> asks for one thing to happen. The Message Dispatcher (<code>IMessageDispatcher</code>) sends it to exactly one handler.</li>
+      <li>An <strong>Event</strong> says something happened. Zero or many handlers react to it.</li>
+      <li>A <strong>Query</strong> asks a question. The Query Dispatcher returns a Read Model.</li>
+      <li>The <strong>Command Pipeline</strong> wraps every Command handler in ordered behaviors such as logging, unit of work and an inbox check. <code>AddChatterCqrs</code> scans your assembly and registers the handlers.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 04 ACROSS -->
+<section class="scene" id="s-across" data-scene="across" style="--len:3.6" aria-labelledby="h-across">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>04</b><i>Chatter.MessageBrokers</i></p><h2 class="d" id="h-across">Across services, same handler.</h2></div>
+    <div class="kin" aria-hidden="true">
+      <div class="x-box x-o"><h3 class="d">Orders service</h3><span class="ln">context.Publish(new OrderPlaced { … });</span></div>
+      <div class="x-band"><span class="tag x-s">send · order-events</span><span class="mid">BROKER</span><span class="tag x-r">receive · billing</span></div>
+      <div class="x-box x-b"><h3 class="d">Billing service</h3><span class="rcv tag">Brokered Message Receiver</span><br><span class="ln">IMessageHandler&lt;OrderPlaced&gt;</span></div>
+      <div class="x-ev"><span class="big">Event</span><small>OrderPlaced</small></div>
+      <div class="x-chip">[BrokeredMessage(<b>"order-events"</b>, <b>"billing"</b>)]</div>
+    </div>
+    <ul class="caps">
+      <li>In the Orders service a handler publishes an Event with <code>context.Publish(new OrderPlaced { … })</code>.</li>
+      <li><code>[BrokeredMessage]</code> on the message names its send and receive paths, so handlers never name queues or topics.</li>
+      <li>In the Billing service a Brokered Message Receiver, a hosted service per message type, hands it to the handler you already wrote.</li>
+      <li>The External Dispatcher is a no-op until <code>AddMessageBrokers()</code> replaces it. Until then, everything stays in-process.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 05 SWAP -->
+<section class="scene" id="s-swap" data-scene="swap" style="--len:4.4" aria-labelledby="h-swap">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>05</b><i>Transports</i></p><h2 class="d" id="h-swap">Swap the transport. Keep the handler.</h2></div>
+    <div class="kin" aria-hidden="true">
+      <div class="s-g" data-wd="74"><div class="s-l"><span>Azure</span></div><div class="s-l"><span>Service</span></div><div class="s-l"><span>Bus</span></div></div>
+      <div class="s-g" data-wd="96"><div class="s-l"><span>Rabbit</span></div><div class="s-l"><span>MQ</span></div></div>
+      <div class="s-g" data-wd="60"><div class="s-l"><span>SQL Server</span></div><div class="s-l"><span>Service</span></div><div class="s-l"><span>Broker</span></div></div>
+      <div class="s-g auth" data-wd="88"><div class="s-l"><span>No</span></div><div class="s-l"><span>Secrets</span></div></div>
+      <div class="s-card"><div class="bar"><span>ChargeCardHandler.cs</span><b>0 lines changed</b></div><pre><span class="k">public class</span> ChargeCardHandler
+    : <span class="t">IMessageHandler</span>&lt;OrderPlaced&gt;
+{
+  <span class="k">public</span> Task Handle(OrderPlaced message,
+      <span class="t">IMessageHandlerContext</span> context)
+      =&gt; _billing.Charge(message.OrderId);
+}</pre></div>
+      <div class="s-reg">.AddMessageBrokers().<b>AddAzureServiceBus()</b></div>
+    </div>
+    <ul class="caps">
+      <li><strong>Azure Service Bus</strong>: queues, topic subscriptions, sessions and cross-entity transactions. Transports provision no infrastructure; you create the entities.</li>
+      <li><strong>RabbitMQ</strong>: a transport over the exchanges, queues and bindings you provision.</li>
+      <li><strong>SQL Server Service Broker</strong>: conversations and queues you set up, so messages move inside the database you already run.</li>
+      <li><strong>Azure Service Bus Auth</strong>: Microsoft Entra ID tokens, including managed identity, so there is no connection-string secret to store.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 06 RELIABILITY -->
+<section class="scene" id="s-rel" data-scene="rel" data-store="ef" style="--len:4.6" aria-labelledby="h-rel">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>06</b><i>Reliability</i></p><h2 class="d" id="h-rel">State and message, written together.</h2>
+      <div class="seg" role="group" aria-label="Store"><button type="button" data-store="ef" aria-pressed="true">EF Core</button><button type="button" data-store="cosmos" aria-pressed="false">Cosmos DB</button></div>
+    </div>
+    <div class="kin" aria-hidden="true">
+      <div class="big r-wo c-sig">Outbox</div>
+      <div class="big r-wi c-cob">Inbox</div>
+      <div class="r-led"><div class="hd"><span class="ef">EF Core · your DbContext · one transaction</span><span class="cos">Cosmos DB · one TransactionalBatch</span></div>
+        <div class="r-row"><span class="k">State</span><span class="v"><span class="ef">Orders #42 → Placed</span><span class="cos">aggregate document</span></span></div>
+        <div class="r-row"><span class="k">Inbox</span><span class="v"><span class="ef">PlaceOrder 7f3a · record</span><span class="cos">inbox marker 7f3a</span></span></div>
+        <div class="r-row ob"><span class="k">Outbox</span><span class="v"><span class="ef">OrderPlaced · pending</span><span class="cos">outbox document · pending</span></span></div>
+      </div>
+      <div class="big r-stamp">Commit</div>
+      <div class="big blk r-fly bg-sig">OrderPlaced</div>
+      <div class="tag r-rel"><span class="ef">Outbox publishes after commit →</span><span class="cos">Outbox Relay publishes →</span></div>
+      <div class="r-gate"><span class="tag r-g1">Inbox · check 7f3a</span><span class="tag r-g2">recorded</span></div>
+      <div class="r-m">PlaceOrder · 7f3a</div>
+      <div class="r-m dup">PlaceOrder · 7f3a</div>
+      <div class="tag r-skip">redelivery · skipped</div>
+      <div class="r-h">HANDLER</div>
+    </div>
+    <ul class="caps">
+      <li><strong>Outbox.</strong> <span class="ef">Chatter.<wbr>MessageBrokers.<wbr>Reliability.<wbr>EntityFramework saves the state change, the Inbox record and the Outbox record in one database transaction in your own DbContext.</span><span class="cos">Chatter.<wbr>MessageBrokers.<wbr>Reliability.<wbr>Cosmos has its Document Tier write the aggregate, an Outbox document and an Inbox marker in one TransactionalBatch.</span></li>
+      <li><strong>After commit,</strong> <span class="ef">the Outbox publishes from the store, with an optional polling Outbox Processor.</span><span class="cos">a change-feed Outbox Relay publishes the pending outbox documents.</span></li>
+      <li><strong>Inbox.</strong> The Inbox records handled Commands and deduplicates redelivered ones, so the repeat is skipped instead of handled again.<span class="cos"> A standalone Inbox Gate is also available.</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- 07 RECOVERY -->
+<section class="scene" id="s-rec" data-scene="rec" style="--len:4" aria-labelledby="h-rec">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>07</b><i>Recovery</i></p><h2 class="d" id="h-rec">Failure has a plan.</h2></div>
+    <div class="kin" aria-hidden="true">
+      <div class="big c-word">Retry</div>
+      <div class="c-bar"><span>HANDLER</span><span class="c-throw">throws</span></div>
+      <div class="c-dots"><span>attempts</span><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="big c-half c-h1">Brea</div>
+      <div class="big c-half c-h2">ker</div>
+      <div class="c-state">CLOSED · processing</div>
+      <div class="c-buck"><span class="tag">Error Queue</span></div>
+      <div class="c-tal"><span>receives</span><i></i><i></i><i></i><i></i><i></i><i></i><span class="nt">MaxReceiveAttempts</span></div>
+      <div class="big c-msg">Message</div>
+    </div>
+    <ul class="caps">
+      <li><strong>Retry</strong> runs a failing receive again, immediately or with constant or exponential delay, for the exception types you choose.</li>
+      <li>The <strong>Circuit Breaker</strong> stops processing after repeated failures, then admits a trial once it has cooled.</li>
+      <li>A message that reaches its receive limit is deadlettered and sent to its <strong>Error Queue</strong>, out of the way of healthy traffic.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 08 CHANGE FEED -->
+<section class="scene" id="s-feed" data-scene="feed" style="--len:4" aria-labelledby="h-feed">
+  <div class="stage pad">
+    <div class="copy"><p class="eyebrow"><b>08</b><i>Chatter.SqlChangeFeed</i></p><h2 class="d" id="h-feed">Rows become events.</h2></div>
+    <div class="kin" aria-hidden="true">
+      <div class="f-tab"><div class="tt"><span>dbo.Orders</span><span>watched</span></div>
+        <div class="f-r h"><span>Id</span><span>Status</span><span>Total</span></div>
+        <div class="f-r r1"><span>1041</span><span>Shipped</span><span>112.00</span><i class="strike"></i></div>
+        <div class="f-r r2"><span>1042</span><span class="st"><span>Placed</span><span>Shipped</span></span><span>40.00</span></div>
+        <div class="f-r r3 ins"><span>1043</span><span>Placed</span><span>58.00</span></div>
+      </div>
+      <div class="big f-g c-sig">Inserted</div>
+      <div class="big f-g c-cob">Updated</div>
+      <div class="big f-g c-ink">Deleted</div>
+      <div class="f-lane">→ your handlers</div>
+      <div class="f-chip fi"><b>RowInsertedEvent</b>&lt;Order&gt;</div>
+      <div class="f-chip fu"><b>RowUpdatedEvent</b>&lt;Order&gt;</div>
+      <div class="f-chip fd"><b>RowDeletedEvent</b>&lt;Order&gt;</div>
+    </div>
+    <ul class="caps">
+      <li>Chatter.SqlChangeFeed watches a SQL Server table. A new row arrives as a strongly typed <code>RowInsertedEvent</code>.</li>
+      <li>A changed row arrives as a <code>RowUpdatedEvent</code>, handled by an ordinary Chatter handler.</li>
+      <li>A removed row arrives as a <code>RowDeletedEvent</code>.</li>
+      <li>It is built on SQL Server Service Broker, so the change feed rides the database you already run.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 09 DIAGNOSTICS -->
+<section class="diag pad" id="diag" aria-labelledby="h-diag">
+  <div class="wrap">
+    <p class="eyebrow"><b>09</b><i>Diagnostics</i></p>
+    <h2 class="d dh" id="h-diag" data-fit><span class="fl l1">Silent</span><span class="fl l2">until you</span><span class="fl l3">listen.</span></h2>
+    <p>Tracing and metrics use the .NET base class library, <code>ActivitySource</code> and <code>Meter</code>. Nothing is emitted until you subscribe, for example by adding the sources to OpenTelemetry or an <code>ActivityListener</code>.</p>
+    <button class="sw" type="button" role="switch" aria-checked="false" id="lsn"><span class="kn" aria-hidden="true"></span><span class="lbl">Subscribe a listener</span></button>
+    <div class="trace" aria-live="polite">
+      <div class="th"><span>Trace (illustrative)</span><span id="tcount">0 spans</span></div>
+      <div class="empty">No listener subscribed. Nothing is emitted.</div>
+      <div class="tr"><span class="src">Chatter.CQRS</span><span class="nm">dispatch PlaceOrder</span><span class="bar"><i style="--l:0%;--w:92%"></i></span></div>
+      <div class="tr"><span class="src">Chatter.CQRS</span><span class="nm">handle PlaceOrder</span><span class="bar"><i style="--l:6%;--w:70%"></i></span></div>
+      <div class="tr"><span class="src">Chatter.MessageBrokers</span><span class="nm">publish OrderPlaced</span><span class="bar"><i style="--l:52%;--w:22%"></i></span></div>
+      <div class="tr"><span class="src">Chatter.MessageBrokers</span><span class="nm">receive OrderPlaced</span><span class="bar"><i style="--l:78%;--w:20%"></i></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 10 INDEX -->
+<section class="index pad" id="index" aria-labelledby="h-index">
+  <div class="wrap">
+    <p class="eyebrow"><b>10</b><i>The index</i></p>
+    <h2 class="d ih" id="h-index" data-fit><span class="fl">Index</span></h2>
+    <ol class="pkgs" id="pkgs"></ol>
+
+    <div class="end">
+      <h2 class="d" data-fit><span class="fl">Write it once.</span><span class="fl">Let it travel.</span></h2>
+      <p>Start with the core. Add Chatter.MessageBrokers and a transport when messages need to leave the process. MIT licensed, independently versioned NuGet packages for modern .NET.</p>
+      <div class="pill"><code id="inst2">dotnet add package Chatter.CQRS</code><button type="button" data-copy="inst2">Copy</button></div>
+      <div class="ctas"><a class="btn pri" href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">Read the docs on GitHub</a><a class="btn" href="https://www.nuget.org/packages/Chatter.CQRS" target="_blank" rel="noopener">NuGet</a></div>
+    </div>
+  </div>
+</section>
+</main>
+<footer class="pad wrap">
+  <span>Chatter · MIT License · <a href="https://github.com/brenpike/Chatter" target="_blank" rel="noopener">brenpike/Chatter</a></span>
+  <a href="../index.html">Prototype I · Kinetic · All prototypes</a>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var $=function(s,r){return (r||document).querySelector(s)}, $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
+var cl=function(v,a,b){a=a==null?0:a;b=b==null?1:b;return v<a?a:v>b?b:v};
+var seg=function(p,a,b){return cl((p-a)/(b-a))};
+var lerp=function(a,b,t){return a+(b-a)*t};
+var eo=function(t){return 1-Math.pow(1-t,3)};
+var eio=function(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2};
+var back=function(t){var c=1.70158,c3=c+1;return 1+c3*Math.pow(t-1,3)+c*Math.pow(t-1,2)};
+var bounce=function(x){var n=7.5625,d=2.75;if(x<1/d)return n*x*x;if(x<2/d)return n*(x-=1.5/d)*x+.75;if(x<2.5/d)return n*(x-=2.25/d)*x+.9375;return n*(x-=2.625/d)*x+.984375};
+var mq=window.matchMedia?window.matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
+var RM=mq.matches;
+var paused=false;
+
+function meas(el){el._w=el.offsetWidth;el._h=el.offsetHeight}
+function fit(el,maxW,maxPx,minPx){el.style.fontSize='100px';var w=el.offsetWidth||1;var s=cl(100*maxW/w,minPx||10,maxPx);el.style.fontSize=s.toFixed(2)+'px';meas(el);return s}
+function C(el,cx,cy,o){o=o||{};var s=o.s==null?1:o.s,sx=o.sx==null?s:o.sx,sy=o.sy==null?s:o.sy;
+  el.style.transform='translate3d('+(cx-el._w/2).toFixed(1)+'px,'+(cy-el._h/2).toFixed(1)+'px,0) rotate('+(o.r||0).toFixed(2)+'deg) scale('+sx.toFixed(3)+','+sy.toFixed(3)+')';
+  if(o.o!=null){var v=cl(o.o);el.style.opacity=v.toFixed(3);el.style.visibility=v<.004?'hidden':'visible'}}
+function splitCh(el){var t=el.textContent;el.textContent='';var out=[];for(var i=0;i<t.length;i++){var sp=document.createElement('span');sp.className='ch';sp.textContent=t[i]===' '?' ':t[i];sp.style.setProperty('--i',i);el.appendChild(sp);out.push(sp)}return out}
+function q(qq){return Math.round(qq*1000)/1000}
+
+/* ---------- copy buttons ---------- */
+$$('[data-copy]').forEach(function(b){b.addEventListener('click',function(){var t=document.getElementById(b.getAttribute('data-copy')).textContent;var done=function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1600)};
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){fallback(t);done()})}else{fallback(t);done()}}catch(e){fallback(t);done()}})});
+function fallback(t){try{var ta=document.createElement('textarea');ta.value=t;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}catch(e){}}
+
+/* ---------- pause ---------- */
+var pb=$('#pause');
+function setPaused(v){paused=v;pb.setAttribute('aria-pressed',v?'true':'false');pb.querySelector('span').textContent=v?'Play':'Pause';document.documentElement.classList.toggle('paused',v)}
+pb.addEventListener('click',function(){setPaused(!paused)});
+if(RM)setPaused(true);
+
+/* ---------- hero ---------- */
+var h1=$('#h-hero'),cyc=$('#cyc'),heroSize=100,cyW=0;
+var names=[{t:'broker.',wd:100},{t:'Azure Service Bus.',wd:64},{t:'RabbitMQ.',wd:100},{t:'SQL Server Service Broker.',wd:50}],ni=0;
+$$('.t1',h1).forEach(function(w){splitCh(w)});
+var anyW=$$('.t2',h1)[0];splitCh(anyW);
+function heroLayout(){
+  var W=h1.parentNode.clientWidth;var narrow=window.innerWidth<760;
+  h1.style.fontSize='100px';
+  var layer=$('.layer',cyc);
+  var widest=0;h1.classList.add('meas');
+  if(narrow){$$('.t1',h1).forEach(function(w){widest=Math.max(widest,w.offsetWidth)});widest=Math.max(widest,anyW.offsetWidth)}
+  else{widest=$$('.ln',h1)[0].offsetWidth}
+  h1.classList.remove('meas');
+  var vh=window.innerHeight;var lines=narrow?4:2;
+  heroSize=Math.min(100*W/widest*0.98,(vh*(narrow?.5:.48))/(lines*.9),210);
+  h1.style.fontSize=heroSize.toFixed(1)+'px';
+  cyW=narrow?W:Math.max(80,W-anyW.offsetWidth-heroSize*.25);
+  cyc.style.width=cyW+'px';cyc.style.height=(heroSize*.86)+'px';
+  $$('.layer',cyc).forEach(fitLayer);
+}
+function fitLayer(l){l.style.fontSize='100px';var w=l.scrollWidth||1;l.style.fontSize=Math.min(heroSize,100*cyW/w*.98).toFixed(1)+'px'}
+function cycle(){
+  if(paused||!heroVisible||document.hidden)return;
+  ni=(ni+1)%names.length;var n=names[ni];
+  var old=$$('.layer',cyc);old.forEach(function(o){o.classList.remove('still');o.classList.add('out');setTimeout(function(){o.remove()},700)});
+  var l=document.createElement('span');l.className='layer';l.setAttribute('aria-hidden','true');l.textContent=n.t.toUpperCase();l.style.setProperty('--wd',n.wd);splitCh(l);cyc.appendChild(l);fitLayer(l);
+}
+var heroVisible=true;
+if('IntersectionObserver' in window){new IntersectionObserver(function(e){heroVisible=e[0].isIntersecting}).observe(h1)}
+setInterval(cycle,2600);
+function heroAssemble(){
+  var chs=$$('.ch',h1).filter(function(c){return !c.closest('.cy')});
+  if(RM){h1.classList.remove('pre');return}
+  chs.forEach(function(c,i){var a=(i*137.5)%360*Math.PI/180;c.style.transform='translate('+(Math.cos(a)*60).toFixed(0)+'vw,'+(Math.sin(a)*40).toFixed(0)+'vh) rotate('+((i%2?1:-1)*(30+i*7%50))+'deg) scale(1.6)';c.style.opacity='0'});
+  h1.getBoundingClientRect();h1.classList.remove('pre');
+  requestAnimationFrame(function(){chs.forEach(function(c,i){c.style.transition='transform 1.05s cubic-bezier(.16,1,.3,1) '+(i*45)+'ms, opacity .5s ease '+(i*45)+'ms';c.style.transform='none';c.style.opacity='1'})});
+}
+
+/* ---------- scenes ---------- */
+var SC={};
+
+SC.problem={bounds:[.07,.82],rm:[0,.76,1],
+ layout:function(s){var k=s.k;s.dom=$('.p-dom',k);s.pile=$$('.p-w',k);
+  fit(s.dom,s.W*.96,Math.min(320,s.H*.42));
+  var S=Math.min(s.W*.13,76,s.H*.62/8/1.04);
+  s.pile.forEach(function(w){fit(w,s.W*.9,S)})},
+ render:function(s,p){var W=s.W,H=s.H,dom=s.dom;var off=[.6,-.8,.2,-.5,.9,-.15,.45,-.7],rot=[-3,2,-1.5,3,-2.2,1.2,-3.5,2.4];
+  var restore=seg(p,.86,.97),crush=0,n=s.pile.length;
+  var ts=s.pile.map(function(w,i){var t=seg(p,.07+i*.085,.15+i*.085);crush+=eo(t);return t});crush/=n;
+  var sy=lerp(1-.7*crush,1,back(restore));
+  dom.style.setProperty('--wg',Math.round(lerp(860,900,crush)));
+  var pt=cl(crush*5)*(1-eio(restore));var bot=lerp(H*.5+dom._h/2,H,pt);
+  C(dom,W/2,bot-dom._h*sy/2,{sy:sy,sx:1+.05*crush*(1-restore),o:1});
+  var top=bot-dom._h*Math.min(sy,1-.7*crush+.0001);
+  s.pile.forEach(function(w,i){var t=ts[i];var restY=top-w._h/2;top-=w._h*.97;var cx=W/2+off[i]*(W-w._w)/2;
+   var y=lerp(-w._h*.6,restY,bounce(t));var sw=seg(p,.8+i*.008,.9+i*.008);var dir=i%2?-1:1;
+   C(w,cx+sw*sw*W*1.5*dir,y-sw*H*.1,{r:rot[i]*eo(t)+sw*40*dir,o:t>0?Math.min(1,t*6):0})});
+  dom.classList.toggle('free',restore>.4)}};
+
+SC.cqrs={bounds:[.24,.5,.72],rm:[.2,.47,.7,.95],
+ layout:function(s){var k=s.k,W=s.W,H=s.H;s.slots=$$('.q-slot',k);s.cmd=$('.q-cmd',k);s.evs=$$('.q-ev',k);s.qry=$('.q-qry',k);s.rmb=$('.q-rm',k);s.bands=$$('.q-band',k);s.chip=$('.q-chip',k);s.pl=$('.q-pl',k);
+  var sz=fit(s.cmd,W*.92,Math.min(150,H*.2));
+  s.evs.forEach(function(e){if(!e._sp)e._sp=splitCh(e);e.style.fontSize=sz+'px';meas(e)});
+  s.qry.style.fontSize=sz+'px';meas(s.qry);
+  s.sw=Math.min((W-20)/3,210);s.sh=Math.min(H*.2,100);
+  s.slots.forEach(function(e){e.style.width=s.sw+'px';e.style.height=s.sh+'px';meas(e)});
+  fit(s.rmb,W*.62,sz*.5);
+  s.bt=H*.09;s.bh=(H-s.bt-4)/4;
+  s.bands.forEach(function(b){b.style.height=(s.bh-4)+'px';b.style.width=W+'px';fit(b.firstElementChild,W*.5,s.bh*.6);meas(b)});
+  s.chip.style.fontSize=Math.min(s.bh*.28,30,W*.058)+'px';meas(s.chip);meas(s.pl);s.ph=-1},
+ labels:[[null,['Place','Order','Handler'],null],[['Send','Email','Handler'],['Invoice','Handler'],['Audit','Handler']],[null,['OrderSummary','QueryHandler'],null]],
+ render:function(s,p){var W=s.W,H=s.H,i;var sy=H-s.sh/2-2;var sxF=function(i){return W/2+(i-1)*(s.sw+10)};
+  var ph=p<.24?0:p<.5?1:p<.72?2:3;
+  if(ph!==s.ph){s.ph=ph;var L=this.labels[ph]||[];s.slots.forEach(function(e,i){var l=L[i];e.lastElementChild.innerHTML=l?l.join('<wbr>'):'—'})}
+  var A=seg(p,0,.24),B=seg(p,.24,.5),Q=seg(p,.5,.72),P=seg(p,.72,1);
+  var fA=1-seg(A,.9,1),fB=Math.min(seg(B,0,.08),1-seg(B,.92,1)),fQ=Math.min(seg(Q,0,.1),1-seg(Q,.92,1)),fP=seg(P,0,.08);
+  var so=[0,0,0],lit=[0,0,0];
+  if(ph===0)so[1]=fA;else if(ph===1)so=[fB,fB,fB];else if(ph===2)so[1]=fQ;
+  // command
+  var ta=eio(seg(A,.18,.62));var sc=lerp(1,s.sw*.84/s.cmd._w,ta);
+  C(s.cmd,W/2,lerp(H*.2,sy,ta),{s:sc,o:ph===0?fA:0});if(ph===0&&ta>.97)lit[1]=1;
+  // events
+  var split=eo(seg(B,.1,.28));
+  s.evs.forEach(function(e,i){var ti=eio(seg(B,.32+i*.07,.66+i*.07));var esc=lerp(1,s.sw*.84/e._w,ti);
+   C(e,lerp(W/2,sxF(i),ti),lerp(H*.2+(i-1)*split*e._h*.42*(1-ti),sy,ti),{s:esc,o:ph===1?(i===1?fB:fB*split):0});
+   e._sp.forEach(function(c,j){var spread=(j-2)*split*(1-ti)*e._h*.16;var wave=Math.sin((j+i)*1.3)*split*(1-ti)*e._h*.06;c.style.transform='translate('+spread.toFixed(1)+'px,'+wave.toFixed(1)+'px)'});
+   if(ph===1&&ti>.97)lit[i]=1});
+  // query
+  var go=eio(seg(Q,.12,.42)),ret=eio(seg(Q,.56,.9));
+  var qy=lerp(lerp(H*.2,sy,go),H*.18,ret);var qs=lerp(lerp(1,s.sw*.84/s.qry._w,go),1,ret);
+  C(s.qry,W/2,qy,{s:qs,o:ph===2?fQ:0});
+  C(s.rmb,W/2,qy+s.qry._h*qs*.5+s.rmb._h*qs*.5+6,{s:qs,o:ph===2?fQ*seg(Q,.46,.56):0});
+  if(ph===2&&go>.97&&ret<.25)lit[1]=1;
+  s.slots.forEach(function(e,i){var sc2=1+.06*lit[i];C(e,sxF(i),sy,{s:sc2,o:so[i]});e.classList.toggle('lit',!!lit[i])});
+  // pipeline
+  var ct=eio(seg(P,.2,.86));var cy=lerp(s.bt-s.chip._h,s.bt+3.5*s.bh-2,ct);var cur=Math.floor((cy-s.bt)/s.bh);
+  s.bands.forEach(function(b,i){var bi=eo(seg(P,.02+i*.04,.16+i*.04));b.style.transform='translate3d('+((1-bi)*-W*1.05).toFixed(1)+'px,'+(s.bt+i*s.bh).toFixed(1)+'px,0)';b.style.opacity=ph===3?fP:0;b.style.visibility=ph===3?'visible':'hidden';
+   b.classList.toggle('on',ph===3&&i===cur&&P>.2);b.classList.toggle('past',ph===3&&i<cur&&P>.2)});
+  C(s.chip,W-s.chip._w/2-8,cy,{o:ph===3?fP*seg(P,.16,.22):0});
+  C(s.pl,s.pl._w/2,s.bt*.45,{o:ph===3?fP:0})}};
+
+SC.across={bounds:[.14,.34,.78],rm:[.1,.3,.74,1],
+ layout:function(s){var k=s.k,W=s.W,H=s.H;s.o=$('.x-o',k);s.b=$('.x-b',k);s.band=$('.x-band',k);s.ev=$('.x-ev',k);s.chip=$('.x-chip',k);s.snd=$('.x-s',k);s.rcv=$('.x-r',k);
+  var wide=W>H*1.05;s.wide=wide;s.band.classList.toggle('v',wide);
+  var g=function(el,x,y,w,h){el.style.left=x+'px';el.style.top=y+'px';el.style.width=w+'px';el.style.height=h+'px'};
+  if(wide){g(s.o,0,H*.18,W*.36,H*.5);g(s.band,W*.41,H*.05,W*.18,H*.9);g(s.b,W*.64,H*.18,W*.36,H*.5);s.A=[W*.18,H*.18+H*.5*.62];s.B=[W*.82,H*.18+H*.5*.7];s.K=[W*.5,H*.02]}
+  else{g(s.o,0,0,W,H*.3);g(s.band,0,H*.4,W,H*.16);g(s.b,0,H*.64,W,H*.36);s.A=[W*.5,H*.21];s.B=[W*.5,H*.64+H*.36*.68];s.K=[W*.9,H*.48]}
+  var big=$('.big',s.ev);fit(big,wide?W*.28:W*.5,Math.min(110,H*.12));meas(s.ev);
+  s.chip.style.fontSize='100px';s.chip.style.fontSize=cl(100*(W*.96)/(s.chip.offsetWidth||1)*.9,9,13)+'px';meas(s.chip)},
+ render:function(s,p){var W=s.W,H=s.H;
+  var app=eo(seg(p,0,.08));var st=eo(seg(p,.14,.3));var t=eio(seg(p,.34,.74));
+  var x=(1-t)*(1-t)*s.A[0]+2*(1-t)*t*s.K[0]+t*t*s.B[0],y=(1-t)*(1-t)*s.A[1]+2*(1-t)*t*s.K[1]+t*t*s.B[1];
+  var esc=lerp(.4,1,app)*(1-.12*Math.sin(Math.PI*t));
+  C(s.ev,x,y,{s:esc,o:app,r:Math.sin(Math.PI*t)*(s.wide?-6:8)});
+  var chy=y+s.ev._h*esc/2+s.chip._h/2+6;var chx=cl(x,s.chip._w/2,W-s.chip._w/2);
+  C(s.chip,lerp(W*.6,chx,st),lerp(-H*.25,chy,st),{s:lerp(1.5,1,st),r:lerp(-14,-2,st),o:st>0?Math.min(1,st*3):0});
+  $('.ln',s.o).classList.toggle('lit',p<.36);
+  s.snd.classList.toggle('lit',t>.15);s.rcv.classList.toggle('lit',t>.6);
+  $('.rcv',s.b).classList.toggle('lit',t>.97);$('.ln',s.b).classList.toggle('lit',p>.82)}};
+
+SC.swap={bounds:[.26,.5,.74],rm:[.12,.38,.62,.95],
+ layout:function(s){var k=s.k,W=s.W,H=s.H;s.gs=$$('.s-g',k);s.card=$('.s-card',k);s.reg=$('.s-reg',k);
+  meas(s.card);meas(s.reg);s.cardY=H-s.reg._h-16-s.card._h/2;var NH=Math.max(H*.3,s.cardY-s.card._h*.32);
+  s.gs.forEach(function(g){var wd=+g.getAttribute('data-wd');var ls=$$('.s-l',g);var n=ls.length;var tot=0;
+   ls.forEach(function(l){var sp=l.firstElementChild;sp.style.setProperty('--wd',wd);fit(sp,W*.98,NH/n/.9);l._h=sp.offsetHeight*.94;tot+=l._h});
+   var y=Math.max(0,(NH-tot)/2);ls.forEach(function(l){l.style.top=y.toFixed(1)+'px';y+=l._h});g._ls=ls;g._wd=wd});
+  s.ph=-1},
+ regs:['.AddMessageBrokers().<b>AddAzureServiceBus()</b>','.AddMessageBrokers().<b>AddRabbitMq()</b>','.AddMessageBrokers().<b>AddSqlServiceBroker()</b>','<s>ConnectionStrings:ServiceBus</s> → <b>managed identity</b>'],
+ render:function(s,p){var W=s.W,H=s.H;var R=[[-.12,.26],[.26,.5],[.5,.74],[.74,1.2]];
+  var ph=p<.26?0:p<.5?1:p<.74?2:3;
+  s.gs.forEach(function(g,gi){var t=seg(p,R[gi][0],R[gi][1]);g._ls.forEach(function(l,li){
+   var a=eo(seg(t,li*.06,.24+li*.06)),b=gi===3?0:eio(seg(t,.78+li*.04,.97+li*.03));
+   l.style.transform='translate3d(0,'+((1-a)*H*.55-b*H*.55).toFixed(1)+'px,0)';var o=Math.min(1,a*2)*(1-b);l.style.opacity=o.toFixed(3);l.style.visibility=o<.01?'hidden':'visible';
+   l.firstElementChild.style.setProperty('--wd',Math.round(lerp(lerp(40,g._wd,a),40,b)))})});
+  var cin=RM?1:eo(seg(p,0,.04)*.7+.3);
+  C(s.card,W/2,s.cardY+(1-cin)*40,{o:cin,r:0});
+  if(ph!==s.ph){s.ph=ph;s.reg.innerHTML=this.regs[ph];meas(s.reg);s.reg.classList.remove('swap');void s.reg.offsetWidth;s.reg.classList.add('swap')}
+  C(s.reg,W/2,s.cardY+s.card._h/2+s.reg._h/2+12,{o:cin})}};
+
+SC.rel={bounds:[.3,.55],rm:[.26,.5,.98],
+ layout:function(s){var k=s.k,W=s.W,H=s.H;s.wo=$('.r-wo',k);s.wi=$('.r-wi',k);s.led=$('.r-led',k);s.rows=$$('.r-row',k);s.stamp=$('.r-stamp',k);s.fly=$('.r-fly',k);s.rel=$('.r-rel',k);s.gate=$('.r-gate',k);s.ms=$$('.r-m',k);s.skip=$('.r-skip',k);s.h=$('.r-h',k);s.g1=$('.r-g1',k);s.g2=$('.r-g2',k);
+  var bs=Math.min(150,H*.19,W*.3);s.wo.style.setProperty('--wd',118);fit(s.wo,W*.92,bs);fit(s.wi,W*.92,bs);
+  meas(s.led);fit(s.stamp,Math.min(W*.6,s.led._w*.7),Math.min(90,s.led._h*.5));
+  s.fly.style.fontSize=Math.min(30,W*.07)+'px';meas(s.fly);meas(s.rel);
+  s.gate.style.width=W+'px';meas(s.gate);s.ms.forEach(meas);meas(s.skip);meas(s.h);
+  s.bigY=s.wo._h/2;s.ledY=Math.min(s.wo._h+14+s.led._h/2,H-s.led._h/2-40)},
+ render:function(s,p){var W=s.W,H=s.H;
+  var tO=seg(p,0,.55),tI=seg(p,.55,1),fO=1-seg(tO,.92,1),fI=seg(tI,0,.1);
+  var wwd=lerp(60,118,eo(seg(tO,0,.12)));s.wo.style.setProperty('--wd',p<.02?118:Math.round(wwd));
+  C(s.wo,W/2,s.bigY,{o:fO});
+  var lx=W/2,ly=s.ledY;C(s.led,lx,ly,{o:fO});
+  s.rows.forEach(function(r,i){var rv=seg(tO,.06+i*.09,.18+i*.09);var v=r.lastElementChild;v.style.clipPath='inset(0 '+((1-rv)*100).toFixed(1)+'% 0 0)';v.style.webkitClipPath=v.style.clipPath});
+  var st=seg(tO,.4,.48);C(s.stamp,lx+s.led._w*.12,ly+8,{s:lerp(3.2,1,eo(st)),r:lerp(-30,-9,st),o:st>0?Math.min(1,st*3)*fO:0});
+  var ob=s.rows[2];var oy=ly-s.led._h/2+ob.offsetTop+ob.offsetHeight/2;var ox=lx-s.led._w/2+80+s.fly._w/2;
+  var f=eio(seg(tO,.55,.84));
+  C(s.fly,lerp(ox,W+s.fly._w*.1,eo(f)),lerp(oy+s.fly._h*.2,s.bigY,f*f),{r:-6*f,s:lerp(.8,1.1,f),o:f>0?Math.min(1,f*5)*(1-seg(f,.8,1)):0});
+  C(s.rel,Math.min(W-s.rel._w/2,lx+s.led._w/2-s.rel._w/2),ly+s.led._h/2+16,{o:seg(tO,.6,.7)*fO});
+  // inbox
+  var gy=H*.5,hy=H-s.h._h/2-4,y0=s.wi._h+20+s.ms[0]._h/2;
+  C(s.wi,W/2,s.bigY,{o:fI});
+  C(s.gate,W/2,gy-s.gate._h/2,{o:fI});C(s.h,W/2,hy,{o:fI});
+  var a=eio(seg(tI,.08,.34));var m1o=seg(tI,.06,.1)*(1-seg(tI,.36,.42));
+  C(s.ms[0],W/2,lerp(y0,hy,a),{o:m1o,s:1-.3*seg(tI,.34,.42)});
+  s.h.classList.toggle('lit',a>.97&&tI<.46);s.g2.classList.toggle('lit',a>.6&&tI>0);s.g1.classList.toggle('lit',(a>.4&&a<.75)||(tI>.58&&tI<.66));
+  var b=eio(seg(tI,.46,.62)),dr=seg(tI,.78,.95);var m2=s.ms[1];
+  m2.style.setProperty('--k',eo(seg(tI,.64,.74)).toFixed(3));
+  C(m2,W/2+dr*W*.35,lerp(y0,gy-s.gate._h-m2._h/2-2,b)+dr*dr*H*.25,{r:dr*28,o:seg(tI,.44,.48)*(1-dr)});
+  C(s.skip,W/2,gy+s.skip._h+10,{o:seg(tI,.7,.76)})}};
+
+SC.rec={bounds:[.38,.7],rm:[.3,.5,.96],
+ layout:function(s){var k=s.k,W=s.W,H=s.H;s.w=$('.c-word',k);s.bar=$('.c-bar',k);s.dots=$$('.c-dots i',k);s.dd=$('.c-dots',k);s.h1=$('.c-h1',k);s.h2=$('.c-h2',k);s.st=$('.c-state',k);s.bk=$('.c-buck',k);s.tal=$('.c-tal',k);s.ti=$$('.c-tal i',k);s.m=$('.c-msg',k);
+  fit(s.w,W*.72,Math.min(140,H*.18));
+  s.bar.style.width=W+'px';s.bar.style.height='44px';meas(s.bar);meas(s.dd);
+  var bs=fit(s.h1,W*.5,Math.min(170,H*.24));s.h2.style.fontSize=bs+'px';meas(s.h2);
+  var tw=s.h1._w+s.h2._w;if(tw>W*.94){var f2=bs*W*.94/tw;s.h1.style.fontSize=s.h2.style.fontSize=f2+'px';meas(s.h1);meas(s.h2)}
+  meas(s.st);
+  s.bw=Math.min(W*.86,460);s.bh=Math.min(H*.3,210);s.bk.style.width=s.bw+'px';s.bk.style.height=s.bh+'px';meas(s.bk);
+  fit(s.m,s.bw*.9,Math.min(110,H*.13));meas(s.tal);s.ph=-1;
+  s.floor=H*.74},
+ render:function(s,p){var W=s.W,H=s.H,i;
+  var tR=seg(p,0,.38),tB=seg(p,.38,.7),tE=seg(p,.7,1);
+  var fR=1-seg(tR,.92,1),fB=Math.min(seg(tB,0,.06),1-seg(tB,.94,1)),fE=seg(tE,0,.06);
+  // retry
+  var d=[1,1.3,1.7,2.2,2.8],tot=10,fl=s.floor-22,yTop,c=0,att=0,hgt=0;
+  var u0=seg(tR,0,.1);
+  if(tR<.1){yTop=lerp(-s.w._h-20, fl-s.w._h, u0*u0);c=u0>.9?(u0-.9)*10:0;att=u0>=1?1:0}
+  else{var r=seg(tR,.1,.95)*tot,acc=0,k=0;for(;k<5;k++){if(r<=acc+d[k])break;acc+=d[k]}
+   if(k>=5){yTop=fl-s.w._h;att=5;c=0}else{var u=(r-acc)/d[k];hgt=H*.11*d[k];yTop=fl-s.w._h-hgt*4*u*(1-u);c=Math.max(0,1-u/.07)+Math.max(0,1-(1-u)/.07);att=Math.min(5,k+1+(u>.97?1:0))}}
+  var sy=1-.24*c,sx=1+.2*c;
+  C(s.w,W/2,fl-s.w._h*sy/2-(fl-s.w._h-yTop),{sx:sx,sy:sy,o:fR});
+  s.w.style.setProperty('--wd',Math.round(100+30*c));
+  C(s.bar,W/2,s.floor,{o:fR});s.bar.classList.toggle('hit',c>.3&&tR>0&&tR<.96);
+  C(s.dd,s.dd._w/2,s.floor+44,{o:fR});s.dots.forEach(function(e,i){e.classList.toggle('on',i<att)});
+  // breaker
+  var a=back(seg(tB,.15,.26))-.6*eio(seg(tB,.55,.64))-.4*eio(seg(tB,.78,.88));
+  var by=H*.42,tw=s.h1._w+s.h2._w,lx=W/2-tw/2;
+  C(s.h1,lx+s.h1._w/2-a*6,by-a*10,{r:-24*a,o:fB});C(s.h2,lx+s.h1._w+s.h2._w/2+a*14,by,{r:7*a,o:fB});
+  var lbl=tB<.2?'CLOSED · processing':tB<.55?'OPEN · processing stops':tB<.8?'HALF-OPEN · one trial':'CLOSED · trial succeeded';
+  if(s.lbl!==lbl){s.lbl=lbl;s.st.textContent=lbl;meas(s.st);s.st.classList.toggle('open',tB>=.2&&tB<.8)}
+  C(s.st,W/2,by+s.h1._h*.85+s.st._h/2+20,{o:fB});
+  // error queue
+  var bky=H-s.bh/2-2;C(s.bk,W/2,bky,{o:fE});s.bk.classList.toggle('lit',tE>.72);
+  var tl=Math.floor(seg(tE,.06,.36)*6+.0001);s.ti.forEach(function(e,i){e.classList.toggle('on',i<tl)});
+  C(s.tal,W/2,H*.06+s.tal._h/2,{o:fE});
+  var fa=seg(tE,.42,.72);var msc=lerp(1,Math.min(1,s.bw*.78/s.m._w),fa);
+  C(s.m,W/2+Math.sin(fa*Math.PI)*W*.06,lerp(H*.06+s.tal._h+14+s.m._h/2,bky+s.bh*.18,fa*fa),{r:-12*fa,s:msc,o:fE})}};
+
+SC.feed={bounds:[.34,.64,.9],rm:[.3,.6,.88,1],
+ layout:function(s){var k=s.k,W=s.W,H=s.H;s.tab=$('.f-tab',k);s.gs=$$('.f-g',k);s.chips=$$('.f-chip',k);s.lane=$('.f-lane',k);s.r1=$('.r1',k);s.r2=$('.r2',k);s.r3=$('.r3',k);s.st=$$('.r2 .st span',k);s.strike=$('.r1 .strike',k);
+  meas(s.tab);s.chips.forEach(meas);meas(s.lane);
+  s.ch=s.chips[0]._h;s.laneTop=H-3*(s.ch+8);s.tabB=s.tab._h;s.mid=s.tabB+(s.laneTop-s.tabB)/2;
+  var gm=Math.min(150,(s.laneTop-s.tabB)*.7);s.gs.forEach(function(g){if(!g._sp)g._sp=splitCh(g);fit(g,W*.94,gm)})},
+ render:function(s,p){var W=s.W,H=s.H;
+  C(s.tab,W/2,s.tab._h/2,{o:1});
+  var ri=seg(p,.04,.12);s.r3.style.transform='translateX('+((1-eo(ri))*-W*.6).toFixed(1)+'px)';s.r3.style.opacity=ri>0?1:0;s.r3.style.background=ri>0&&p<.3?'#FFD9CC':'';
+  var ru=eio(seg(p,.34,.42));s.st[0].style.transform='translateY('+(-ru*100)+'%)';s.st[1].style.transform='translateY('+((1-ru)*100)+'%)';s.r2.style.background=ru>0&&p<.6?'#D9DFFB':'';
+  var rd=seg(p,.64,.72);s.strike.style.transform='scaleX('+eo(rd).toFixed(3)+')';s.r1.style.opacity=(1-.65*seg(p,.72,.8)).toFixed(3);
+  C(s.lane,s.lane._w/2,s.laneTop-s.lane._h-6,{o:seg(p,.2,.3)});
+  var A=[.04,.34,.64];
+  s.gs.forEach(function(g,k){var a=A[k];var f=eio(seg(p,a+.18,a+.28));var chip=s.chips[k];var cy=s.laneTop+k*(s.ch+8)+s.ch/2;var cx=chip._w/2;
+   g._sp.forEach(function(c,j){var lt=eo(seg(p,a+.05+j*.012,a+.11+j*.012));c.style.transform='translateY('+((1-lt)*-H*.35).toFixed(1)+'px) rotate('+((1-lt)*(j%2?14:-14))+'deg)';c.style.opacity=lt.toFixed(3)});
+   var vis=p>a+.04&&f<1;
+   C(g,lerp(W/2,cx,f),lerp(s.mid,cy,f),{s:lerp(1,s.ch/g._h,f),o:vis?1-seg(f,.7,1):0});
+   C(chip,cx,cy,{o:seg(f,.6,1)})})}};
+
+var scenes=$$('[data-scene]').map(function(el){var d=SC[el.getAttribute('data-scene')];var s={el:el,k:$('.kin',el),caps:$$('.caps li',el),d:d,p:-1,ci:-1,ri:-1};return s});
+
+function layoutAll(){
+  scenes.forEach(function(s){s.W=s.k.clientWidth;s.H=s.k.clientHeight;if(!s.W||!s.H)return;
+    try{s.d.layout(s)}catch(e){console.error(e)}
+    var mh=0;s.caps.forEach(function(li){mh=Math.max(mh,li.offsetHeight)});s.el.querySelector('.caps').style.minHeight=mh+'px';
+    s.p=-1;s.ri=-1});
+  // re-measure after caption heights changed kin size
+  scenes.forEach(function(s){var W=s.k.clientWidth,H=s.k.clientHeight;if(W!==s.W||H!==s.H){s.W=W;s.H=H;try{s.d.layout(s)}catch(e){console.error(e)}}});
+  fitBlocks();heroLayout();frame();
+}
+function fitBlocks(){$$('[data-fit]').forEach(function(h){var W=h.parentNode.clientWidth;h.style.fontSize='100px';var m=0;var dg=h.classList.contains('dh')?h.closest('.diag'):null,was=dg&&dg.classList.contains('on');if(dg){h.classList.add('nt');dg.classList.add('on');$$('.fl',h).forEach(function(f){m=Math.max(m,f.scrollWidth)});dg.classList.remove('on');}$$('.fl',h).forEach(function(f){m=Math.max(m,f.scrollWidth)});if(dg){dg.classList.toggle('on',!!was);h.offsetWidth;h.classList.remove('nt')}var sz=Math.min(100*W/(m||1)*.97,h.classList.contains('dh')?240:h.classList.contains('ih')?300:190);h.style.fontSize=sz.toFixed(1)+'px'})}
+
+var ticking=false,prog=$('#prog');
+function capIndex(b,p){var i=0;while(i<b.length&&p>=b[i])i++;return i}
+function frame(){ticking=false;var vh=window.innerHeight;
+  scenes.forEach(function(s){var r=s.el.getBoundingClientRect();if(r.bottom<-vh*.2||r.top>vh*1.2)return;
+   var p=cl(-r.top/Math.max(1,r.height-vh));var ci=capIndex(s.d.bounds,p);
+   if(ci!==s.ci){s.ci=ci;s.caps.forEach(function(li,i){li.classList.toggle('on',i===ci)})}
+   if(RM){if(ci!==s.ri){var first=s.ri<0;s.ri=ci;var pv=s.d.rm[ci];if(first){s.d.render(s,pv);s.p=pv}else{s.k.style.opacity='0';setTimeout(function(){s.d.render(s,pv);s.p=pv;s.k.style.opacity='1'},230)}}return}
+   if(Math.abs(p-s.p)<.0002)return;s.p=p;s.d.render(s,p)});
+  var se=document.scrollingElement||document.documentElement;var max=se.scrollHeight-vh;prog.style.transform='scaleX('+(max>0?cl(se.scrollTop/max):0).toFixed(4)+')';
+}
+function onScroll(){if(!ticking){ticking=true;requestAnimationFrame(frame)}}
+window.addEventListener('scroll',onScroll,{passive:true});
+var rz;window.addEventListener('resize',function(){clearTimeout(rz);rz=setTimeout(layoutAll,120)});
+if(mq.addEventListener)mq.addEventListener('change',function(e){RM=e.matches;layoutAll()});
+
+/* store toggle */
+var rel=$('#s-rel');
+$$('.seg button',rel).forEach(function(b){b.addEventListener('click',function(){var v=b.getAttribute('data-store');rel.setAttribute('data-store',v);$$('.seg button',rel).forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false')});layoutAll()})});
+
+/* diagnostics */
+var diag=$('#diag'),lsn=$('#lsn'),trs=$$('.tr',diag),tcount=$('#tcount'),tim=[];
+lsn.addEventListener('click',function(){var on=lsn.getAttribute('aria-checked')!=='true';lsn.setAttribute('aria-checked',on?'true':'false');diag.classList.toggle('on',on);
+  $('.lbl',lsn).textContent=on?'Listening':'Subscribe a listener';tim.forEach(clearTimeout);tim=[];
+  trs.forEach(function(t){t.classList.remove('on')});tcount.textContent='0 spans';
+  if(on){trs.forEach(function(t,i){tim.push(setTimeout(function(){t.classList.add('on');tcount.textContent=(i+1)+' span'+(i?'s':'')},RM?0:120+i*320))})}});
+
+/* index */
+var P=[
+ ['CQRS','Core','Controllers swell with orchestration, and logging, transactions and checks get copy-pasted into every endpoint.','Commands, Queries and Events, each with its own handler interface. The Message Dispatcher routes them in-process, the Command Pipeline wraps every Command handler in ordered behaviors, and assembly scanning registers your handlers with <code>AddChatterCqrs</code>.','Nothing else in Chatter.'],
+ ['MessageBrokers','Brokered messaging','Broker SDK code leaks into domain code, and changing vendors means rewriting handlers.','Brokered Message Receivers hand received messages to your existing handlers. <code>[BrokeredMessage]</code> names send and receive paths. Routing, the Forwarder, Retry, Circuit Breaker, Error Queue, and Inbox and Outbox ports are included. It ships no transport itself.','Chatter.CQRS'],
+ ['MessageBrokers.AzureServiceBus','Transport','You want Service Bus features without Service Bus code in your handlers.','Queues, topic subscriptions, sessions and cross-entity transactions behind the Chatter abstractions. You create the entities.','Chatter.MessageBrokers'],
+ ['MessageBrokers.AzureServiceBus.Auth','Auth','A connection string is a secret to store, rotate and protect.','Microsoft Entra ID token authentication, including managed identity, so there is no connection-string secret to manage.','Chatter.MessageBrokers.AzureServiceBus'],
+ ['MessageBrokers.RabbitMQ','Transport','RabbitMQ client plumbing creeps into application code.','A RabbitMQ transport over the exchanges, queues and bindings you provision.','Chatter.MessageBrokers'],
+ ['MessageBrokers.SqlServiceBroker','Transport','Running a separate broker just to pass messages around a system that already runs on SQL Server.','A SQL Server Service Broker transport using conversations and the queues you set up: messaging inside the database you already run.','Chatter.MessageBrokers'],
+ ['MessageBrokers.Reliability.EntityFramework','Reliability','Saving state and publishing a message are two separate steps that can disagree after a crash.','EF Core Inbox, Outbox and Unit of Work stored in your own DbContext. The state change, Inbox record and Outbox record are saved in one database transaction, and the Outbox publishes after commit, with an optional polling Outbox Processor.','Chatter.MessageBrokers'],
+ ['MessageBrokers.Reliability.Cosmos','Reliability','The same state-and-message problem on Azure Cosmos DB.','The Document Tier writes the aggregate, an Outbox document and an Inbox marker in one TransactionalBatch, and a change-feed Outbox Relay publishes pending outbox documents. A standalone Inbox Gate is also available.','Chatter.MessageBrokers'],
+ ['SqlChangeFeed','Change feed','Reacting to table changes usually means polling or hand-written plumbing.','Watch a SQL Server table and receive strongly typed <code>RowInsertedEvent</code>, <code>RowUpdatedEvent</code> and <code>RowDeletedEvent</code> in your handlers.','Chatter.MessageBrokers.SqlServiceBroker']];
+var ol=$('#pkgs');
+ol.innerHTML=P.map(function(x,i){var id='Chatter.'+x[0];var nm=x[0].split('.').join('.<wbr>');
+ return '<li><details><summary><span class="n">'+(i<9?'0':'')+(i+1)+'</span><span class="nm"><span class="pre">Chatter.</span><span class="d">'+nm+'</span></span><span class="role">'+x[1]+'</span><span class="pm" aria-hidden="true"></span></summary>'+
+ '<div class="body"><dl><div><dt>Problem</dt><dd>'+x[2]+'</dd></div><div><dt>How</dt><dd>'+x[3]+'</dd></div><div><dt>Depends on</dt><dd>'+x[4]+'</dd></div></dl>'+
+ '<div class="links"><a href="https://github.com/brenpike/Chatter/blob/master/src/'+id+'/src/README.md" target="_blank" rel="noopener">Docs</a><a href="https://www.nuget.org/packages/'+id+'" target="_blank" rel="noopener">NuGet</a></div></div></details></li>'}).join('');
+var lis=$$('#pkgs > li');
+if('IntersectionObserver' in window&&!RM){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{rootMargin:'0px 0px -8% 0px'});lis.forEach(function(l,i){l.style.transitionDelay=(i%3*60)+'ms';io.observe(l)})}else lis.forEach(function(l){l.classList.add('in')});
+
+/* boot */
+layoutAll();heroAssemble();
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(function(){layoutAll()});
+window.addEventListener('load',layoutAll);
+})();
+</script>
+</body>
+</html>
