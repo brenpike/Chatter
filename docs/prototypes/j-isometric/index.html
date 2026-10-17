@@ -779,8 +779,12 @@ function frame(now){
   render();
   var sp=cl(((window.pageYOffset||0)-tops[0])/Math.max(1,tops[N-1]-tops[0]));if(Math.abs(sp-lastSp)>.001){lastSp=sp;progi.style.transform='scaleX('+sp.toFixed(4)+')'}
   var act=0;for(var i=1;i<N;i++)if(S.w[i]>S.w[act])act=i;if(act!==curAct)setChip(act);
+  if(paused&&settled(tc))return;
   raf=requestAnimationFrame(frame);
 }
+/* paused or reduced motion: stop drawing once the camera and toggles have eased into place; kick() restarts it */
+function settled(tc){var e=1e-3,m;for(m=0;m<4;m++)if(Math.abs(cam[m]-tc[m])>e)return false;for(m in S.mm)if(Math.abs(S.mm[m]-(m===S.mode?1:0))>e)return false;return Math.abs(S.fm-(S.flav==='cos'?1:0))<e&&Math.abs(S.sub-S.subT)<e}
+function kick(){if(running&&!raf){lastT=0;raf=requestAnimationFrame(frame)}}
 function render(){
   ctx.setTransform(DPR,0,0,DPR,0,0);
   scl=Math.min(W,H*1.25)*(W>700?.8:1)/(cam[3]*TW);var pc=P(cam[0],cam[1],cam[2]);OX=W/2-pc[0]*scl;OY=H*.52-pc[1]*scl;
@@ -806,7 +810,7 @@ function render(){
 }
 
 /* ---------------- sizing, visibility */
-function resize(){var r=stage.getBoundingClientRect();W=Math.max(200,r.width);H=Math.max(200,r.height);DPR=Math.min(2,window.devicePixelRatio||1);cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);skyG=null;measure()}
+function resize(){var r=stage.getBoundingClientRect();W=Math.max(200,r.width);H=Math.max(200,r.height);DPR=Math.min(2,window.devicePixelRatio||1);cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);skyG=null;measure();kick()}
 function start(){if(running)return;running=true;lastT=0;if(!raf)raf=requestAnimationFrame(frame)}
 function stop(){running=false;if(raf)cancelAnimationFrame(raf);raf=0}
 var stageVis=true;
@@ -814,14 +818,16 @@ if('IntersectionObserver' in window){new IntersectionObserver(function(es){stage
 D.addEventListener('visibilitychange',function(){D.hidden?stop():(stageVis&&start())});
 window.addEventListener('resize',function(){resize()});
 if(window.ResizeObserver)new ResizeObserver(function(){resize()}).observe(stage);
-if(D.fonts&&D.fonts.ready)D.fonts.ready.then(measure);
-window.addEventListener('load',measure);
+if(D.fonts&&D.fonts.ready)D.fonts.ready.then(function(){measure();kick()});
+window.addEventListener('load',function(){measure();kick()});
+window.addEventListener('scroll',kick,{passive:true});
+D.addEventListener('click',kick,true);
 
 /* ---------------- HUD */
 var lastSp=-1,progi=D.getElementById('progi'),curAct=-1,chipn=D.getElementById('chipn'),chipt=D.getElementById('chipt');
 function setChip(i){curAct=i;chipn.textContent=(i<10?'0':'')+i;chipt.textContent=secs[i].getAttribute('data-name')}
 var pb=D.getElementById('pause');
-function setPaused(p){paused=p;pb.setAttribute('aria-pressed',p?'true':'false');pb.setAttribute('aria-label',p?'Play animation':'Pause animation');D.getElementById('ipause').style.display=p?'none':'';D.getElementById('iplay').style.display=p?'':'none'}
+function setPaused(p){paused=p;pb.setAttribute('aria-pressed',p?'true':'false');pb.setAttribute('aria-label',p?'Play animation':'Pause animation');D.getElementById('ipause').style.display=p?'none':'';D.getElementById('iplay').style.display=p?'':'none';kick()}
 pb.addEventListener('click',function(){setPaused(!paused)});setPaused(paused);
 if(mq.addEventListener)mq.addEventListener('change',function(e){reduced=e.matches;setPaused(reduced)});
 
